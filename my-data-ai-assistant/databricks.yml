@@ -1,0 +1,18 @@
+bundle:
+  name: my-data-ai-assistant
+
+resources:
+  apps:
+    app:
+      name: "my-data-ai-assistant"
+      description: "A Databricks App powered by AppKit"
+      source_code_path: ./
+      # Uncomment to enable on behalf of user API scopes. Available scopes: sql, dashboards.genie, files.files
+      # user_api_scopes:
+      #   - sql
+
+targets:
+  default:
+    default: true
+    workspace:
+      host: https://adb-5051745983841897.17.azuredatabricks.net
