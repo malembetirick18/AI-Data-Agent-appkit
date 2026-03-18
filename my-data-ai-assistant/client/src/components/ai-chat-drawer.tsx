@@ -66,8 +66,8 @@ import {
   Bar,
   Tooltip as RechartTooltip,
 } from 'recharts'
-import { useGenieChat } from '@databricks/appkit-ui/react'
-import type { GenieAttachmentResponse } from '@databricks/appkit-ui/react'
+import { GenieQueryVisualization, useGenieChat } from '@databricks/appkit-ui/react'
+import type { GenieAttachmentResponse, GenieStatementResponse } from '@databricks/appkit-ui/react'
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -702,192 +702,6 @@ function RenderBlock({ block }: { block: ContentBlock }) {
     default:
       return null
   }
-}
-
-function getQueryRows(data: unknown): Record<string, string | number>[] {
-  if (!data) return []
-
-  if (Array.isArray(data) && data.every((item) => item && typeof item === 'object' && !Array.isArray(item))) {
-    return data as Record<string, string | number>[]
-  }
-
-  if (typeof data !== 'object' || data === null) return []
-
-  const payload = data as Record<string, unknown>
-  const result = (payload.result ?? payload.statement_response ?? null) as Record<string, unknown> | null
-  const manifest = (payload.manifest ?? null) as Record<string, unknown> | null
-
-  const rowsRaw = (result?.data_array ?? payload.data_array ?? null) as unknown
-  const schema = (manifest?.schema ?? null) as Record<string, unknown> | null
-  const columns = (schema?.columns ?? null) as unknown[] | null
-
-  if (Array.isArray(rowsRaw) && Array.isArray(columns)) {
-    const headers = columns
-      .map((column) => {
-        if (!column || typeof column !== 'object') return ''
-        const name = (column as Record<string, unknown>).name
-        return typeof name === 'string' ? name : ''
-      })
-      .filter(Boolean)
-
-    if (headers.length === 0) return []
-
-    return rowsRaw
-      .filter((row) => Array.isArray(row))
-      .map((row) => {
-        const values = row as unknown[]
-        return headers.reduce<Record<string, string | number>>((acc, header, index) => {
-          const value = values[index]
-          if (typeof value === 'string' || typeof value === 'number') {
-            acc[header] = value
-          } else if (value == null) {
-            acc[header] = ''
-          } else if (typeof value === 'boolean') {
-            acc[header] = value ? 'true' : 'false'
-          } else {
-            acc[header] = JSON.stringify(value)
-          }
-          return acc
-        }, {})
-      })
-  }
-
-  return []
-}
-
-function buildQueryChart(rows: Record<string, string | number>[]) {
-  if (rows.length < 2) return null
-
-  const keys = Object.keys(rows[0] ?? {})
-  if (keys.length < 2) return null
-
-  const metricKey = keys.find((key) => rows.some((row) => typeof row[key] === 'number'))
-  if (!metricKey) return null
-
-  const dimensionKey = keys.find((key) => key !== metricKey) ?? keys[0]
-  if (!dimensionKey) return null
-
-  const data = rows
-    .map((row) => ({
-      label: String(row[dimensionKey] ?? ''),
-      value: Number(row[metricKey]),
-    }))
-    .filter((point) => Number.isFinite(point.value) && point.label.length > 0)
-
-  if (data.length < 2) return null
-
-  const isLine = data.every((point) => !Number.isNaN(Number(point.label)))
-  return { data, metricKey, dimensionKey, isLine }
-}
-
-function GenieQueryVisualization({
-  attachments,
-  queryResults,
-}: {
-  attachments?: GenieAttachmentResponse[]
-  queryResults?: Map<string, unknown>
-}) {
-  if (!attachments || attachments.length === 0 || !queryResults) return null
-
-  const queryAttachments = attachments.filter((att) => Boolean(att.attachmentId && att.query?.statementId))
-  if (queryAttachments.length === 0) return null
-
-  return (
-    <Stack gap="sm" mt="sm">
-      {queryAttachments.map((attachment) => {
-        const attachmentId = attachment.attachmentId ?? ''
-        const raw = queryResults.get(attachmentId)
-        const rows = getQueryRows(raw)
-        const headers = rows.length > 0 ? Object.keys(rows[0]) : []
-        const chart = buildQueryChart(rows)
-
-        return (
-          <Paper key={attachmentId} p="sm" withBorder radius="sm" style={{ backgroundColor: '#fff' }}>
-            <Group justify="space-between" mb={6}>
-              <Text size="xs" fw={600}>{attachment.query?.title || 'Résultat de requête'}</Text>
-              <Badge size="xs" variant="light" color="teal">
-                {rows.length} ligne{rows.length > 1 ? 's' : ''}
-              </Badge>
-            </Group>
-
-            {attachment.query?.description && (
-              <Text size="xs" c="dimmed" mb={6}>{attachment.query.description}</Text>
-            )}
-
-            {chart && (
-              <Box mb="xs">
-                <ResponsiveContainer width="100%" height={190}>
-                  {chart.isLine ? (
-                    <LineChart data={chart.data} margin={{ top: 5, right: 10, left: 0, bottom: 5 }}>
-                      <CartesianGrid strokeDasharray="3 3" stroke="#e9ecef" />
-                      <XAxis dataKey="label" tick={{ fontSize: 10 }} axisLine={{ stroke: '#dee2e6' }} />
-                      <YAxis tick={{ fontSize: 10 }} axisLine={{ stroke: '#dee2e6' }} />
-                      <RechartTooltip contentStyle={{ fontSize: 11, borderRadius: 6, borderColor: '#dee2e6' }} />
-                      <Line type="monotone" dataKey="value" stroke="#0c8599" strokeWidth={2} dot={false} />
-                    </LineChart>
-                  ) : (
-                    <BarChart data={chart.data} margin={{ top: 5, right: 10, left: 0, bottom: 5 }}>
-                      <CartesianGrid strokeDasharray="3 3" stroke="#e9ecef" />
-                      <XAxis dataKey="label" tick={{ fontSize: 10 }} axisLine={{ stroke: '#dee2e6' }} />
-                      <YAxis tick={{ fontSize: 10 }} axisLine={{ stroke: '#dee2e6' }} />
-                      <RechartTooltip contentStyle={{ fontSize: 11, borderRadius: 6, borderColor: '#dee2e6' }} />
-                      <Bar dataKey="value" fill="#0c8599" radius={[4, 4, 0, 0]} />
-                    </BarChart>
-                  )}
-                </ResponsiveContainer>
-              </Box>
-            )}
-
-            {headers.length > 0 ? (
-              <Box style={{ overflowX: 'auto' }}>
-                <Table
-                  striped
-                  withTableBorder
-                  withColumnBorders
-                  fz="xs"
-                  styles={{
-                    table: { minWidth: 380 },
-                    th: {
-                      backgroundColor: '#f8f9fa',
-                      fontWeight: 600,
-                      fontSize: 11,
-                      padding: '6px 8px',
-                      whiteSpace: 'nowrap',
-                    },
-                    td: { padding: '5px 8px', fontSize: 11 },
-                  }}
-                >
-                  <Table.Thead>
-                    <Table.Tr>
-                      {headers.map((header) => (
-                        <Table.Th key={`${attachmentId}-head-${header}`}>{header}</Table.Th>
-                      ))}
-                    </Table.Tr>
-                  </Table.Thead>
-                  <Table.Tbody>
-                    {rows.slice(0, 30).map((row) => {
-                      const rowKeyBase = headers.map((h) => String(row[h] ?? '')).join('|')
-                      return (
-                        <Table.Tr key={`${attachmentId}-row-${rowKeyBase}`}>
-                          {headers.map((header) => (
-                            <Table.Td key={`${attachmentId}-cell-${rowKeyBase}-${header}`}>
-                              {String(row[header] ?? '')}
-                            </Table.Td>
-                          ))}
-                        </Table.Tr>
-                      )
-                    })}
-                  </Table.Tbody>
-                </Table>
-              </Box>
-            ) : (
-              <Text size="xs" c="dimmed">Résultat tabulaire indisponible pour cette requête.</Text>
-            )}
-          </Paper>
-        )
-      })}
-    </Stack>
-  )
 }
 
 /* ------------------------------------------------------------------ */
@@ -1779,10 +1593,21 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
                               ))}
                             </Box>
                           )}
-                          <GenieQueryVisualization
-                            attachments={msg.attachments}
-                            queryResults={msg.queryResults}
-                          />
+                          {msg.attachments
+                            ?.filter((attachment) => Boolean(attachment.attachmentId))
+                            .map((attachment) => {
+                              const attachmentId = attachment.attachmentId
+                              if (!attachmentId || !msg.queryResults) return null
+
+                              const queryData = msg.queryResults.get(attachmentId)
+                              if (!queryData) return null
+
+                              return (
+                                <Box key={attachmentId} mt="sm">
+                                  <GenieQueryVisualization data={queryData as GenieStatementResponse} />
+                                </Box>
+                              )
+                            })}
                         </Paper>
                       )}
 

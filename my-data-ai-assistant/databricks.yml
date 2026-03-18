@@ -1,15 +1,25 @@
 bundle:
   name: my-data-ai-assistant
 
+variables:
+  DATABRICKS_GENIE_SPACE_ID:
+    description: "Databricks Genie Space ID"
+
 resources:
   apps:
     app:
       name: "my-data-ai-assistant"
       description: "A Databricks App powered by AppKit"
       source_code_path: ./
-      # Uncomment to enable on behalf of user API scopes. Available scopes: sql, dashboards.genie, files.files
-      # user_api_scopes:
-      #   - sql
+      user_api_scopes:
+        - dashboards.genie
+      resources:
+        - name: "genie-space"
+          description: "Genie Space for AI-powered data queries"
+          genie_space:
+            name: "genie-space"
+            space_id: ${var.DATABRICKS_GENIE_SPACE_ID}
+            permission: "CAN_RUN"
 
 targets:
   default:
