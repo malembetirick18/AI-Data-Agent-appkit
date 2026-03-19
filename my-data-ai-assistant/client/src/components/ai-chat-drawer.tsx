@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useRef, useEffect, useCallback } from 'react'
+import { useState, useRef, useEffect, useCallback, useMemo, memo } from 'react'
 import {
   Drawer,
   Text,
@@ -22,6 +22,7 @@ import {
   Modal,
   Textarea,
   Select,
+  NumberInput,
   Badge,
   Progress,
   Loader,
@@ -66,7 +67,12 @@ import {
   Bar,
   Tooltip as RechartTooltip,
 } from 'recharts'
-import { GenieQueryVisualization, useGenieChat } from '@databricks/appkit-ui/react'
+import { type Spec } from '@json-render/core'
+import { JSONUIProvider, Renderer, defineRegistry } from '@json-render/react'
+import { chatUiCatalog } from '../../../shared/genui-catalog'
+import { Button as AntButton, Checkbox as AntCheckbox, Dropdown as AntDropdown, Input as AntInput, Space as AntSpace, Table as AntTable } from 'antd'
+import type { ColumnType } from 'antd/es/table'
+import { useGenieChat } from '@databricks/appkit-ui/react'
 import type { GenieAttachmentResponse, GenieStatementResponse } from '@databricks/appkit-ui/react'
 
 /* ------------------------------------------------------------------ */
@@ -127,6 +133,66 @@ type ContentBlock =
   | TableBlock
   | LineChartBlock
   | BarChartBlock
+
+type GenericUiSpec = Spec
+
+interface GenerateSpecApiResponse {
+  spec: GenericUiSpec
+  traceId?: string
+  model?: string
+}
+
+interface SupervisorQuestionOption {
+  value: string
+  label: string
+}
+
+interface SupervisorQuestion {
+  id: string
+  label: string
+  inputType?: 'select' | 'text' | 'number' | 'toggle'
+  required?: boolean
+  placeholder?: string
+  options?: SupervisorQuestionOption[]
+}
+
+interface SupervisorApiResponse {
+  decision: 'clarify' | 'guide' | 'proceed' | 'error'
+  message: string
+  rewrittenPrompt?: string
+  suggestedTables?: string[]
+  suggestedFunctions?: string[]
+  questions?: SupervisorQuestion[]
+  confidence?: number
+  requiredColumns?: string[]
+  predictiveFunctions?: string[]
+  queryClassification?: string
+  traceId?: string
+  model?: string
+  catalogSource?: 'payload' | 'env-json' | 'env-file' | 'empty'
+}
+
+interface SupervisorConversationContext {
+  conversationId: string
+  sessionId: string
+  source: 'ai-chat-drawer'
+  messages: Array<{ role: 'assistant' | 'user'; content: string }>
+}
+
+interface PendingClarification {
+  originalPrompt: string
+  message: string
+  decision: 'clarify' | 'guide' | 'proceed' | 'error'
+  rewrittenPrompt?: string
+  questions: SupervisorQuestion[]
+  suggestedTables: string[]
+  suggestedFunctions: string[]
+  traceId?: string
+}
+
+function isSupervisorApproved(decision: SupervisorApiResponse['decision'], confidence?: number): boolean {
+  return decision === 'proceed' && typeof confidence === 'number' && confidence >= 0.90
+}
 
 interface Message {
   id: number | string
@@ -488,6 +554,413 @@ function _buildEcartsResponse(): ContentBlock[] {
 void [_buildRichResponse, _buildTableResponse, _buildInactiveResponse, _buildDualActivityResponse, _buildEcartsResponse]
 
 /* ------------------------------------------------------------------ */
+/*  json-render catalog + registry for generative UI                   */
+/* ------------------------------------------------------------------ */
+
+const { registry: chatUiRegistry } = defineRegistry(chatUiCatalog, {
+  components: {
+    Stack: ({ props, children }) => <Stack gap={props.gap ?? 6}>{children}</Stack>,
+    TextContent: ({ props }) => (
+      <Text size={(props.size as 'xs' | 'sm' | 'md' | 'lg' | 'xl' | undefined) ?? 'sm'} fw={props.weight} style={{ lineHeight: 1.55 }}>
+        {props.content}
+      </Text>
+    ),
+    BulletList: ({ props }) => (
+      <List size="sm" mt={4} mb={4} spacing={2} withPadding>
+        {props.items.map((item) => (
+          <List.Item key={item}>
+            <Text size="xs" style={{ lineHeight: 1.55 }}>{item}</Text>
+          </List.Item>
+        ))}
+      </List>
+    ),
+    DataTable: ({ props }) => (
+      <Box mt="xs" mb="xs">
+        {props.caption && <Text size="xs" c="dimmed" mb={4} fs="italic">{props.caption}</Text>}
+        <Box style={{ overflowX: 'auto' }}>
+          <Table
+            striped
+            highlightOnHover
+            withTableBorder
+            withColumnBorders
+            fz="xs"
+            styles={{
+              table: { minWidth: 360 },
+              th: {
+                backgroundColor: '#f8f9fa',
+                fontWeight: 600,
+                fontSize: 11,
+                padding: '6px 8px',
+                whiteSpace: 'nowrap',
+              },
+              td: { padding: '5px 8px', fontSize: 11 },
+            }}
+          >
+            <Table.Thead>
+              <Table.Tr>
+                {props.headers.map((h) => (
+                  <Table.Th key={h}>{h}</Table.Th>
+                ))}
+              </Table.Tr>
+            </Table.Thead>
+            <Table.Tbody>
+              {props.rows.map((row) => (
+                <Table.Tr key={row.join('|')}>
+                  {row.map((cell) => (
+                    <Table.Td key={cell}>{cell}</Table.Td>
+                  ))}
+                </Table.Tr>
+              ))}
+            </Table.Tbody>
+          </Table>
+        </Box>
+      </Box>
+    ),
+    LineChartViz: ({ props }) => (
+      <Box mt="md" mb="sm">
+        <Text size="xs" fw={600} mb="xs">{props.title}</Text>
+        <Paper p="xs" withBorder radius="sm" style={{ backgroundColor: '#fff' }}>
+          <ResponsiveContainer width="100%" height={200}>
+            <LineChart data={props.data} margin={{ top: 5, right: 10, left: 0, bottom: 5 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#e9ecef" />
+              <XAxis dataKey={props.xKey} tick={{ fontSize: 10 }} axisLine={{ stroke: '#dee2e6' }} />
+              <YAxis
+                tick={{ fontSize: 10 }}
+                axisLine={{ stroke: '#dee2e6' }}
+                label={props.yLabel ? { value: props.yLabel, angle: -90, position: 'insideLeft', fontSize: 10, dx: -5 } : undefined}
+              />
+              <RechartTooltip contentStyle={{ fontSize: 11, borderRadius: 6, borderColor: '#dee2e6' }} />
+              <Legend wrapperStyle={{ fontSize: 10 }} iconType="plainline" />
+              {props.lines.map((line) => (
+                <Line key={line.key} type="monotone" dataKey={line.key} stroke={line.color} strokeWidth={2} dot={false} name={line.name} />
+              ))}
+            </LineChart>
+          </ResponsiveContainer>
+          {props.source && (
+            <Text size="xs" c="dimmed" ta="right" mt={4} fs="italic">
+              {'Source : ' + props.source}
+            </Text>
+          )}
+        </Paper>
+      </Box>
+    ),
+    BarChartViz: ({ props }) => (
+      <Box mt="md" mb="sm">
+        <Text size="xs" fw={600} mb="xs">{props.title}</Text>
+        <Paper p="xs" withBorder radius="sm" style={{ backgroundColor: '#fff' }}>
+          <ResponsiveContainer width="100%" height={160}>
+            <BarChart data={props.data} margin={{ top: 5, right: 10, left: 0, bottom: 5 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#e9ecef" />
+              <XAxis dataKey={props.xKey} tick={{ fontSize: 10 }} axisLine={{ stroke: '#dee2e6' }} />
+              <YAxis tick={{ fontSize: 10 }} axisLine={{ stroke: '#dee2e6' }} />
+              <RechartTooltip contentStyle={{ fontSize: 11, borderRadius: 6, borderColor: '#dee2e6' }} />
+              <Bar dataKey={props.barKey} fill={props.color} radius={[4, 4, 0, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
+        </Paper>
+      </Box>
+    ),
+    FormPanel: ({ props, children }) => (
+      <Paper p="sm" withBorder radius="md" style={{ backgroundColor: '#ffffff' }}>
+        {(props.title || props.description) && (
+          <Box mb="sm">
+            {props.title && <Text size="sm" fw={600}>{props.title}</Text>}
+            {props.description && <Text size="xs" c="dimmed" mt={2}>{props.description}</Text>}
+          </Box>
+        )}
+        <Stack gap="sm">{children}</Stack>
+      </Paper>
+    ),
+    SelectInputField: ({ props }) => (
+      <Select
+        label={props.label}
+        placeholder={props.placeholder}
+        data={props.options}
+        value={props.value ?? null}
+        required={props.required}
+        disabled={props.disabled}
+        readOnly
+        size="sm"
+        radius="sm"
+      />
+    ),
+    TextInputField: ({ props }) => (
+      <TextInput
+        label={props.label}
+        placeholder={props.placeholder}
+        value={props.value ?? ''}
+        required={props.required}
+        disabled={props.disabled}
+        readOnly
+        size="sm"
+        radius="sm"
+      />
+    ),
+    NumberInputField: ({ props }) => (
+      <NumberInput
+        label={props.label}
+        placeholder={props.placeholder}
+        value={props.value}
+        min={props.min}
+        max={props.max}
+        step={props.step}
+        required={props.required}
+        disabled={props.disabled}
+        readOnly
+        size="sm"
+        radius="sm"
+      />
+    ),
+    ToggleField: ({ props }) => (
+      <Switch
+        label={props.label}
+        description={props.description}
+        checked={Boolean(props.checked)}
+        disabled={props.disabled ?? true}
+        readOnly
+        color="teal"
+        size="md"
+      />
+    ),
+    WorkflowRuleBuilder: ({ props }) => {
+      const operators = props.operators ?? [
+        'is equal to',
+        'is not equal',
+        'contains',
+        'superior to',
+        'inferior to',
+        'strictly inferior',
+      ]
+
+      return (
+        <Paper p="sm" withBorder radius="md" style={{ backgroundColor: '#ffffff' }}>
+          {(props.title || props.description) && (
+            <Box mb="sm">
+              {props.title && <Text size="sm" fw={600}>{props.title}</Text>}
+              {props.description && <Text size="xs" c="dimmed" mt={2}>{props.description}</Text>}
+            </Box>
+          )}
+
+          <Stack gap="sm">
+            {props.rules.map((rule, index) => {
+              const fieldOptions = props.fields.map((field) => ({
+                value: field.value,
+                label: field.label,
+              }))
+              const ruleKey = [rule.field ?? 'field', rule.operator ?? 'operator', rule.valueText ?? '', String(rule.valueNumber ?? '')]
+                .join('|') || `rule-${index}`
+
+              return (
+                <Paper key={ruleKey} p="xs" radius="sm" style={{ backgroundColor: '#f8f9fa' }}>
+                  <Group grow align="flex-start">
+                    <Select
+                      label="Champ"
+                      data={fieldOptions}
+                      value={rule.field ?? null}
+                      readOnly
+                      size="xs"
+                      radius="sm"
+                    />
+                    <Select
+                      label="Règle"
+                      data={operators.map((operator) => ({ value: operator, label: operator }))}
+                      value={rule.operator ?? null}
+                      readOnly
+                      size="xs"
+                      radius="sm"
+                    />
+                    {rule.valueType === 'number' ? (
+                      <NumberInput
+                        label="Valeur"
+                        value={rule.valueNumber}
+                        readOnly
+                        size="xs"
+                        radius="sm"
+                      />
+                    ) : (
+                      <TextInput
+                        label="Valeur"
+                        value={rule.valueText ?? ''}
+                        readOnly
+                        size="xs"
+                        radius="sm"
+                      />
+                    )}
+                  </Group>
+                </Paper>
+              )
+            })}
+          </Stack>
+        </Paper>
+      )
+    },
+  },
+})
+
+function buildGenerativeUiSpec(blocks: ContentBlock[]): GenericUiSpec | null {
+  if (blocks.length === 0) return null
+
+  const elements: Record<string, { type: string; props: Record<string, unknown>; children: string[] }> = {}
+  const rootId = 'root'
+
+  elements[rootId] = {
+    type: 'Stack',
+    props: { gap: 6 },
+    children: [],
+  }
+
+  blocks.forEach((block, index) => {
+    const id = `block-${index}`
+    let element: { type: string; props: Record<string, unknown>; children: string[] } | null = null
+
+    if (block.type === 'text') {
+      element = { type: 'TextContent', props: { content: block.content, size: 'sm' }, children: [] }
+    } else if (block.type === 'bold') {
+      element = { type: 'TextContent', props: { content: block.content, size: 'sm', weight: 700 }, children: [] }
+    } else if (block.type === 'heading') {
+      element = { type: 'TextContent', props: { content: block.content, size: 'sm', weight: 700 }, children: [] }
+    } else if (block.type === 'bullets') {
+      element = { type: 'BulletList', props: { items: block.items }, children: [] }
+    } else if (block.type === 'table') {
+      element = {
+        type: 'DataTable',
+        props: { caption: block.caption, headers: block.headers, rows: block.rows },
+        children: [],
+      }
+    } else if (block.type === 'lineChart') {
+      element = {
+        type: 'LineChartViz',
+        props: {
+          title: block.title,
+          data: block.data,
+          lines: block.lines,
+          xKey: block.xKey,
+          yLabel: block.yLabel,
+          source: block.source,
+        },
+        children: [],
+      }
+    } else if (block.type === 'barChart') {
+      element = {
+        type: 'BarChartViz',
+        props: {
+          title: block.title,
+          data: block.data,
+          barKey: block.barKey,
+          xKey: block.xKey,
+          color: block.color,
+        },
+        children: [],
+      }
+    }
+
+    if (element) {
+      elements[id] = element
+      elements[rootId].children.push(id)
+    }
+  })
+
+  return {
+    root: rootId,
+    elements,
+  } as GenericUiSpec
+}
+
+function isGenericUiSpec(value: unknown): value is GenericUiSpec {
+  if (!value || typeof value !== 'object') return false
+  const spec = value as { root?: unknown; elements?: unknown }
+  return typeof spec.root === 'string' && Boolean(spec.elements && typeof spec.elements === 'object')
+}
+
+const GENUI_MAX_ROWS = 100
+
+function _truncateStatementResult(value: unknown): unknown {
+  const statement = toGenieStatementResponse(value)
+  if (!statement?.result?.data_array) return value
+  const full = statement.result.data_array
+  if (full.length <= GENUI_MAX_ROWS) return statement
+  return {
+    ...statement,
+    result: {
+      ...statement.result,
+      data_array: full.slice(0, GENUI_MAX_ROWS),
+      _truncated: true,
+      _total_rows: full.length,
+    },
+  }
+}
+
+function buildGenieResultPayload(message: Message): unknown {
+  const queryResults = message.queryResults
+    ? Object.fromEntries(
+        Array.from(message.queryResults.entries()).map(([k, v]) => [k, _truncateStatementResult(v)])
+      )
+    : undefined
+
+  // Keep only lightweight attachment metadata (no inline blobs)
+  const attachments = (message.attachments ?? []).map((a) => ({
+    attachmentId: a.attachmentId,
+    query: a.query
+      ? { title: a.query.title, description: a.query.description }
+      : undefined,
+  }))
+
+  return { attachments, queryResults }
+}
+
+async function generateUiSpecForMessage(params: {
+  prompt: string
+  genieResult: unknown
+}): Promise<GenericUiSpec | null> {
+  try {
+    const response = await fetch('/api/genUiDspy/spec', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        prompt: params.prompt,
+        genieResult: params.genieResult,
+      }),
+    })
+
+    if (!response.ok) return null
+    const parsed = (await response.json()) as GenerateSpecApiResponse
+    if (!isGenericUiSpec(parsed?.spec)) return null
+    return parsed.spec
+  } catch {
+    return null
+  }
+}
+
+async function runSupervisorPreflight(params: {
+  prompt: string
+  conversationContext: SupervisorConversationContext
+}): Promise<SupervisorApiResponse | null> {
+  try {
+    const response = await fetch('/api/genUiDspy/supervisor', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        prompt: params.prompt,
+        conversationContext: params.conversationContext,
+      }),
+    })
+
+    if (!response.ok) {
+      // Try to parse the error body — the server may return a valid
+      // SupervisorApiResponse even on 502 (e.g. decision:'error').
+      try {
+        const errorBody = (await response.json()) as SupervisorApiResponse
+        if (errorBody && errorBody.decision) return errorBody
+      } catch { /* body not parseable — fall through */ }
+      return null
+    }
+    return (await response.json()) as SupervisorApiResponse
+  } catch {
+    return null
+  }
+}
+
+/* ------------------------------------------------------------------ */
 /*  Helper: serialize blocks to copyable plain text                    */
 /* ------------------------------------------------------------------ */
 
@@ -517,6 +990,77 @@ function blocksToPlainText(blocks: ContentBlock[]): string {
     })
     .join('\n')
 }
+
+/* ------------------------------------------------------------------ */
+/*  Memoised message content (avoids re-running fallback spec on       */
+/*  every parent render)                                               */
+/* ------------------------------------------------------------------ */
+
+const MessageContent = memo(function MessageContent({
+  msg,
+  generatedSpec,
+  registry,
+}: {
+  msg: Message
+  generatedSpec: GenericUiSpec | undefined
+  registry: typeof chatUiRegistry
+}) {
+  const fallbackSpec = useMemo(
+    () => (msg.blocks && msg.blocks.length > 0 ? buildGenerativeUiSpec(msg.blocks) : null),
+    [msg.blocks]
+  )
+
+  /* Plugin-generated spec available → render via json-render */
+  if (generatedSpec) {
+    return (
+      <JSONUIProvider registry={registry}>
+        <Renderer spec={generatedSpec} registry={registry} />
+      </JSONUIProvider>
+    )
+  }
+
+  /* Fallback: legacy block-based + Genie query table rendering */
+  return (
+    <>
+      {msg.content && (
+        <Text size="sm" style={{ lineHeight: 1.55 }}>
+          {msg.content}
+        </Text>
+      )}
+      {msg.blocks && msg.blocks.length > 0 && (
+        <Box>
+          {fallbackSpec ? (
+            <JSONUIProvider registry={registry}>
+              <Renderer spec={fallbackSpec} registry={registry} />
+            </JSONUIProvider>
+          ) : (
+            msg.blocks.map((block) => (
+              <RenderBlock key={JSON.stringify(block)} block={block} />
+            ))
+          )}
+        </Box>
+      )}
+      {msg.attachments
+        ?.filter((attachment) => Boolean(attachment.attachmentId))
+        .map((attachment) => {
+          const attachmentId = attachment.attachmentId
+          if (!attachmentId || !msg.queryResults) return null
+
+          const queryData = msg.queryResults.get(attachmentId)
+          const statement = toGenieStatementResponse(queryData)
+          if (!statement) return null
+
+          return (
+            <GenieDynamicQueryTable
+              key={attachmentId}
+              statement={statement}
+              title={attachment.query?.title}
+            />
+          )
+        })}
+    </>
+  )
+})
 
 /* ------------------------------------------------------------------ */
 /*  Copy button                                                        */
@@ -702,6 +1246,155 @@ function RenderBlock({ block }: { block: ContentBlock }) {
     default:
       return null
   }
+}
+
+/* ------------------------------------------------------------------ */
+/*  Genie query table (dynamic columns + per-column filters)           */
+/* ------------------------------------------------------------------ */
+
+type QueryTableRow = {
+  key: string
+  [column: string]: string
+}
+
+const DEFAULT_VISIBLE_COLUMNS = 5
+
+function toGenieStatementResponse(data: unknown): GenieStatementResponse | null {
+  if (!data || typeof data !== 'object') return null
+
+  const maybeStatement = data as Partial<GenieStatementResponse>
+  const hasManifest = Boolean(maybeStatement.manifest?.schema?.columns)
+  const hasResult = Boolean(maybeStatement.result?.data_array)
+  if (hasManifest && hasResult) return maybeStatement as GenieStatementResponse
+
+  const wrapped = (data as { statement_response?: unknown }).statement_response
+  if (wrapped && typeof wrapped === 'object') {
+    const nested = wrapped as Partial<GenieStatementResponse>
+    if (nested.manifest?.schema?.columns && nested.result?.data_array) {
+      return nested as GenieStatementResponse
+    }
+  }
+
+  return null
+}
+
+function buildQueryTableData(statement: GenieStatementResponse): {
+  columns: string[]
+  rows: QueryTableRow[]
+} {
+  const columns = statement.manifest?.schema?.columns?.map((col) => col.name) ?? []
+  const rawRows = statement.result?.data_array ?? []
+
+  const rows = rawRows.map((row, rowIndex) => {
+    const record: QueryTableRow = { key: String(rowIndex) }
+    columns.forEach((columnName, columnIndex) => {
+      const value = row[columnIndex]
+      record[columnName] = value == null ? '' : String(value)
+    })
+    return record
+  })
+
+  return { columns, rows }
+}
+
+function GenieDynamicQueryTable({
+  statement,
+  title,
+}: {
+  statement: GenieStatementResponse
+  title?: string
+}) {
+  const { columns: allColumns, rows } = buildQueryTableData(statement)
+
+  const [visibleColumns, setVisibleColumns] = useState<string[]>(() =>
+    allColumns.slice(0, DEFAULT_VISIBLE_COLUMNS)
+  )
+
+  const getColumnFilterProps = (columnName: string): ColumnType<QueryTableRow> => ({
+    filterDropdown: ({ setSelectedKeys, selectedKeys, confirm, clearFilters }) => (
+      <div style={{ padding: 8 }}>
+        <AntInput
+          placeholder={`Filtrer ${columnName}`}
+          value={(selectedKeys[0] as string) ?? ''}
+          onChange={(event) => {
+            const value = event.target.value
+            setSelectedKeys(value ? [value] : [])
+          }}
+          onPressEnter={() => confirm()}
+          style={{ marginBottom: 8, display: 'block' }}
+        />
+        <AntSpace>
+          <AntButton type="primary" size="small" onClick={() => confirm()}>
+            Filtrer
+          </AntButton>
+          <AntButton
+            size="small"
+            onClick={() => {
+              clearFilters?.()
+              confirm()
+            }}
+          >
+            Réinitialiser
+          </AntButton>
+        </AntSpace>
+      </div>
+    ),
+    filterIcon: (filtered) => <span>{filtered ? '🔎' : '🔍'}</span>,
+    onFilter: (value, record) =>
+      String(record[columnName] ?? '')
+        .toLowerCase()
+        .includes(String(value).toLowerCase()),
+  })
+
+  const antColumns: ColumnType<QueryTableRow>[] = allColumns
+    .filter((columnName) => visibleColumns.includes(columnName))
+    .map((columnName) => ({
+      title: columnName,
+      dataIndex: columnName,
+      key: columnName,
+      ellipsis: true,
+      ...getColumnFilterProps(columnName),
+    }))
+
+  const columnPicker = (
+    <div style={{ padding: 10, maxHeight: 260, overflowY: 'auto', minWidth: 220 }}>
+      <AntCheckbox.Group
+        value={visibleColumns}
+        onChange={(checkedValues) => setVisibleColumns(checkedValues.map(String))}
+      >
+        <AntSpace direction="vertical" size={6}>
+          {allColumns.map((columnName) => (
+            <AntCheckbox key={columnName} value={columnName}>
+              {columnName}
+            </AntCheckbox>
+          ))}
+        </AntSpace>
+      </AntCheckbox.Group>
+    </div>
+  )
+
+  if (allColumns.length === 0) return null
+
+  return (
+    <Box mt="sm" style={{ width: '100%', maxWidth: '100%', overflowX: 'auto' }}>
+      <Group justify="space-between" mb="xs" wrap="nowrap">
+        <Text size="xs" fw={600} c="dimmed" style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+          {title || 'Résultat de requête'}
+        </Text>
+        <AntDropdown popupRender={() => columnPicker} trigger={['click']}>
+          <AntButton size="small">Colonnes ({visibleColumns.length}/{allColumns.length})</AntButton>
+        </AntDropdown>
+      </Group>
+
+      <AntTable<QueryTableRow>
+        size="small"
+        columns={antColumns}
+        dataSource={rows}
+        pagination={{ pageSize: 10, showSizeChanger: true, pageSizeOptions: [10, 20, 50] }}
+        scroll={{ x: 'max-content' }}
+      />
+    </Box>
+  )
 }
 
 /* ------------------------------------------------------------------ */
@@ -1103,6 +1796,24 @@ function TeamControlsPanel({
   )
 }
 
+type UserRight = 'lecture' | 'modification' | 'aucun'
+
+const DOSSIER_USERS = [
+  { id: 'u1', name: 'R. Martin', email: 'r.martin@group.com', initials: 'RM', role: 'Directeur Audit' },
+  { id: 'u2', name: 'S. Dupont', email: 's.dupont@group.com', initials: 'SD', role: 'Auditeur Senior' },
+  { id: 'u3', name: 'A. Bernard', email: 'a.bernard@group.com', initials: 'AB', role: 'Auditeur' },
+  { id: 'u4', name: 'M. Leroy', email: 'm.leroy@group.com', initials: 'ML', role: 'Contrôleur Interne' },
+  { id: 'u5', name: 'C. Moreau', email: 'c.moreau@group.com', initials: 'CM', role: 'Responsable Comptable' },
+  { id: 'u6', name: 'P. Thomas', email: 'p.thomas@group.com', initials: 'PT', role: 'Consultant Externe' },
+] as const
+
+const INITIAL_USER_RIGHTS: Record<string, UserRight> = Object.fromEntries(
+  DOSSIER_USERS.map((u) => [
+    u.id,
+    u.role === 'Consultant Externe' ? 'aucun' : u.role === 'Auditeur' ? 'lecture' : 'modification',
+  ])
+)
+
 interface AiChatDrawerProps {
   opened: boolean
   onClose: () => void
@@ -1110,14 +1821,37 @@ interface AiChatDrawerProps {
 }
 
 export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerProps) {
-    const { messages: genieMessages, status: _status, sendMessage, reset } = useGenieChat({
+  const { messages: genieMessages, status: chatStatus, error: genieError, sendMessage, reset } = useGenieChat({
     alias: "demo",
-  });
-  const messages: Message[] = genieMessages
+    basePath: '/api/supervised-genie',
+  })
+  const [localUserMessages, setLocalUserMessages] = useState<Message[]>([])
+
+  // Merge Genie messages with local user messages (de-duplicate by content)
+  const messages: Message[] = useMemo(() => {
+    const genieUserContents = new Set(
+      genieMessages.filter((m) => m.role === 'user').map((m) => m.content?.trim())
+    )
+    // Keep local messages that Genie hasn't already picked up
+    const pendingLocal = localUserMessages.filter(
+      (m) => !genieUserContents.has(m.content?.trim())
+    )
+    return [...genieMessages, ...pendingLocal]
+  }, [genieMessages, localUserMessages])
+
   const [input, setInput] = useState('')
   const [showSuggestions, setShowSuggestions] = useState(true)
   const viewport = useRef<HTMLDivElement>(null)
+  const [generatedSpecs, setGeneratedSpecs] = useState<Record<string, GenericUiSpec>>({})
+  const inFlightSpecIdsRef = useRef<Set<string>>(new Set())
+  const attemptedSpecIdsRef = useRef<Set<string>>(new Set())
+  const sessionIdRef = useRef(typeof crypto !== 'undefined' ? crypto.randomUUID() : `session-${Date.now()}`)
+  const conversationIdRef = useRef(typeof crypto !== 'undefined' ? crypto.randomUUID() : `conversation-${Date.now()}`)
   const [showTeamControls, setShowTeamControls] = useState(false)
+  const [supervisorLoading, setSupervisorLoading] = useState(false)
+  const [supervisorHint, setSupervisorHint] = useState<SupervisorApiResponse | null>(null)
+  const [pendingClarification, setPendingClarification] = useState<PendingClarification | null>(null)
+  const [clarificationAnswers, setClarificationAnswers] = useState<Record<string, string>>({})
 
   const handlePublishTeamControls = (controls: TeamControl[]) => {
     if (onSaveControl) {
@@ -1146,22 +1880,7 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
   const [saved, setSaved] = useState(false)
   const [applyToGroup, setApplyToGroup] = useState(false)
 
-  type UserRight = 'lecture' | 'modification' | 'aucun'
-  const dossierUsers = [
-    { id: 'u1', name: 'R. Martin', email: 'r.martin@group.com', initials: 'RM', role: 'Directeur Audit' },
-    { id: 'u2', name: 'S. Dupont', email: 's.dupont@group.com', initials: 'SD', role: 'Auditeur Senior' },
-    { id: 'u3', name: 'A. Bernard', email: 'a.bernard@group.com', initials: 'AB', role: 'Auditeur' },
-    { id: 'u4', name: 'M. Leroy', email: 'm.leroy@group.com', initials: 'ML', role: 'Contrôleur Interne' },
-    { id: 'u5', name: 'C. Moreau', email: 'c.moreau@group.com', initials: 'CM', role: 'Responsable Comptable' },
-    { id: 'u6', name: 'P. Thomas', email: 'p.thomas@group.com', initials: 'PT', role: 'Consultant Externe' },
-  ]
-  const [userRights, setUserRights] = useState<Record<string, UserRight>>(() => {
-    const init: Record<string, UserRight> = {}
-    dossierUsers.forEach((u) => {
-      init[u.id] = u.role === 'Consultant Externe' ? 'aucun' : u.role === 'Auditeur' ? 'lecture' : 'modification'
-    })
-    return init
-  })
+  const [userRights, setUserRights] = useState<Record<string, UserRight>>(() => ({ ...INITIAL_USER_RIGHTS }))
 
   const rightOptions: { value: UserRight; label: string; icon: React.ReactNode; color: string }[] = [
     { value: 'modification', label: 'Modification', icon: <IconPencil size={14} />, color: '#0c8599' },
@@ -1181,30 +1900,172 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
     }
   }, [messages])
 
+  const messagesRef = useRef(messages)
+  messagesRef.current = messages
+
+  const buildConversationContext = useCallback(() => {
+    return {
+      conversationId: conversationIdRef.current,
+      sessionId: sessionIdRef.current,
+      source: 'ai-chat-drawer' as const,
+      messages: messagesRef.current
+        .filter((message) => Boolean(message.content?.trim()))
+        .slice(-6)
+        .map((message) => ({
+          role: message.role,
+          content: message.content,
+        })),
+    }
+  }, [])
+
+  const submitPromptThroughSupervisor = useCallback(async (rawPrompt: string) => {
+    const trimmedPrompt = rawPrompt.trim()
+    if (!trimmedPrompt) return
+
+    setShowSuggestions(false)
+    setSupervisorLoading(true)
+    setSupervisorHint(null)
+
+    // Immediately show the user message in the chat
+    setLocalUserMessages((prev) => [
+      ...prev,
+      {
+        id: `local-${Date.now()}`,
+        role: 'user' as const,
+        content: trimmedPrompt,
+        timestamp: new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }),
+      },
+    ])
+
+    try {
+      const supervisorResponse = await runSupervisorPreflight({
+        prompt: trimmedPrompt,
+        conversationContext: buildConversationContext(),
+      })
+
+      if (!supervisorResponse) {
+        setPendingClarification(null)
+        setClarificationAnswers({})
+        setSupervisorHint({
+          decision: 'error',
+          message: 'Le supervisor n’a pas répondu. L’envoi à Genie est bloqué tant que la requête n’est pas validée.',
+        })
+        return
+      }
+
+      setSupervisorHint(supervisorResponse)
+
+      if (supervisorResponse.decision === 'error') {
+        setPendingClarification(null)
+        return
+      }
+
+      if (supervisorResponse.decision === 'clarify') {
+        const questions = supervisorResponse.questions ?? []
+        setPendingClarification({
+          originalPrompt: trimmedPrompt,
+          message: supervisorResponse.message,
+          decision: supervisorResponse.decision,
+          rewrittenPrompt: supervisorResponse.rewrittenPrompt,
+          questions,
+          suggestedTables: supervisorResponse.suggestedTables ?? [],
+          suggestedFunctions: supervisorResponse.suggestedFunctions ?? [],
+          traceId: supervisorResponse.traceId,
+        })
+        setClarificationAnswers(
+          Object.fromEntries(questions.map((question) => [question.id, ''])) as Record<string, string>
+        )
+        return
+      }
+
+      // 'proceed' with high confidence → send directly to Genie
+      if (isSupervisorApproved(supervisorResponse.decision, supervisorResponse.confidence)) {
+        setPendingClarification(null)
+        setClarificationAnswers({})
+        sendMessage(supervisorResponse.rewrittenPrompt?.trim() || trimmedPrompt)
+        setInput('')
+        return
+      }
+
+      // 'proceed' with low confidence or 'guide' → show as clarification
+      // so the user can review and re-submit with the rewritten prompt
+      const questions = supervisorResponse.questions ?? []
+      setPendingClarification({
+        originalPrompt: trimmedPrompt,
+        message: supervisorResponse.message || 'Le superviseur recommande de vérifier la reformulation avant envoi à Genie.',
+        decision: supervisorResponse.decision,
+        rewrittenPrompt: supervisorResponse.rewrittenPrompt,
+        questions,
+        suggestedTables: supervisorResponse.suggestedTables ?? [],
+        suggestedFunctions: supervisorResponse.suggestedFunctions ?? [],
+        traceId: supervisorResponse.traceId,
+      })
+      setClarificationAnswers(
+        Object.fromEntries(questions.map((question) => [question.id, ''])) as Record<string, string>
+      )
+    } finally {
+      setSupervisorLoading(false)
+    }
+  }, [buildConversationContext, sendMessage])
+
+  // Track the last assistant message for which a GenUI spec was requested.
+  const lastSpecCandidateIdRef = useRef<string | null>(null)
+
+  useEffect(() => {
+    // Wait until Genie finishes streaming (including all query_result events)
+    // so the queryResults Map is fully populated before calling DSPy.
+    if (chatStatus !== 'idle') return
+
+    const latestAssistantMessage = [...messages].reverse().find((message) =>
+      message.role === 'assistant' &&
+      !message.loading &&
+      !message.periodPrompt &&
+      (Boolean(message.content?.trim()) || Boolean(message.blocks && message.blocks.length > 0) || Boolean(message.attachments && message.attachments.length > 0))
+    )
+
+    if (!latestAssistantMessage) return
+
+    const messageId = String(latestAssistantMessage.id)
+
+    if (attemptedSpecIdsRef.current.has(messageId)) return
+    if (inFlightSpecIdsRef.current.has(messageId)) return
+    if (lastSpecCandidateIdRef.current === messageId) return
+
+    const fallbackSpec = latestAssistantMessage.blocks ? buildGenerativeUiSpec(latestAssistantMessage.blocks) : null
+
+    lastSpecCandidateIdRef.current = messageId
+    attemptedSpecIdsRef.current.add(messageId)
+    inFlightSpecIdsRef.current.add(messageId)
+
+    void generateUiSpecForMessage({
+      prompt: latestAssistantMessage.content || blocksToPlainText(latestAssistantMessage.blocks || []),
+      genieResult: buildGenieResultPayload(latestAssistantMessage),
+    })
+      .then((spec) => {
+        setGeneratedSpecs((previous) => {
+          if (previous[messageId]) return previous
+          if (!spec && !fallbackSpec) return previous
+          return { ...previous, [messageId]: (spec || fallbackSpec)! }
+        })
+      })
+      .finally(() => {
+        inFlightSpecIdsRef.current.delete(messageId)
+      })
+  }, [chatStatus, messages])
+
   /* -------- Period confirmation handler (for "fournisseurs inactifs" workflow) -------- */
   const handlePeriodConfirm = useCallback((periodValue: string) => {
     const periodLabel = periodOptions.find((p) => p.value === periodValue)?.label ?? periodValue
 
-    const now = () =>
-      new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })
+    void submitPromptThroughSupervisor(`Période confirmée : ${periodLabel}`)
+  }, [submitPromptThroughSupervisor])
 
-    // User confirmation message
-    const confirmMsg: Message = {
-      id: Date.now(),
-      role: 'user',
-      content: `Période confirmée : ${periodLabel}`,
-      timestamp: now(),
-    }
-
-    sendMessage(confirmMsg.content)
-  }, [sendMessage])
-
-  const handleSend = (text?: string) => {
+  const handleSend = useCallback((text?: string) => {
     const msgText = text || input.trim()
     if (!msgText) return
 
-    sendMessage(msgText);
-  }
+    void submitPromptThroughSupervisor(msgText)
+  }, [input, submitPromptThroughSupervisor])
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -1215,8 +2076,37 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
 
   const handleClear = () => {
     reset()
+    setGeneratedSpecs({})
+    setLocalUserMessages([])
+    inFlightSpecIdsRef.current.clear()
+    attemptedSpecIdsRef.current.clear()
+    lastSpecCandidateIdRef.current = null
     setShowSuggestions(true)
+    setSupervisorLoading(false)
+    setSupervisorHint(null)
+    setPendingClarification(null)
+    setClarificationAnswers({})
   }
+
+  const handleClarificationSubmit = useCallback(() => {
+    if (!pendingClarification) return
+
+    const questionLines = pendingClarification.questions
+      .map((question) => {
+        const value = clarificationAnswers[question.id]?.trim()
+        if (!value) return null
+        return `- ${question.label}: ${value}`
+      })
+      .filter((value): value is string => Boolean(value))
+
+    const basePrompt = pendingClarification.rewrittenPrompt?.trim() || pendingClarification.originalPrompt
+    const clarifiedPrompt = questionLines.length > 0
+      ? `${basePrompt}\nClarifications:\n${questionLines.join('\n')}`
+      : basePrompt
+
+    setPendingClarification(null)
+    void submitPromptThroughSupervisor(clarifiedPrompt)
+  }, [clarificationAnswers, pendingClarification, submitPromptThroughSupervisor])
 
   const handleOpenSave = (msg: Message) => {
     const plainResults = msg.content + (msg.blocks ? '\n' + blocksToPlainText(msg.blocks) : '')
@@ -1408,10 +2298,13 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
                   {'Exemples de questions d\'analyse et de contrôle'}
                 </Text>
                 <Stack gap={6}>
-                  {suggestions.map((s) => (
+                  {suggestions.map((s, suggestionIndex) => (
                     <UnstyledButton
                       key={s}
-                      onClick={() => handleSend(s)}
+                      onClick={() => {
+                        lastSuggestionIndexRef.current = suggestionIndex
+                        handleSend(s)
+                      }}
                       style={{
                         padding: '8px 12px',
                         borderRadius: 8,
@@ -1439,6 +2332,271 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
                 </Stack>
               </Box>
             </Stack>
+          )}
+
+          {supervisorLoading && (
+            <Paper
+              p="sm"
+              radius="md"
+              mb="md"
+              style={{ backgroundColor: '#f8f9fa', border: '1px solid #e9ecef' }}
+            >
+              <Group gap="xs">
+                <Loader size="xs" color="teal" type="dots" />
+                <Text size="sm" c="dimmed">Le supervisor analyse l&apos;intention et les métadonnées Genie...</Text>
+              </Group>
+            </Paper>
+          )}
+
+          {genieError && !supervisorLoading && (
+            <Alert
+              variant="light"
+              color="red"
+              radius="md"
+              mb="md"
+              icon={<IconAlertTriangle size={16} />}
+            >
+              <Text size="sm" fw={600}>Appel Genie refusé</Text>
+              <Text size="xs" mt={4} style={{ lineHeight: 1.55 }}>
+                {typeof genieError === 'string' ? genieError : String(genieError)}
+              </Text>
+            </Alert>
+          )}
+
+          {pendingClarification && !supervisorLoading && (
+            <Paper
+              p="sm"
+              radius="md"
+              mb="md"
+              style={{ backgroundColor: '#f8f9fa', border: '1px solid #dee2e6' }}
+            >
+              <Group gap="xs" mb="xs" align="flex-start">
+                <IconAlertTriangle size={16} color="#f08c00" />
+                <Box style={{ flex: 1 }}>
+                  <Text size="sm" fw={600}>Clarification requise avant l&apos;envoi à Genie</Text>
+                  <Text size="xs" c="dimmed" mt={2} style={{ lineHeight: 1.55 }}>
+                    {pendingClarification.message}
+                  </Text>
+                </Box>
+              </Group>
+
+              {pendingClarification.rewrittenPrompt && (
+                <Box mb="sm">
+                  <Text size="xs" fw={600} c="dimmed" mb={4}>Reformulation proposée</Text>
+                  <Paper p="xs" radius="sm" style={{ backgroundColor: '#ffffff', border: '1px solid #e9ecef' }}>
+                    <Text size="xs" style={{ lineHeight: 1.55 }}>{pendingClarification.rewrittenPrompt}</Text>
+                  </Paper>
+                </Box>
+              )}
+
+              {pendingClarification.traceId && (
+                <Box mb="sm">
+                  <Text size="xs" fw={600} c="dimmed" mb={4}>Trace MLflow supervisor</Text>
+                  <Paper p="xs" radius="sm" style={{ backgroundColor: '#ffffff', border: '1px solid #e9ecef' }}>
+                    <Text size="xs" ff="monospace">{pendingClarification.traceId}</Text>
+                  </Paper>
+                </Box>
+              )}
+
+              {pendingClarification.questions.map((question) => (
+                <Box key={question.id} mb="sm">
+                  <Text size="xs" fw={500} mb={4}>{question.label}</Text>
+                  {question.inputType === 'select' && question.options && question.options.length > 0 ? (
+                    <Select
+                      data={question.options}
+                      value={clarificationAnswers[question.id] ?? ''}
+                      onChange={(value) => {
+                        setClarificationAnswers((previous) => ({
+                          ...previous,
+                          [question.id]: value ?? '',
+                        }))
+                      }}
+                      placeholder={question.placeholder || 'Sélectionnez une option'}
+                      size="sm"
+                      radius="sm"
+                      allowDeselect={!question.required}
+                    />
+                  ) : question.inputType === 'number' ? (
+                    <NumberInput
+                      value={clarificationAnswers[question.id] ? Number(clarificationAnswers[question.id]) : undefined}
+                      onChange={(value) => {
+                        setClarificationAnswers((previous) => ({
+                          ...previous,
+                          [question.id]: value == null || value === '' ? '' : String(value),
+                        }))
+                      }}
+                      placeholder={question.placeholder || 'Ajoutez une valeur numérique'}
+                      size="sm"
+                      radius="sm"
+                    />
+                  ) : question.inputType === 'toggle' ? (
+                    <Switch
+                      checked={clarificationAnswers[question.id] === 'true'}
+                      onChange={(event) => {
+                        setClarificationAnswers((previous) => ({
+                          ...previous,
+                          [question.id]: String(event.currentTarget.checked),
+                        }))
+                      }}
+                      size="md"
+                      color="teal"
+                      label={question.placeholder || 'Activer cette option'}
+                    />
+                  ) : (
+                    <TextInput
+                      value={clarificationAnswers[question.id] ?? ''}
+                      onChange={(event) => {
+                        const value = event.currentTarget.value
+                        setClarificationAnswers((previous) => ({
+                          ...previous,
+                          [question.id]: value,
+                        }))
+                      }}
+                      placeholder={question.placeholder || 'Ajoutez une précision'}
+                      size="sm"
+                      radius="sm"
+                    />
+                  )}
+                </Box>
+              ))}
+
+              {(pendingClarification.suggestedTables.length > 0 || pendingClarification.suggestedFunctions.length > 0) && (
+                <Stack gap={6} mb="sm">
+                  {pendingClarification.suggestedTables.length > 0 && (
+                    <Box>
+                      <Text size="xs" fw={600} c="dimmed" mb={4}>Tables suggérées par le knowledge store</Text>
+                      <Group gap={6}>
+                        {pendingClarification.suggestedTables.map((tableName) => (
+                          <Badge key={tableName} size="xs" variant="light" color="teal">{tableName}</Badge>
+                        ))}
+                      </Group>
+                    </Box>
+                  )}
+                  {pendingClarification.suggestedFunctions.length > 0 && (
+                    <Box>
+                      <Text size="xs" fw={600} c="dimmed" mb={4}>Fonctions suggérées par le knowledge store</Text>
+                      <Group gap={6}>
+                        {pendingClarification.suggestedFunctions.map((functionName) => (
+                          <Badge key={functionName} size="xs" variant="outline" color="gray">{functionName}</Badge>
+                        ))}
+                      </Group>
+                    </Box>
+                  )}
+                </Stack>
+              )}
+
+              <Group justify="flex-end" mt="xs">
+                {pendingClarification.rewrittenPrompt && (
+                  <Button
+                    size="xs"
+                    variant="default"
+                    onClick={() => {
+                      const rewrittenPrompt = pendingClarification.rewrittenPrompt?.trim()
+                      if (!rewrittenPrompt) return
+                      setPendingClarification(null)
+                      void submitPromptThroughSupervisor(rewrittenPrompt)
+                    }}
+                  >
+                    Utiliser la reformulation
+                  </Button>
+                )}
+                <Button size="xs" color="teal" onClick={handleClarificationSubmit}>
+                  Relancer avec ces précisions
+                </Button>
+              </Group>
+            </Paper>
+          )}
+
+          {supervisorHint && !pendingClarification && !supervisorLoading && (
+            <Paper
+              p="sm"
+              radius="md"
+              mb="md"
+              style={{ backgroundColor: '#f8f9fa', border: '1px solid #e9ecef' }}
+            >
+              <Group gap="xs" align="flex-start">
+                <IconRobot size={16} color="#0c8599" />
+                <Box style={{ flex: 1 }}>
+                  <Text size="xs" fw={600}>Pré-analyse supervisor</Text>
+                  <Text size="xs" c="dimmed" style={{ lineHeight: 1.55 }}>
+                    {supervisorHint.message}
+                  </Text>
+                  <Group gap={6} mt={6}>
+                    <Badge size="xs" variant="light" color={
+                      supervisorHint.decision === 'error'
+                        ? 'red'
+                        : supervisorHint.decision === 'clarify'
+                          ? 'orange'
+                          : supervisorHint.decision === 'guide'
+                            ? 'blue'
+                            : 'teal'
+                    }>
+                      {supervisorHint.decision}
+                    </Badge>
+                    {typeof supervisorHint.confidence === 'number' && (
+                      <Badge size="xs" variant="outline" color="gray">
+                        {`Confiance ${Math.round(supervisorHint.confidence * 100)}%`}
+                      </Badge>
+                    )}
+                    {supervisorHint.queryClassification && (
+                      <Badge size="xs" variant="outline" color="gray">{supervisorHint.queryClassification}</Badge>
+                    )}
+                    {supervisorHint.catalogSource && (
+                      <Badge size="xs" variant="outline" color="gray">{supervisorHint.catalogSource}</Badge>
+                    )}
+                  </Group>
+                  {supervisorHint.traceId && (
+                    <Box mt={6}>
+                      <Text size="xs" fw={600} c="dimmed" mb={4}>Trace MLflow supervisor</Text>
+                      <Paper p="xs" radius="sm" style={{ backgroundColor: '#ffffff', border: '1px solid #e9ecef' }}>
+                        <Text size="xs" ff="monospace">{supervisorHint.traceId}</Text>
+                      </Paper>
+                    </Box>
+                  )}
+                  {(supervisorHint.suggestedTables?.length || supervisorHint.suggestedFunctions?.length) ? (
+                    <Group gap={6} mt={6}>
+                      {(supervisorHint.suggestedTables ?? []).map((tableName) => (
+                        <Badge key={tableName} size="xs" variant="light" color="teal">{tableName}</Badge>
+                      ))}
+                      {(supervisorHint.suggestedFunctions ?? []).map((functionName) => (
+                        <Badge key={functionName} size="xs" variant="outline" color="gray">{functionName}</Badge>
+                      ))}
+                    </Group>
+                  ) : null}
+                  {supervisorHint.requiredColumns && supervisorHint.requiredColumns.length > 0 && (
+                    <Box mt={6}>
+                      <Text size="xs" fw={600} c="dimmed" mb={4}>Colonnes ciblées</Text>
+                      <Group gap={6}>
+                        {supervisorHint.requiredColumns.map((columnName) => (
+                          <Badge key={columnName} size="xs" variant="light" color="gray">{columnName}</Badge>
+                        ))}
+                      </Group>
+                    </Box>
+                  )}
+                  {supervisorHint.predictiveFunctions && supervisorHint.predictiveFunctions.length > 0 && (
+                    <Box mt={6}>
+                      <Text size="xs" fw={600} c="dimmed" mb={4}>Fonctions AI suggérées</Text>
+                      <Group gap={6}>
+                        {supervisorHint.predictiveFunctions.map((functionName) => (
+                          <Badge key={functionName} size="xs" variant="outline" color="orange">{functionName}</Badge>
+                        ))}
+                      </Group>
+                    </Box>
+                  )}
+                  {supervisorHint.decision === 'error' && (
+                    <Button
+                      size="xs"
+                      variant="light"
+                      color="red"
+                      mt="xs"
+                      onClick={() => setSupervisorHint(null)}
+                    >
+                      Fermer et réessayer
+                    </Button>
+                  )}
+                </Box>
+              </Group>
+            </Paper>
           )}
 
           {/* Chat messages */}
@@ -1581,33 +2739,11 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
                           radius="md"
                           style={{ backgroundColor: '#f8f9fa' }}
                         >
-                          {msg.content && (
-                            <Text size="sm" style={{ lineHeight: 1.55 }}>
-                              {msg.content}
-                            </Text>
-                          )}
-                          {msg.blocks && msg.blocks.length > 0 && (
-                            <Box>
-                              {msg.blocks.map((block) => (
-                                <RenderBlock key={JSON.stringify(block)} block={block} />
-                              ))}
-                            </Box>
-                          )}
-                          {msg.attachments
-                            ?.filter((attachment) => Boolean(attachment.attachmentId))
-                            .map((attachment) => {
-                              const attachmentId = attachment.attachmentId
-                              if (!attachmentId || !msg.queryResults) return null
-
-                              const queryData = msg.queryResults.get(attachmentId)
-                              if (!queryData) return null
-
-                              return (
-                                <Box key={attachmentId} mt="sm">
-                                  <GenieQueryVisualization data={queryData as GenieStatementResponse} />
-                                </Box>
-                              )
-                            })}
+                          <MessageContent
+                            msg={msg}
+                            generatedSpec={generatedSpecs[String(msg.id)]}
+                            registry={chatUiRegistry}
+                          />
                         </Paper>
                       )}
 
@@ -1623,7 +2759,7 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
                               <CopyButton text={getCopyText(msg)} />
                             )}
                             {/* Save as control button */}
-                            {msg.blocks && msg.blocks.length > 0 && (
+                            {(generatedSpecs[String(msg.id)] || (msg.blocks && msg.blocks.length > 0)) && (
                               <Tooltip label="Enregistrer comme contrôle" position="top" withArrow>
                                 <ActionIcon
                                   variant="subtle"
@@ -1896,7 +3032,7 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
                   {'Utilisateurs ayant accès au dossier'}
                 </Text>
                 <Badge size="xs" color="teal" variant="light" ml="auto">
-                  {dossierUsers.length} utilisateurs
+                  {DOSSIER_USERS.length} utilisateurs
                 </Badge>
               </Group>
             </Box>
@@ -1918,7 +3054,7 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
 
             {/* User rows */}
             <ScrollArea.Autosize mah={260}>
-              {dossierUsers.map((user) => {
+              {DOSSIER_USERS.map((user) => {
                 const currentRight = userRights[user.id] || 'lecture'
                 const rightDef = rightOptions.find((r) => r.value === currentRight) || rightOptions[0]
                 return (

@@ -2,3 +2,5 @@ command: ['npm', 'run', 'start']
 env:
   - name: DATABRICKS_GENIE_SPACE_ID
     valueFrom: genie-space
+  - name: GENIE_KNOWLEDGE_STORE_PATH
+    value: catalog_schemas_description/genie_knowledge_store.json

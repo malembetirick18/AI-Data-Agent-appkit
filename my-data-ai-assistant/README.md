@@ -118,6 +118,66 @@ npm run format
 npm run format:fix
 ```
 
+## DSPy + MLflow GenUI Plugin Setup
+
+This app includes a custom AppKit plugin endpoint at `POST /api/genui/spec` that runs a local Python DSPy script and traces each generation with MLflow.
+
+### Install Python dependencies
+
+```bash
+python -m pip install -r server/python/requirements-dspy.txt
+```
+
+### Environment variables
+
+Add these to your `.env` when using the plugin:
+
+```env
+# Optional Python executable path (defaults to "python")
+GENUI_PYTHON_EXECUTABLE=python
+
+# Optional runner override (defaults to server/python/dspy_genui_runner.py)
+GENUI_DSPY_RUNNER_PATH=server/python/dspy_genui_runner.py
+
+# Generated Genie knowledge store path
+GENIE_KNOWLEDGE_STORE_PATH=catalog_schemas_description/genie_knowledge_store.json
+
+# DSPy/LLM settings
+GENUI_DSPY_MODEL=gpt-4o-mini
+GENUI_DSPY_API_BASE=
+GENUI_DSPY_API_KEY=
+
+# MLflow tracing settings
+MLFLOW_TRACKING_URI=
+MLFLOW_EXPERIMENT_NAME=genui-dspy
+```
+
+### Genie knowledge store JSON
+
+The supervisor reads schema and function metadata from a generated JSON file located at [catalog_schemas_description/genie_knowledge_store.json](c:/Users/r.malembeti/Documents/AI-Data-Agent-appkit/my-data-ai-assistant/catalog_schemas_description/genie_knowledge_store.json).
+
+This file was generated from:
+
+- [catalog_schemas_description/mv_table_description_csv.csv](c:/Users/r.malembeti/Documents/AI-Data-Agent-appkit/my-data-ai-assistant/catalog_schemas_description/mv_table_description_csv.csv)
+- [catalog_schemas_description/mv_table_columns_description_csv.csv](c:/Users/r.malembeti/Documents/AI-Data-Agent-appkit/my-data-ai-assistant/catalog_schemas_description/mv_table_columns_description_csv.csv)
+- [catalog_schemas_description/functions_defined.csv](c:/Users/r.malembeti/Documents/AI-Data-Agent-appkit/my-data-ai-assistant/catalog_schemas_description/functions_defined.csv)
+
+The configured path is now exposed through `GENIE_KNOWLEDGE_STORE_PATH` in both local development and app deployment config.
+
+To regenerate this file from the CSV metadata sources, run:
+
+```bash
+npm run generate:knowledge-store
+```
+
+### Example request
+
+```bash
+curl -X POST http://localhost:8000/api/genui/spec \
+  -H "Content-Type: application/json" \
+  -d '{"prompt":"Summarize this as a chart and table","genieResult":{"rows":[]}}'
+```
+
 ## Deployment with Databricks Asset Bundles
 
 ### 1. Configure Bundle

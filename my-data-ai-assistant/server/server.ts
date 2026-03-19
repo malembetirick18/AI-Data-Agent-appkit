@@ -1,10 +1,36 @@
 import { createApp, genie, server } from '@databricks/appkit';
+import type { Request, Response } from 'express';
+import { genUiDspy } from './genui-dspy-plugin';
+import {
+  SUPERVISOR_APPROVAL_COOKIE_NAME,
+  clearSupervisorApprovalCookie,
+  consumeSupervisorApproval,
+  parseCookieValue,
+} from './supervisor-approval-store';
 
 const genieSpaceId = process.env.DATABRICKS_GENIE_SPACE_ID;
 
+type GuardedGenieMessageBody = {
+  content?: unknown;
+  conversationId?: unknown;
+};
+
+function writeSseEvent(res: Response, payload: unknown): void {
+  res.write(`data: ${JSON.stringify(payload)}\n\n`);
+}
+
+function openSseStream(res: Response): void {
+  res.status(200);
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache, no-transform');
+  res.setHeader('Connection', 'keep-alive');
+  res.flushHeaders?.();
+}
+
 createApp({
   plugins: [
-    server(),
+    server({ autoStart: false }),
+    genUiDspy(),
     genie(
       genieSpaceId
         ? {
@@ -15,7 +41,114 @@ createApp({
         : {},
     ),
   ],
-}).then(async () => {
+}).then(async (appKit) => {
+  appKit.server.extend((app) => {
+    app.post('/api/supervised-genie/:alias/messages', async (req: Request, res: Response) => {
+      const alias = Array.isArray(req.params.alias) ? req.params.alias[0] : req.params.alias;
+      const body = req.body as GuardedGenieMessageBody | undefined;
+      const content = typeof body?.content === 'string' ? body.content.trim() : '';
+      const conversationId = typeof body?.conversationId === 'string' ? body.conversationId : undefined;
+
+      if (!alias) {
+        clearSupervisorApprovalCookie(res);
+        res.status(400).json({ error: 'alias is required' });
+        return;
+      }
+
+      if (!content) {
+        clearSupervisorApprovalCookie(res);
+        res.status(400).json({ error: 'content is required' });
+        return;
+      }
+
+      const approvalToken = parseCookieValue(req.headers.cookie, SUPERVISOR_APPROVAL_COOKIE_NAME);
+      if (!approvalToken) {
+        clearSupervisorApprovalCookie(res);
+        res.status(403).json({
+          error: 'Genie request blocked: supervisor approval is required before sending a prompt.',
+        });
+        return;
+      }
+
+      const approval = consumeSupervisorApproval({ token: approvalToken, content });
+      clearSupervisorApprovalCookie(res);
+
+      if (!approval.ok) {
+        res.status(403).json({
+          error: `Genie request blocked: ${approval.reason}`,
+        });
+        return;
+      }
+
+      try {
+        openSseStream(res);
+
+        for await (const event of appKit.genie.asUser(req).sendMessage(alias, content, conversationId)) {
+          writeSseEvent(res, event);
+        }
+
+        res.end();
+      } catch (error) {
+        if (!res.headersSent) {
+          res.status(500).json({ error: 'Failed to stream Genie response.' });
+          return;
+        }
+
+        writeSseEvent(res, {
+          type: 'error',
+          error: error instanceof Error ? error.message : 'Failed to stream Genie response.',
+        });
+        res.end();
+      }
+    });
+
+    app.get('/api/supervised-genie/:alias/conversations/:conversationId', async (req: Request, res: Response) => {
+      const alias = Array.isArray(req.params.alias) ? req.params.alias[0] : req.params.alias;
+      const conversationId = Array.isArray(req.params.conversationId)
+        ? req.params.conversationId[0]
+        : req.params.conversationId;
+
+      if (!alias || !conversationId) {
+        res.status(400).json({ error: 'alias and conversationId are required' });
+        return;
+      }
+
+      try {
+        const conversation = await appKit.genie.asUser(req).getConversation(alias, conversationId);
+        openSseStream(res);
+
+        for (const message of conversation.messages) {
+          writeSseEvent(res, {
+            type: 'message_result',
+            message,
+          });
+        }
+
+        writeSseEvent(res, {
+          type: 'history_info',
+          conversationId: conversation.conversationId,
+          spaceId: conversation.spaceId,
+          nextPageToken: null,
+          loadedCount: conversation.messages.length,
+        });
+
+        res.end();
+      } catch (error) {
+        if (!res.headersSent) {
+          res.status(500).json({ error: 'Failed to load Genie conversation.' });
+          return;
+        }
+
+        writeSseEvent(res, {
+          type: 'error',
+          error: error instanceof Error ? error.message : 'Failed to load Genie conversation.',
+        });
+        res.end();
+      }
+    });
+  });
+
+  await appKit.server.start();
 }).catch((error) => {
   console.error('Failed to start AppKit server:', error);
 });

@@ -1,0 +1,144 @@
+import { defineCatalog } from '@json-render/core'
+import { schema as jsonRenderSchema } from '@json-render/react/schema'
+import { z } from 'zod'
+
+export const chatUiCatalog = defineCatalog(jsonRenderSchema, {
+  components: {
+    Stack: {
+      props: z.object({ gap: z.number().optional() }),
+      slots: ['default'],
+      description: 'Vertical layout container for assistant blocks.',
+    },
+    TextContent: {
+      props: z.object({
+        content: z.string(),
+        weight: z.number().optional(),
+        size: z.string().optional(),
+      }),
+      slots: [],
+      description: 'Plain text or emphasized text content.',
+    },
+    BulletList: {
+      props: z.object({ items: z.array(z.string()) }),
+      slots: [],
+      description: 'Bulleted list content.',
+    },
+    DataTable: {
+      props: z.object({
+        caption: z.string().optional(),
+        headers: z.array(z.string()),
+        rows: z.array(z.array(z.string())),
+      }),
+      slots: [],
+      description: 'Tabular content with headers and rows.',
+    },
+    LineChartViz: {
+      props: z.object({
+        title: z.string(),
+        data: z.array(z.record(z.string(), z.union([z.string(), z.number()]))),
+        lines: z.array(z.object({ key: z.string(), color: z.string(), name: z.string() })),
+        xKey: z.string(),
+        yLabel: z.string().optional(),
+        source: z.string().optional(),
+      }),
+      slots: [],
+      description: 'Line chart visualization.',
+    },
+    BarChartViz: {
+      props: z.object({
+        title: z.string(),
+        data: z.array(z.record(z.string(), z.union([z.string(), z.number()]))),
+        barKey: z.string(),
+        xKey: z.string(),
+        color: z.string(),
+      }),
+      slots: [],
+      description: 'Bar chart visualization.',
+    },
+    FormPanel: {
+      props: z.object({
+        title: z.string().optional(),
+        description: z.string().optional(),
+      }),
+      slots: ['default'],
+      description: 'Form container used to group interactive supervisor inputs.',
+    },
+    SelectInputField: {
+      props: z.object({
+        label: z.string(),
+        placeholder: z.string().optional(),
+        value: z.string().optional(),
+        required: z.boolean().optional(),
+        disabled: z.boolean().optional(),
+        options: z.array(
+          z.object({
+            value: z.string(),
+            label: z.string(),
+          }),
+        ),
+      }),
+      slots: [],
+      description: 'Mantine select input for categorical choices.',
+    },
+    TextInputField: {
+      props: z.object({
+        label: z.string(),
+        placeholder: z.string().optional(),
+        value: z.string().optional(),
+        required: z.boolean().optional(),
+        disabled: z.boolean().optional(),
+      }),
+      slots: [],
+      description: 'Mantine text input for free-form user clarification.',
+    },
+    NumberInputField: {
+      props: z.object({
+        label: z.string(),
+        placeholder: z.string().optional(),
+        value: z.number().optional(),
+        min: z.number().optional(),
+        max: z.number().optional(),
+        step: z.number().optional(),
+        required: z.boolean().optional(),
+        disabled: z.boolean().optional(),
+      }),
+      slots: [],
+      description: 'Mantine numeric input for thresholds and tolerances.',
+    },
+    ToggleField: {
+      props: z.object({
+        label: z.string(),
+        description: z.string().optional(),
+        checked: z.boolean().optional(),
+        disabled: z.boolean().optional(),
+      }),
+      slots: [],
+      description: 'Mantine toggle switch for binary workflow choices.',
+    },
+    WorkflowRuleBuilder: {
+      props: z.object({
+        title: z.string().optional(),
+        description: z.string().optional(),
+        fields: z.array(
+          z.object({
+            value: z.string(),
+            label: z.string(),
+          }),
+        ),
+        operators: z.array(z.string()).optional(),
+        rules: z.array(
+          z.object({
+            field: z.string().optional(),
+            operator: z.string().optional(),
+            valueText: z.string().optional(),
+            valueNumber: z.number().optional(),
+            valueType: z.enum(['text', 'number']).optional(),
+          }),
+        ),
+      }),
+      slots: [],
+      description: 'Workflow input builder for conditions such as equals, contains, greater than, or strictly lower than.',
+    },
+  },
+  actions: {},
+})
