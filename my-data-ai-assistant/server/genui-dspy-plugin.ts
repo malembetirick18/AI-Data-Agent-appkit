@@ -10,6 +10,31 @@ import {
   setSupervisorApprovalCookie,
 } from './supervisor-approval-store';
 
+/**
+ * Extracts the last top-level JSON object from a string that may contain
+ * non-JSON text (e.g. DSPy/MLflow debug output) before or after the JSON.
+ */
+function extractLastJsonObject(raw: string): string | undefined {
+  const trimmed = raw.trim();
+  // Fast path: the whole string is already valid JSON
+  if (trimmed.startsWith('{')) {
+    try { JSON.parse(trimmed); return trimmed; } catch { /* fall through */ }
+  }
+  // Find the last '}' and then try each '{' from left to right.
+  // Scanning left-to-right finds the OUTERMOST opening brace first,
+  // which correctly handles nested objects like [{"id":"q1"}].
+  const lastClose = trimmed.lastIndexOf('}');
+  if (lastClose < 0) return undefined;
+  let openPos = -1;
+  while (true) {
+    openPos = trimmed.indexOf('{', openPos + 1);
+    if (openPos < 0 || openPos > lastClose) break;
+    const candidate = trimmed.slice(openPos, lastClose + 1);
+    try { JSON.parse(candidate); return candidate; } catch { /* try next '{' */ }
+  }
+  return undefined;
+}
+
 interface GenUiDspyPluginConfig extends BasePluginConfig {
   pythonExecutable?: string;
   runnerScriptPath?: string;
@@ -40,6 +65,24 @@ interface SupervisorRequest {
   prompt: string;
   conversationContext?: unknown;
   genieCatalog?: unknown;
+}
+
+interface ChartProposalRequest {
+  prompt: string;
+  statementResponse: unknown;
+}
+
+interface ChartProposalItem {
+  chartType: string;
+  label: string;
+  rationale: string;
+}
+
+interface ChartProposalResponse {
+  chartProposals: ChartProposalItem[];
+  recommendation: string | null;
+  analysisNote?: string;
+  traceId?: string;
 }
 
 interface GenerateSpecResponse {
@@ -77,13 +120,44 @@ interface SupervisorResponse {
   decision: 'clarify' | 'guide' | 'proceed' | 'error';
   message: string;
   rewrittenPrompt?: string;
+  enrichedPrompt?: string;
   suggestedTables?: string[];
   suggestedFunctions?: string[];
   questions?: SupervisorQuestion[];
   confidence?: number;
+  requiredColumns?: string[];
+  predictiveFunctions?: string[];
+  queryClassification?: string;
   traceId?: string;
   model?: string;
   catalogSource?: 'payload' | 'env-json' | 'env-file' | 'empty';
+}
+
+/**
+ * Builds an enriched prompt that includes the rewritten query plus all
+ * useful supervisor analysis metadata (tables, functions, columns) so
+ * that Genie AI/BI can generate more accurate SQL.
+ */
+function buildEnrichedPrompt(supervised: SupervisorResponse, fallbackPrompt: string): string {
+  const base = supervised.rewrittenPrompt?.trim() || fallbackPrompt;
+  const parts: string[] = [base];
+
+  const tables = supervised.suggestedTables;
+  if (tables && tables.length > 0) {
+    parts.push(`Tables \u00e0 utiliser : ${tables.join(', ')}`);
+  }
+
+  const functions = supervised.suggestedFunctions ?? supervised.predictiveFunctions;
+  if (functions && functions.length > 0) {
+    parts.push(`Fonctions à utiliser : ${functions.join(', ')}`);
+  }
+
+  const columns = supervised.requiredColumns;
+  if (columns && columns.length > 0) {
+    parts.push(`Colonnes requises : ${columns.join(', ')}`);
+  }
+
+  return parts.join('\n');
 }
 
 function isSupervisorApproved(decision: SupervisorResponse['decision'], confidence?: number): boolean {
@@ -177,6 +251,7 @@ class GenUiDspyPlugin extends Plugin<GenUiDspyPluginConfig> {
     // The global AppKit parser (100 kb) is bypassed via skipBodyParsing below.
     router.use('/spec', express.json({ limit: '5mb' }));
     router.use('/supervisor', express.json({ limit: '5mb' }));
+    router.use('/chart-proposal', express.json({ limit: '5mb' }));
 
     this.route(router, {
       name: 'generate-spec',
@@ -221,6 +296,8 @@ class GenUiDspyPlugin extends Plugin<GenUiDspyPluginConfig> {
           return;
         }
 
+        console.log('[supervisor-preflight] Running analysis for prompt:', prompt.slice(0, 120));
+
         const supervised = await this.runSupervisorAnalysis({
           prompt,
           conversationContext: body.conversationContext,
@@ -228,18 +305,22 @@ class GenUiDspyPlugin extends Plugin<GenUiDspyPluginConfig> {
         });
 
         if (!supervised) {
+          console.error('[supervisor-preflight] Analysis returned undefined — check Python runner logs above');
           clearSupervisorApprovalCookie(res);
           res.status(502).json({
             decision: 'error',
-            message: 'Supervisor analysis failed',
+            message: 'Echec de l\'Agent IA — le processus Python n\'a pas retourné de résultat valide. Consultez les logs serveur.',
           } satisfies SupervisorResponse);
           return;
         }
 
+        console.log('[supervisor-preflight] Decision:', supervised.decision, '| Confidence:', supervised.confidence);
+
         if (isSupervisorApproved(supervised.decision, supervised.confidence) || supervised.decision === 'guide') {
-          const approvedPrompt = supervised.rewrittenPrompt?.trim() || prompt;
+          const enriched = buildEnrichedPrompt(supervised, prompt);
+          supervised.enrichedPrompt = enriched;
           const approvalToken = issueSupervisorApproval({
-            approvedPrompt,
+            approvedPrompt: enriched,
             traceId: supervised.traceId,
           });
           setSupervisorApprovalCookie(res, approvalToken);
@@ -248,6 +329,41 @@ class GenUiDspyPlugin extends Plugin<GenUiDspyPluginConfig> {
         }
 
         res.status(200).json(supervised);
+      },
+    });
+
+    this.route(router, {
+      name: 'chart-proposal',
+      method: 'post',
+      path: '/chart-proposal',
+      skipBodyParsing: true,
+      handler: async (req, res) => {
+        const body = req.body as ChartProposalRequest;
+        const prompt = typeof body?.prompt === 'string' ? body.prompt.trim() : '';
+
+        if (!body.statementResponse) {
+          res.status(400).json({ error: 'statementResponse is required' });
+          return;
+        }
+
+        console.log('[chart-proposal] Analyzing data for prompt:', prompt.slice(0, 120));
+
+        const proposals = await this.runChartProposalAnalysis({
+          prompt,
+          statementResponse: body.statementResponse,
+        });
+
+        if (!proposals) {
+          res.status(200).json({
+            chartProposals: [],
+            recommendation: null,
+            analysisNote: 'Chart analysis could not be performed.',
+          } satisfies ChartProposalResponse);
+          return;
+        }
+
+        console.log('[chart-proposal] Proposals:', proposals.chartProposals?.length, '| Recommendation:', proposals.recommendation);
+        res.status(200).json(proposals);
       },
     });
   }
@@ -324,11 +440,12 @@ class GenUiDspyPlugin extends Plugin<GenUiDspyPluginConfig> {
   }
 
   private async runDspyGeneration(payload: GenerateSpecRequest): Promise<GenerateSpecResponse | undefined> {
-    const pythonExecutable = this.config.pythonExecutable || process.env.GENUI_PYTHON_EXECUTABLE || 'python';
-    const runnerScriptPath =
+    const rawPythonExecutable = this.config.pythonExecutable || process.env.GENUI_PYTHON_EXECUTABLE || 'python';
+    const pythonExecutable = rawPythonExecutable.includes('/') || rawPythonExecutable.includes('\\') ? resolve(process.cwd(), rawPythonExecutable) : rawPythonExecutable;
+    const runnerScriptPath = resolve(process.cwd(),
       this.config.runnerScriptPath ||
       process.env.GENUI_DSPY_RUNNER_PATH ||
-      resolve(process.cwd(), 'server', 'python', 'dspy_genui_runner.py');
+      resolve(process.cwd(), 'server', 'python', 'dspy_genui_runner.py'));
     const timeoutMs = this.config.timeoutMs || Number(process.env.GENUI_DSPY_TIMEOUT_MS || 60000);
 
     const depsReady = await this.ensurePythonDependencies(pythonExecutable, timeoutMs);
@@ -350,10 +467,11 @@ class GenUiDspyPlugin extends Plugin<GenUiDspyPluginConfig> {
   }
 
   private async runSupervisorAnalysis(payload: SupervisorRequest): Promise<SupervisorResponse | undefined> {
-    const pythonExecutable = this.config.pythonExecutable || process.env.GENUI_PYTHON_EXECUTABLE || 'python';
-    const runnerScriptPath =
+    const rawPythonExecutable = this.config.pythonExecutable || process.env.GENUI_PYTHON_EXECUTABLE || 'python';
+    const pythonExecutable = rawPythonExecutable.includes('/') || rawPythonExecutable.includes('\\') ? resolve(process.cwd(), rawPythonExecutable) : rawPythonExecutable;
+    const runnerScriptPath = resolve(process.cwd(),
       process.env.GENUI_SUPERVISOR_RUNNER_PATH ||
-      resolve(process.cwd(), 'server', 'python', 'dspy_supervisor_runner.py');
+      resolve(process.cwd(), 'server', 'python', 'dspy_supervisor_runner.py'));
     const timeoutMs = Number(process.env.GENUI_SUPERVISOR_TIMEOUT_MS || this.config.timeoutMs || 45000);
 
     const depsReady = await this.ensurePythonDependencies(pythonExecutable, timeoutMs);
@@ -367,10 +485,36 @@ class GenUiDspyPlugin extends Plugin<GenUiDspyPluginConfig> {
       timeoutMs,
       payload,
       validator: (parsed) => Boolean(parsed && typeof parsed === 'object' && 'decision' in parsed && 'message' in parsed),
-      invalidMessage: '[genUiDspy] Invalid supervisor payload',
-      errorPrefix: '[genUiDspy] Failed to start supervisor runner:',
-      exitPrefix: '[genUiDspy] Supervisor runner exited with error:',
-      parsePrefix: '[genUiDspy] Failed to parse supervisor output:',
+      invalidMessage: '[genUiDspy] Invalid AI agent payload',
+      errorPrefix: '[genUiDspy] Failed to start AI agent runner:',
+      exitPrefix: '[genUiDspy] AI agent runner exited with error:',
+      parsePrefix: '[genUiDspy] Failed to parse AI agent output:',
+    });
+  }
+
+  private async runChartProposalAnalysis(payload: ChartProposalRequest): Promise<ChartProposalResponse | undefined> {
+    const rawPythonExecutable = this.config.pythonExecutable || process.env.GENUI_PYTHON_EXECUTABLE || 'python';
+    const pythonExecutable = rawPythonExecutable.includes('/') || rawPythonExecutable.includes('\\') ? resolve(process.cwd(), rawPythonExecutable) : rawPythonExecutable;
+    const runnerScriptPath = resolve(process.cwd(),
+      process.env.GENUI_SUPERVISOR_RUNNER_PATH ||
+      resolve(process.cwd(), 'server', 'python', 'dspy_supervisor_runner.py'));
+    const timeoutMs = Number(process.env.GENUI_CHART_PROPOSAL_TIMEOUT_MS || this.config.timeoutMs || 30000);
+
+    const depsReady = await this.ensurePythonDependencies(pythonExecutable, timeoutMs);
+    if (!depsReady) {
+      return undefined;
+    }
+
+    return await this.runJsonPythonRunner<ChartProposalResponse>({
+      pythonExecutable,
+      runnerScriptPath,
+      timeoutMs,
+      payload: { ...payload, mode: 'chart-proposal' },
+      validator: (parsed) => Boolean(parsed && typeof parsed === 'object' && 'chartProposals' in parsed),
+      invalidMessage: '[genUiDspy] Invalid chart proposal payload',
+      errorPrefix: '[genUiDspy] Failed to start chart proposal runner:',
+      exitPrefix: '[genUiDspy] Chart proposal runner exited with error:',
+      parsePrefix: '[genUiDspy] Failed to parse chart proposal output:',
     });
   }
 
@@ -469,6 +613,7 @@ class GenUiDspyPlugin extends Plugin<GenUiDspyPluginConfig> {
     } = params;
 
     return await new Promise<T | undefined>((resolvePromise) => {
+      console.log(`[genUiDspy] Spawning: ${pythonExecutable} ${runnerScriptPath}`);
       const child = spawn(pythonExecutable, [runnerScriptPath], {
         stdio: ['pipe', 'pipe', 'pipe'],
         env: {
@@ -479,6 +624,7 @@ class GenUiDspyPlugin extends Plugin<GenUiDspyPluginConfig> {
       });
 
       const timer = setTimeout(() => {
+        console.warn(`[genUiDspy] Python runner timed out after ${timeoutMs}ms — killing process`);
         child.kill('SIGTERM');
       }, timeoutMs);
 
@@ -495,7 +641,7 @@ class GenUiDspyPlugin extends Plugin<GenUiDspyPluginConfig> {
 
       child.on('error', (error) => {
         clearTimeout(timer);
-        console.error(errorPrefix, error);
+        console.error(errorPrefix, { error: error.message, pythonExecutable, runnerScriptPath });
         resolvePromise(undefined);
       });
 
@@ -504,23 +650,51 @@ class GenUiDspyPlugin extends Plugin<GenUiDspyPluginConfig> {
 
         // Always attempt to parse stdout — the Python script may output valid
         // JSON (e.g. a decision:'error' response) even on non-zero exit codes.
+        // DSPy/MLflow may print debug messages to stdout before the JSON, so
+        // we extract the last JSON object from the output.
         if (stdout.trim()) {
-          try {
-            const parsed = JSON.parse(stdout) as T;
-            if (validator(parsed)) {
-              if (code !== 0) {
-                console.warn(exitPrefix, { code, note: 'recovered valid JSON from stdout' });
+          const jsonCandidate = extractLastJsonObject(stdout);
+          if (jsonCandidate) {
+            try {
+              const parsed = JSON.parse(jsonCandidate) as T;
+              if (validator(parsed)) {
+                if (code !== 0) {
+                  console.warn(exitPrefix, { code, note: 'recovered valid JSON from stdout' });
+                }
+                resolvePromise(parsed);
+                return;
               }
-              resolvePromise(parsed);
-              return;
+              // Validator rejected the parsed JSON
+              console.error(exitPrefix, {
+                code,
+                note: 'stdout contained valid JSON but validator rejected it',
+                parsedKeys: Object.keys(parsed as Record<string, unknown>),
+                stdout: stdout.slice(0, 2000),
+              });
+            } catch {
+              console.error(exitPrefix, {
+                code,
+                note: 'extracted candidate is not valid JSON',
+                candidate: jsonCandidate.slice(0, 1000),
+              });
             }
-          } catch {
-            // stdout is not valid JSON — fall through to error path
+          } else {
+            console.error(exitPrefix, {
+              code,
+              note: 'could not extract JSON object from stdout',
+              stdout: stdout.slice(0, 2000),
+              stderr: stderr.slice(0, 2000),
+            });
           }
+        } else {
+          console.error(exitPrefix, {
+            code,
+            note: 'stdout is empty',
+            stderr: stderr.slice(0, 4000),
+          });
         }
 
         if (code !== 0) {
-          console.error(exitPrefix, { code, stderr: stderr.slice(0, 4000) });
           resolvePromise(undefined);
           return;
         }

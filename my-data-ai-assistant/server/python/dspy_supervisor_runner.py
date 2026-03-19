@@ -25,8 +25,8 @@ class RunnerConfig:
     temperature: float
     api_version: str | None
     max_tokens: int
-    cache: str
-    num_retries: str
+    cache: bool
+    num_retries: int
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
@@ -42,8 +42,8 @@ def _load_config() -> RunnerConfig:
     api_key = os.getenv("AZURE_API_KEY")
     temperature = float(os.getenv("SUPERVISOR_TEMPERATURE", os.getenv("TEMPERATURE", "0.0")))
     max_tokens = int(os.getenv("SUPERVISOR_MAX_TOKENS", os.getenv("MAX_TOKENS", "12000")))
-    dspy_cache = os.getenv("DSPY_CACHE", "true")
-    num_retries = os.getenv("DSPY_RETRY_ATTEMPTS", "3")
+    dspy_cache = _env_bool("DSPY_CACHE", True)
+    num_retries = int(os.getenv("DSPY_RETRY_ATTEMPTS", "3"))
     model_version = os.getenv("AZURE_OPENAI_API_VERSION")
     return RunnerConfig(
         model=model,
@@ -98,12 +98,32 @@ def _parse_json_array(raw_value: str) -> list[str]:
 
 
 def _parse_decision_json(raw_value: str) -> dict[str, Any] | None:
+    # LLMs often wrap JSON in markdown code blocks — strip them first
+    cleaned = raw_value.strip()
+    if cleaned.startswith("```"):
+        # Remove opening ```json or ``` line
+        first_newline = cleaned.find("\n")
+        if first_newline >= 0:
+            cleaned = cleaned[first_newline + 1:]
+        # Remove closing ```
+        if cleaned.rstrip().endswith("```"):
+            cleaned = cleaned.rstrip()[:-3].rstrip()
     try:
-        parsed = json.loads(raw_value)
+        parsed = json.loads(cleaned)
         if isinstance(parsed, dict):
             return parsed
     except Exception:
-        return None
+        pass
+    # Fallback: try to find a JSON object in the raw string
+    start = raw_value.find("{")
+    end = raw_value.rfind("}")
+    if start >= 0 and end > start:
+        try:
+            parsed = json.loads(raw_value[start:end + 1])
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            pass
     return None
 
 
@@ -360,6 +380,18 @@ class SupervisorDecisionSignature(dspy.Signature):
       interpretations), or when no table in catalog_info is even remotely relevant
     - error: use when the request is completely outside the supported data scope
 
+    Confidence scoring rules (CRITICAL — follow strictly):
+    - confidence is a float between 0.0 and 1.0
+    - When decision is 'proceed' and the user intent clearly maps to one or more tables in catalog_info,
+      set confidence >= 0.92. Most 'proceed' decisions should have confidence between 0.92 and 0.98.
+    - When decision is 'proceed' but the mapping is less obvious (e.g. requires assumptions),
+      set confidence between 0.70 and 0.89.
+    - When decision is 'guide', set confidence between 0.40 and 0.69.
+    - When decision is 'clarify', set confidence between 0.10 and 0.39.
+    - When decision is 'error', set confidence to 0.0.
+    - Do NOT default to low confidence values like 0.5 or 0.7 for clear 'proceed' cases.
+      If the intent is clear and tables exist, confidence MUST be >= 0.92.
+
     Constraints:
     - Never invent tables, columns, functions, or business rules
     - Use only metadata available in catalog_info
@@ -397,6 +429,46 @@ class SupervisorDecisionSignature(dspy.Signature):
     rewritten_prompt = dspy.InputField(desc="Rewritten clear query")
     conversation_context = dspy.InputField(desc="Recent chat context")
     decision_json = dspy.OutputField(desc="JSON object string containing the supervisor decision")
+
+
+class ChartRecommendationSignature(dspy.Signature):
+    """Analyze Genie SQL query results and recommend the 2 best chart types for visualization.
+
+    You receive column metadata (names and types) and a sample of result rows.
+    Based on the data shape, recommend exactly 2 chart types from this list:
+    bar, line, area, donut, radar
+
+    Selection rules:
+    - bar: best for comparing discrete categories or single numeric columns
+    - line: best for time series or ordered sequential data with multiple series
+    - area: like line but emphasizes volume/magnitude — use for cumulative or stacked data
+    - donut: best for part-of-whole proportions with few categories (< 8)
+    - radar: best for multi-dimensional comparison across several metrics
+
+    Return ONLY a JSON object with this shape:
+    {
+      "chartProposals": [
+        {
+          "chartType": "bar",
+          "label": "Bar chart — comparaison par catégorie",
+          "rationale": "Short explanation of why this chart fits the data"
+        },
+        {
+          "chartType": "line",
+          "label": "Line chart — évolution temporelle",
+          "rationale": "Short explanation of why this chart fits the data"
+        }
+      ],
+      "recommendation": "bar",
+      "analysisNote": "Brief data shape analysis"
+    }
+    """
+
+    prompt = dspy.InputField(desc="Original user query")
+    column_metadata = dspy.InputField(desc="JSON array of column definitions with name and type")
+    sample_rows = dspy.InputField(desc="JSON array of first few result rows")
+    row_count = dspy.InputField(desc="Total number of result rows")
+    chart_proposals_json = dspy.OutputField(desc="JSON object with chartProposals array")
 
 
 class QueryClassificationModule(dspy.Module):
@@ -461,6 +533,26 @@ class SupervisorDecisionModule(dspy.Module):
         )
 
 
+class ChartRecommendationModule(dspy.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.predict = dspy.Predict(ChartRecommendationSignature)
+
+    def forward(
+        self,
+        prompt: str,
+        column_metadata: str,
+        sample_rows: str,
+        row_count: str,
+    ):
+        return self.predict(
+            prompt=prompt,
+            column_metadata=column_metadata,
+            sample_rows=sample_rows,
+            row_count=row_count,
+        )
+
+
 class SupervisorAgent(dspy.Module):
     def __init__(self) -> None:
         super().__init__()
@@ -507,7 +599,7 @@ class SupervisorAgent(dspy.Module):
         if not parsed_decision:
             return {
                 "decision": "guide",
-                "message": "Le superviseur n'a pas pu produire une décision structurée. Envoi à Genie avec le prompt reformulé.",
+                "message": "L'agent IA n'a pas pu produire une décision structurée. Envoi à Genie avec le prompt reformulé.",
                 "rewrittenPrompt": rewritten_prompt,
                 "suggestedTables": [],
                 "suggestedFunctions": [],
@@ -559,7 +651,7 @@ def _generate_supervisor_response(payload: dict[str, Any]) -> dict[str, Any]:
 
     agent = SupervisorAgent()
 
-    with mlflow.start_run(run_name="dspy-supervisor") as run:
+    with mlflow.start_run(run_name="dspy-proxy-agent") as run:
         lm_kwargs = {k: v for k, v in asdict(config).items() if v is not None}
         ctx_kwargs = {"lm": dspy.LM(**lm_kwargs)}
 
@@ -587,25 +679,124 @@ def _generate_supervisor_response(payload: dict[str, Any]) -> dict[str, Any]:
             return response
 
 
+def _generate_chart_proposal(payload: dict[str, Any]) -> dict[str, Any]:
+    """Analyze Genie query results and propose 2 chart types for user confirmation."""
+    prompt = str(payload.get("prompt", "")).strip()
+    statement_response = payload.get("statementResponse")
+
+    if not statement_response or not isinstance(statement_response, dict):
+        return {
+            "chartProposals": [],
+            "recommendation": None,
+            "analysisNote": "No query results provided for chart analysis.",
+        }
+
+    manifest = statement_response.get("manifest", {})
+    result = statement_response.get("result", {})
+    columns = manifest.get("schema", {}).get("columns", [])
+    data_array = result.get("data_array", [])
+
+    if not columns or not data_array:
+        return {
+            "chartProposals": [],
+            "recommendation": None,
+            "analysisNote": "Empty result set — no chart applicable.",
+        }
+
+    column_metadata = [
+        {"name": col.get("name", ""), "type": col.get("type_name", "STRING")}
+        for col in columns
+    ]
+    sample_rows = data_array[:10]
+    row_count = len(data_array)
+
+    config = _load_config()
+    _setup_dspy_and_mlflow()
+
+    chart_module = ChartRecommendationModule()
+
+    with mlflow.start_run(run_name="dspy-chart-proposal") as run:
+        lm_kwargs = {k: v for k, v in asdict(config).items() if v is not None}
+        ctx_kwargs = {"lm": dspy.LM(**lm_kwargs)}
+
+        with dspy.settings.context(**ctx_kwargs):
+            mlflow.log_param("dspy_model", os.getenv("GENUI_DSPY_MODEL", "openai/gpt-4o-mini"))
+            mlflow.log_param("prompt_length", len(prompt))
+            mlflow.log_param("column_count", len(column_metadata))
+            mlflow.log_metric("row_count", float(row_count))
+
+            result_obj = chart_module(
+                prompt=prompt,
+                column_metadata=_safe_json_dumps(column_metadata),
+                sample_rows=_safe_json_dumps(sample_rows),
+                row_count=str(row_count),
+            )
+
+            raw_proposals = str(getattr(result_obj, "chart_proposals_json", "{}")).strip()
+            parsed = _parse_decision_json(raw_proposals)
+
+            if not parsed or not isinstance(parsed.get("chartProposals"), list):
+                return {
+                    "chartProposals": [],
+                    "recommendation": None,
+                    "analysisNote": "Chart analysis did not return valid proposals.",
+                    "traceId": run.info.run_id,
+                }
+
+            parsed["traceId"] = run.info.run_id
+            mlflow.log_param("recommendation", parsed.get("recommendation", "none"))
+            mlflow.log_metric(
+                "proposal_count",
+                float(len(parsed.get("chartProposals", []))),
+            )
+            return parsed
+
+
 def main() -> None:
     raw_input = sys.stdin.read()
     if not raw_input.strip():
-        print(json.dumps({"error": "No input payload provided"}))
+        print(json.dumps({
+            "decision": "error",
+            "message": "No input payload provided",
+            "questions": [],
+            "suggestedTables": [],
+            "suggestedFunctions": [],
+            "confidence": 0.0,
+        }))
         sys.exit(1)
 
     try:
         payload = json.loads(raw_input)
     except Exception:
-        print(json.dumps({"error": "Invalid JSON input"}))
-        sys.exit(1)
-
-    try:
-        result = _generate_supervisor_response(payload)
-        print(json.dumps(result, ensure_ascii=False))
-    except Exception as exc:
         print(json.dumps({
             "decision": "error",
-            "message": str(exc),
+            "message": "Invalid JSON input",
+            "questions": [],
+            "suggestedTables": [],
+            "suggestedFunctions": [],
+            "confidence": 0.0,
+        }))
+        sys.exit(1)
+
+    mode = str(payload.get("mode", "supervisor")).strip()
+
+    try:
+        if mode == "chart-proposal":
+            result = _generate_chart_proposal(payload)
+        else:
+            result = _generate_supervisor_response(payload)
+        # Use ensure_ascii=True to avoid encoding issues on Windows pipes
+        print(json.dumps(result, ensure_ascii=True))
+    except Exception as exc:
+        error_msg = str(exc)
+        try:
+            # Sanitize to ASCII-safe
+            error_msg = error_msg.encode('ascii', errors='replace').decode('ascii')
+        except Exception:
+            error_msg = "Unknown proxy agent error"
+        print(json.dumps({
+            "decision": "error",
+            "message": error_msg,
             "questions": [],
             "suggestedTables": [],
             "suggestedFunctions": [],

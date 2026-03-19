@@ -65,14 +65,23 @@ import {
   ResponsiveContainer,
   BarChart,
   Bar,
+  AreaChart,
+  Area,
+  PieChart,
+  Pie,
+  Cell,
+  RadarChart,
+  Radar,
+  PolarAngleAxis,
+  PolarGrid,
+  PolarRadiusAxis,
   Tooltip as RechartTooltip,
 } from 'recharts'
 import { type Spec } from '@json-render/core'
 import { JSONUIProvider, Renderer, defineRegistry } from '@json-render/react'
 import { chatUiCatalog } from '../../../shared/genui-catalog'
-import { Button as AntButton, Checkbox as AntCheckbox, Dropdown as AntDropdown, Input as AntInput, Space as AntSpace, Table as AntTable } from 'antd'
-import type { ColumnType } from 'antd/es/table'
-import { useGenieChat } from '@databricks/appkit-ui/react'
+
+import { useGenieChat, GenieQueryVisualization, DataTable as AppKitDataTable } from '@databricks/appkit-ui/react'
 import type { GenieAttachmentResponse, GenieStatementResponse } from '@databricks/appkit-ui/react'
 
 /* ------------------------------------------------------------------ */
@@ -160,6 +169,7 @@ interface SupervisorApiResponse {
   decision: 'clarify' | 'guide' | 'proceed' | 'error'
   message: string
   rewrittenPrompt?: string
+  enrichedPrompt?: string
   suggestedTables?: string[]
   suggestedFunctions?: string[]
   questions?: SupervisorQuestion[]
@@ -184,10 +194,13 @@ interface PendingClarification {
   message: string
   decision: 'clarify' | 'guide' | 'proceed' | 'error'
   rewrittenPrompt?: string
+  enrichedPrompt?: string
   questions: SupervisorQuestion[]
   suggestedTables: string[]
   suggestedFunctions: string[]
   traceId?: string
+  /** When true, the supervisor already approved — user just needs to confirm before Genie */
+  canSendDirectly?: boolean
 }
 
 function isSupervisorApproved(decision: SupervisorApiResponse['decision'], confidence?: number): boolean {
@@ -574,48 +587,15 @@ const { registry: chatUiRegistry } = defineRegistry(chatUiCatalog, {
         ))}
       </List>
     ),
-    DataTable: ({ props }) => (
-      <Box mt="xs" mb="xs">
-        {props.caption && <Text size="xs" c="dimmed" mb={4} fs="italic">{props.caption}</Text>}
-        <Box style={{ overflowX: 'auto' }}>
-          <Table
-            striped
-            highlightOnHover
-            withTableBorder
-            withColumnBorders
-            fz="xs"
-            styles={{
-              table: { minWidth: 360 },
-              th: {
-                backgroundColor: '#f8f9fa',
-                fontWeight: 600,
-                fontSize: 11,
-                padding: '6px 8px',
-                whiteSpace: 'nowrap',
-              },
-              td: { padding: '5px 8px', fontSize: 11 },
-            }}
-          >
-            <Table.Thead>
-              <Table.Tr>
-                {props.headers.map((h) => (
-                  <Table.Th key={h}>{h}</Table.Th>
-                ))}
-              </Table.Tr>
-            </Table.Thead>
-            <Table.Tbody>
-              {props.rows.map((row) => (
-                <Table.Tr key={row.join('|')}>
-                  {row.map((cell) => (
-                    <Table.Td key={cell}>{cell}</Table.Td>
-                  ))}
-                </Table.Tr>
-              ))}
-            </Table.Tbody>
-          </Table>
+    DataTable: ({ props }) => {
+      const stmtData = toStatementResponseFromTable(props.headers, props.rows)
+      return (
+        <Box mt="xs" mb="xs">
+          {props.caption && <Text size="xs" c="dimmed" mb={4} fs="italic">{props.caption}</Text>}
+          <GenieQueryVisualization data={stmtData} />
         </Box>
-      </Box>
-    ),
+      )
+    },
     LineChartViz: ({ props }) => (
       <Box mt="md" mb="sm">
         <Text size="xs" fw={600} mb="xs">{props.title}</Text>
@@ -658,6 +638,18 @@ const { registry: chatUiRegistry } = defineRegistry(chatUiCatalog, {
             </BarChart>
           </ResponsiveContainer>
         </Paper>
+      </Box>
+    ),
+    QueryDataTable: ({ props }) => (
+      <Box mt="xs" mb="xs">
+        {props.caption && <Text size="xs" c="dimmed" mb={4} fs="italic">{props.caption}</Text>}
+        <AppKitDataTable
+          queryKey={props.queryKey}
+          parameters={props.parameters ?? {}}
+          filterColumn={props.filterColumn}
+          filterPlaceholder={props.filterPlaceholder}
+          pageSize={props.pageSize ?? 10}
+        />
       </Box>
     ),
     FormPanel: ({ props, children }) => (
@@ -794,8 +786,391 @@ const { registry: chatUiRegistry } = defineRegistry(chatUiCatalog, {
         </Paper>
       )
     },
+    ChartProposal: ({ props }) => <ChartProposalPanel proposals={props.proposals} title={props.title} description={props.description} />,
   },
 })
+
+/**
+ * Convert plain headers + rows (from catalog DataTable or legacy blocks)
+ * into a GenieStatementResponse so GenieQueryVisualization can render
+ * with auto chart inference + table tabs.
+ */
+function toStatementResponseFromTable(
+  headers: string[],
+  rows: string[][],
+): GenieStatementResponse {
+  return {
+    manifest: {
+      schema: {
+        columns: headers.map((name) => ({
+          name,
+          type_name: 'STRING',
+          type_text: 'STRING',
+          position: 0,
+        })),
+      },
+    },
+    result: {
+      data_array: rows,
+    },
+  } as GenieStatementResponse
+}
+
+/* ------------------------------------------------------------------ */
+/*  ChartProposalPanel — interactive chart type selector                */
+/* ------------------------------------------------------------------ */
+
+interface ChartProposalItem {
+  chartType: string
+  label: string
+  rationale: string
+}
+
+interface ChartProposalApiResponse {
+  chartProposals: ChartProposalItem[]
+  recommendation: string | null
+  analysisNote?: string
+  traceId?: string
+}
+
+const CHART_TYPE_ICONS: Record<string, string> = {
+  bar: '📊',
+  line: '📈',
+  area: '📉',
+  donut: '🍩',
+  radar: '🕸️',
+}
+
+function ChartProposalPanel({
+  proposals,
+  title,
+  description,
+  selected,
+  onSelect,
+}: {
+  proposals: ChartProposalItem[]
+  title?: string
+  description?: string
+  selected?: string | null
+  onSelect?: (chartType: string) => void
+}) {
+  if (!proposals || proposals.length === 0) return null
+
+  return (
+    <Paper p="sm" withBorder radius="md" mt="xs" mb="xs" style={{ backgroundColor: '#fefefe' }}>
+      {title && <Text size="sm" fw={600} mb={4}>{title}</Text>}
+      {description && <Text size="xs" c="dimmed" mb="sm">{description}</Text>}
+
+      <Group gap="sm" grow>
+        {proposals.map((proposal) => {
+          const isSelected = selected === proposal.chartType
+          return (
+            <Paper
+              key={proposal.chartType}
+              p="sm"
+              radius="sm"
+              withBorder
+              style={{
+                cursor: 'pointer',
+                borderColor: isSelected ? '#228be6' : '#dee2e6',
+                backgroundColor: isSelected ? '#e7f5ff' : '#fff',
+                transition: 'all 150ms ease',
+              }}
+              onClick={() => onSelect?.(proposal.chartType)}
+            >
+              <Group gap={6} mb={4}>
+                <Text size="lg">{CHART_TYPE_ICONS[proposal.chartType] ?? '📊'}</Text>
+                <Text size="xs" fw={600}>{proposal.label}</Text>
+              </Group>
+              <Text size="xs" c="dimmed" style={{ lineHeight: 1.4 }}>
+                {proposal.rationale}
+              </Text>
+              {isSelected && (
+                <Badge size="xs" variant="light" color="blue" mt={6}>
+                  Sélectionné
+                </Badge>
+              )}
+            </Paper>
+          )
+        })}
+      </Group>
+    </Paper>
+  )
+}
+
+/* ------------------------------------------------------------------ */
+/*  Chart data transformation + rendering from GenieStatementResponse  */
+/* ------------------------------------------------------------------ */
+
+const CHART_COLORS = ['#228be6', '#40c057', '#fab005', '#fa5252', '#7950f2', '#15aabf', '#e64980', '#82c91e']
+
+interface ChartDataRow {
+  [key: string]: string | number
+}
+
+/**
+ * Transform GenieStatementResponse into Recharts-friendly data.
+ * Returns column metadata + converted rows (numeric columns parsed as numbers).
+ */
+function transformStatementToChartData(statement: GenieStatementResponse): {
+  columns: { name: string; type: string }[]
+  categoryColumn: string | null
+  numericColumns: string[]
+  data: ChartDataRow[]
+} {
+  const columns = (statement.manifest?.schema?.columns ?? []).map((col) => ({
+    name: col.name,
+    type: col.type_name ?? 'STRING',
+  }))
+  const rawRows = statement.result?.data_array ?? []
+
+  const numericTypes = new Set(['INT', 'INTEGER', 'BIGINT', 'LONG', 'SHORT', 'TINYINT', 'FLOAT', 'DOUBLE', 'DECIMAL', 'NUMERIC', 'NUMBER'])
+
+  // Detect numeric columns: use type metadata, but also check actual values
+  const numericColumns: string[] = []
+  const stringColumns: string[] = []
+  for (const col of columns) {
+    const upperType = (col.type ?? 'STRING').toUpperCase()
+    if (numericTypes.has(upperType) || upperType.startsWith('DECIMAL')) {
+      numericColumns.push(col.name)
+    } else {
+      // Known string-like types should never be promoted to numeric,
+      // even if their values look like numbers (e.g. years: "2020", "2021")
+      const knownStringTypes = new Set(['STRING', 'VARCHAR', 'CHAR', 'DATE', 'TIMESTAMP', 'BOOLEAN', 'BINARY', 'ARRAY', 'MAP', 'STRUCT', 'INTERVAL'])
+      if (knownStringTypes.has(upperType)) {
+        stringColumns.push(col.name)
+      } else {
+        // Unknown/ambiguous type — sample first few rows to decide
+        const colIdx = columns.findIndex((c) => c.name === col.name)
+        const sample = rawRows.slice(0, 10).map((row) => row[colIdx])
+        const allNumeric = sample.length > 0 && sample.every((v) => v != null && v !== '' && !isNaN(Number(v)))
+        if (allNumeric) {
+          numericColumns.push(col.name)
+        } else {
+          stringColumns.push(col.name)
+        }
+      }
+    }
+  }
+
+  const categoryColumn = stringColumns[0] ?? null
+
+  const data: ChartDataRow[] = rawRows.map((row) => {
+    const obj: ChartDataRow = {}
+    columns.forEach((col, idx) => {
+      const raw = row[idx]
+      if (numericColumns.includes(col.name)) {
+        obj[col.name] = raw != null && raw !== '' ? Number(raw) : 0
+      } else {
+        obj[col.name] = raw ?? ''
+      }
+    })
+    return obj
+  })
+
+  return { columns, categoryColumn, numericColumns, data }
+}
+
+/**
+ * Renders the selected chart type using Recharts, consuming Genie statement data.
+ */
+function SelectedChartRenderer({
+  chartType,
+  statement,
+}: {
+  chartType: string
+  statement: GenieStatementResponse
+}) {
+  const { categoryColumn, numericColumns, data } = useMemo(
+    () => transformStatementToChartData(statement),
+    [statement],
+  )
+
+  if (data.length === 0 || numericColumns.length === 0) {
+    return (
+      <Text size="xs" c="dimmed" ta="center" mt="xs">
+        Données insuffisantes pour générer un graphique.
+      </Text>
+    )
+  }
+
+  const xKey = categoryColumn ?? numericColumns[0]
+  const valueKeys = categoryColumn ? numericColumns : numericColumns.slice(1)
+
+  if (valueKeys.length === 0) {
+    return (
+      <Text size="xs" c="dimmed" ta="center" mt="xs">
+        Pas assez de colonnes numériques pour ce type de graphique.
+      </Text>
+    )
+  }
+
+  if (chartType === 'bar') {
+    return (
+      <Paper p="xs" withBorder radius="sm" mt="sm" style={{ backgroundColor: '#fff' }}>
+        <ResponsiveContainer width="100%" height={220}>
+          <BarChart data={data} margin={{ top: 5, right: 10, left: 0, bottom: 5 }}>
+            <CartesianGrid strokeDasharray="3 3" stroke="#e9ecef" />
+            <XAxis dataKey={xKey} tick={{ fontSize: 10 }} axisLine={{ stroke: '#dee2e6' }} />
+            <YAxis tick={{ fontSize: 10 }} axisLine={{ stroke: '#dee2e6' }} />
+            <RechartTooltip contentStyle={{ fontSize: 11, borderRadius: 6, borderColor: '#dee2e6' }} />
+            <Legend wrapperStyle={{ fontSize: 10 }} />
+            {valueKeys.map((key, i) => (
+              <Bar key={key} dataKey={key} fill={CHART_COLORS[i % CHART_COLORS.length]} radius={[4, 4, 0, 0]} />
+            ))}
+          </BarChart>
+        </ResponsiveContainer>
+      </Paper>
+    )
+  }
+
+  if (chartType === 'line') {
+    return (
+      <Paper p="xs" withBorder radius="sm" mt="sm" style={{ backgroundColor: '#fff' }}>
+        <ResponsiveContainer width="100%" height={220}>
+          <LineChart data={data} margin={{ top: 5, right: 10, left: 0, bottom: 5 }}>
+            <CartesianGrid strokeDasharray="3 3" stroke="#e9ecef" />
+            <XAxis dataKey={xKey} tick={{ fontSize: 10 }} axisLine={{ stroke: '#dee2e6' }} />
+            <YAxis tick={{ fontSize: 10 }} axisLine={{ stroke: '#dee2e6' }} />
+            <RechartTooltip contentStyle={{ fontSize: 11, borderRadius: 6, borderColor: '#dee2e6' }} />
+            <Legend wrapperStyle={{ fontSize: 10 }} iconType="plainline" />
+            {valueKeys.map((key, i) => (
+              <Line key={key} type="monotone" dataKey={key} stroke={CHART_COLORS[i % CHART_COLORS.length]} strokeWidth={2} dot={false} />
+            ))}
+          </LineChart>
+        </ResponsiveContainer>
+      </Paper>
+    )
+  }
+
+  if (chartType === 'area') {
+    return (
+      <Paper p="xs" withBorder radius="sm" mt="sm" style={{ backgroundColor: '#fff' }}>
+        <ResponsiveContainer width="100%" height={220}>
+          <AreaChart data={data} margin={{ top: 5, right: 10, left: 0, bottom: 5 }}>
+            <CartesianGrid strokeDasharray="3 3" stroke="#e9ecef" />
+            <XAxis dataKey={xKey} tick={{ fontSize: 10 }} axisLine={{ stroke: '#dee2e6' }} />
+            <YAxis tick={{ fontSize: 10 }} axisLine={{ stroke: '#dee2e6' }} />
+            <RechartTooltip contentStyle={{ fontSize: 11, borderRadius: 6, borderColor: '#dee2e6' }} />
+            <Legend wrapperStyle={{ fontSize: 10 }} />
+            {valueKeys.map((key, i) => (
+              <Area
+                key={key}
+                type="monotone"
+                dataKey={key}
+                stroke={CHART_COLORS[i % CHART_COLORS.length]}
+                fill={CHART_COLORS[i % CHART_COLORS.length]}
+                fillOpacity={0.15}
+                strokeWidth={2}
+              />
+            ))}
+          </AreaChart>
+        </ResponsiveContainer>
+      </Paper>
+    )
+  }
+
+  if (chartType === 'donut') {
+    // For donut/pie, use the first numeric column as value and category column as name
+    const valueKey = valueKeys[0]
+    const pieData = data.map((row) => ({
+      name: String(row[xKey] ?? ''),
+      value: Number(row[valueKey]) || 0,
+    }))
+    return (
+      <Paper p="xs" withBorder radius="sm" mt="sm" style={{ backgroundColor: '#fff' }}>
+        <ResponsiveContainer width="100%" height={260}>
+          <PieChart>
+            <Pie
+              data={pieData}
+              cx="50%"
+              cy="50%"
+              innerRadius={55}
+              outerRadius={90}
+              paddingAngle={3}
+              dataKey="value"
+              nameKey="name"
+              label={({ name, percent }) => `${name} (${((percent ?? 0) * 100).toFixed(0)}%)`}
+              labelLine={{ strokeWidth: 1 }}
+              style={{ fontSize: 10 }}
+            >
+              {pieData.map((entry) => (
+                <Cell key={`${entry.name}-${entry.value}`} fill={CHART_COLORS[pieData.indexOf(entry) % CHART_COLORS.length]} />
+              ))}
+            </Pie>
+            <RechartTooltip contentStyle={{ fontSize: 11, borderRadius: 6, borderColor: '#dee2e6' }} />
+            <Legend wrapperStyle={{ fontSize: 10 }} />
+          </PieChart>
+        </ResponsiveContainer>
+      </Paper>
+    )
+  }
+
+  if (chartType === 'radar') {
+    // For radar, each row is a subject and each numeric column is a metric
+    return (
+      <Paper p="xs" withBorder radius="sm" mt="sm" style={{ backgroundColor: '#fff' }}>
+        <ResponsiveContainer width="100%" height={280}>
+          <RadarChart data={data} cx="50%" cy="50%" outerRadius="70%">
+            <PolarGrid stroke="#e9ecef" />
+            <PolarAngleAxis dataKey={xKey} tick={{ fontSize: 10 }} />
+            <PolarRadiusAxis tick={{ fontSize: 9 }} />
+            {valueKeys.map((key, i) => (
+              <Radar
+                key={key}
+                name={key}
+                dataKey={key}
+                stroke={CHART_COLORS[i % CHART_COLORS.length]}
+                fill={CHART_COLORS[i % CHART_COLORS.length]}
+                fillOpacity={0.15}
+              />
+            ))}
+            <Legend wrapperStyle={{ fontSize: 10 }} />
+            <RechartTooltip contentStyle={{ fontSize: 11, borderRadius: 6, borderColor: '#dee2e6' }} />
+          </RadarChart>
+        </ResponsiveContainer>
+      </Paper>
+    )
+  }
+
+  // Fallback: bar chart
+  return (
+    <Paper p="xs" withBorder radius="sm" mt="sm" style={{ backgroundColor: '#fff' }}>
+      <ResponsiveContainer width="100%" height={220}>
+        <BarChart data={data} margin={{ top: 5, right: 10, left: 0, bottom: 5 }}>
+          <CartesianGrid strokeDasharray="3 3" stroke="#e9ecef" />
+          <XAxis dataKey={xKey} tick={{ fontSize: 10 }} axisLine={{ stroke: '#dee2e6' }} />
+          <YAxis tick={{ fontSize: 10 }} axisLine={{ stroke: '#dee2e6' }} />
+          <RechartTooltip contentStyle={{ fontSize: 11, borderRadius: 6, borderColor: '#dee2e6' }} />
+          <Legend wrapperStyle={{ fontSize: 10 }} />
+          {valueKeys.map((key, i) => (
+            <Bar key={key} dataKey={key} fill={CHART_COLORS[i % CHART_COLORS.length]} radius={[4, 4, 0, 0]} />
+          ))}
+        </BarChart>
+      </ResponsiveContainer>
+    </Paper>
+  )
+}
+
+async function requestChartProposal(params: {
+  prompt: string
+  statementResponse: unknown
+}): Promise<ChartProposalApiResponse | null> {
+  try {
+    const response = await fetch('/api/genUiDspy/chart-proposal', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        prompt: params.prompt,
+        statementResponse: params.statementResponse,
+      }),
+    })
+    if (!response.ok) return null
+    return (await response.json()) as ChartProposalApiResponse
+  } catch {
+    return null
+  }
+}
 
 function buildGenerativeUiSpec(blocks: ContentBlock[]): GenericUiSpec | null {
   if (blocks.length === 0) return null
@@ -998,24 +1373,63 @@ function blocksToPlainText(blocks: ContentBlock[]): string {
 
 const MessageContent = memo(function MessageContent({
   msg,
+  messageId,
   generatedSpec,
   registry,
+  chartProposals,
+  selectedChart,
+  onChartSelect,
 }: {
   msg: Message
+  messageId: string
   generatedSpec: GenericUiSpec | undefined
   registry: typeof chatUiRegistry
+  chartProposals?: ChartProposalItem[]
+  selectedChart?: string | null
+  onChartSelect?: (messageId: string, chartType: string) => void
 }) {
   const fallbackSpec = useMemo(
     () => (msg.blocks && msg.blocks.length > 0 ? buildGenerativeUiSpec(msg.blocks) : null),
     [msg.blocks]
   )
 
+  const handleSelect = useCallback(
+    (chartType: string) => onChartSelect?.(messageId, chartType),
+    [messageId, onChartSelect],
+  )
+
+  // Extract the first Genie statement from attachments for chart rendering
+  const firstStatement = useMemo(() => {
+    if (!msg.attachments || !msg.queryResults) return null
+    for (const attachment of msg.attachments) {
+      if (!attachment.attachmentId) continue
+      const queryData = msg.queryResults.get(attachment.attachmentId)
+      const statement = toGenieStatementResponse(queryData)
+      if (statement && statement.result?.data_array?.length > 0) return statement
+    }
+    return null
+  }, [msg.attachments, msg.queryResults])
+
   /* Plugin-generated spec available → render via json-render */
   if (generatedSpec) {
     return (
-      <JSONUIProvider registry={registry}>
-        <Renderer spec={generatedSpec} registry={registry} />
-      </JSONUIProvider>
+      <>
+        <JSONUIProvider registry={registry}>
+          <Renderer spec={generatedSpec} registry={registry} />
+        </JSONUIProvider>
+        {chartProposals && chartProposals.length > 0 && (
+          <ChartProposalPanel
+            proposals={chartProposals}
+            title="Suggestions de visualisation"
+            description="Le superviseur propose ces types de graphiques pour vos résultats. Choisissez celui qui vous convient."
+            selected={selectedChart}
+            onSelect={handleSelect}
+          />
+        )}
+        {selectedChart && firstStatement && (
+          <SelectedChartRenderer chartType={selectedChart} statement={firstStatement} />
+        )}
+      </>
     )
   }
 
@@ -1051,13 +1465,26 @@ const MessageContent = memo(function MessageContent({
           if (!statement) return null
 
           return (
-            <GenieDynamicQueryTable
-              key={attachmentId}
-              statement={statement}
-              title={attachment.query?.title}
-            />
+            <Box key={attachmentId} mt="sm">
+              {attachment.query?.title && (
+                <Text size="xs" fw={600} mb="xs">{attachment.query.title}</Text>
+              )}
+              <GenieQueryVisualization data={statement} />
+            </Box>
           )
         })}
+      {chartProposals && chartProposals.length > 0 && !generatedSpec && (
+        <ChartProposalPanel
+          proposals={chartProposals}
+          title="Suggestions de visualisation"
+          description="Le superviseur propose ces types de graphiques pour vos résultats. Choisissez celui qui vous convient."
+          selected={selectedChart}
+          onSelect={handleSelect}
+        />
+      )}
+      {selectedChart && firstStatement && !generatedSpec && (
+        <SelectedChartRenderer chartType={selectedChart} statement={firstStatement} />
+      )}
     </>
   )
 })
@@ -1130,51 +1557,17 @@ function RenderBlock({ block }: { block: ContentBlock }) {
           ))}
         </List>
       )
-    case 'table':
+    case 'table': {
+      const stmtData = toStatementResponseFromTable(block.headers, block.rows)
       return (
         <Box mt="xs" mb="xs">
           {block.caption && (
             <Text size="xs" c="dimmed" mb={4} fs="italic">{block.caption}</Text>
           )}
-          <Box style={{ overflowX: 'auto' }}>
-            <Table
-              striped
-              highlightOnHover
-              withTableBorder
-              withColumnBorders
-              fz="xs"
-              styles={{
-                table: { minWidth: 360 },
-                th: {
-                  backgroundColor: '#f8f9fa',
-                  fontWeight: 600,
-                  fontSize: 11,
-                  padding: '6px 8px',
-                  whiteSpace: 'nowrap',
-                },
-                td: { padding: '5px 8px', fontSize: 11 },
-              }}
-            >
-              <Table.Thead>
-                <Table.Tr>
-                  {block.headers.map((h) => (
-                    <Table.Th key={h}>{h}</Table.Th>
-                  ))}
-                </Table.Tr>
-              </Table.Thead>
-              <Table.Tbody>
-                {block.rows.map((row) => (
-                  <Table.Tr key={row.join('|')}>
-                    {row.map((cell) => (
-                      <Table.Td key={cell}>{cell}</Table.Td>
-                    ))}
-                  </Table.Tr>
-                ))}
-              </Table.Tbody>
-            </Table>
-          </Box>
+          <GenieQueryVisualization data={stmtData} />
         </Box>
       )
+    }
     case 'lineChart':
       return (
         <Box mt="md" mb="sm">
@@ -1252,13 +1645,6 @@ function RenderBlock({ block }: { block: ContentBlock }) {
 /*  Genie query table (dynamic columns + per-column filters)           */
 /* ------------------------------------------------------------------ */
 
-type QueryTableRow = {
-  key: string
-  [column: string]: string
-}
-
-const DEFAULT_VISIBLE_COLUMNS = 5
-
 function toGenieStatementResponse(data: unknown): GenieStatementResponse | null {
   if (!data || typeof data !== 'object') return null
 
@@ -1276,125 +1662,6 @@ function toGenieStatementResponse(data: unknown): GenieStatementResponse | null 
   }
 
   return null
-}
-
-function buildQueryTableData(statement: GenieStatementResponse): {
-  columns: string[]
-  rows: QueryTableRow[]
-} {
-  const columns = statement.manifest?.schema?.columns?.map((col) => col.name) ?? []
-  const rawRows = statement.result?.data_array ?? []
-
-  const rows = rawRows.map((row, rowIndex) => {
-    const record: QueryTableRow = { key: String(rowIndex) }
-    columns.forEach((columnName, columnIndex) => {
-      const value = row[columnIndex]
-      record[columnName] = value == null ? '' : String(value)
-    })
-    return record
-  })
-
-  return { columns, rows }
-}
-
-function GenieDynamicQueryTable({
-  statement,
-  title,
-}: {
-  statement: GenieStatementResponse
-  title?: string
-}) {
-  const { columns: allColumns, rows } = buildQueryTableData(statement)
-
-  const [visibleColumns, setVisibleColumns] = useState<string[]>(() =>
-    allColumns.slice(0, DEFAULT_VISIBLE_COLUMNS)
-  )
-
-  const getColumnFilterProps = (columnName: string): ColumnType<QueryTableRow> => ({
-    filterDropdown: ({ setSelectedKeys, selectedKeys, confirm, clearFilters }) => (
-      <div style={{ padding: 8 }}>
-        <AntInput
-          placeholder={`Filtrer ${columnName}`}
-          value={(selectedKeys[0] as string) ?? ''}
-          onChange={(event) => {
-            const value = event.target.value
-            setSelectedKeys(value ? [value] : [])
-          }}
-          onPressEnter={() => confirm()}
-          style={{ marginBottom: 8, display: 'block' }}
-        />
-        <AntSpace>
-          <AntButton type="primary" size="small" onClick={() => confirm()}>
-            Filtrer
-          </AntButton>
-          <AntButton
-            size="small"
-            onClick={() => {
-              clearFilters?.()
-              confirm()
-            }}
-          >
-            Réinitialiser
-          </AntButton>
-        </AntSpace>
-      </div>
-    ),
-    filterIcon: (filtered) => <span>{filtered ? '🔎' : '🔍'}</span>,
-    onFilter: (value, record) =>
-      String(record[columnName] ?? '')
-        .toLowerCase()
-        .includes(String(value).toLowerCase()),
-  })
-
-  const antColumns: ColumnType<QueryTableRow>[] = allColumns
-    .filter((columnName) => visibleColumns.includes(columnName))
-    .map((columnName) => ({
-      title: columnName,
-      dataIndex: columnName,
-      key: columnName,
-      ellipsis: true,
-      ...getColumnFilterProps(columnName),
-    }))
-
-  const columnPicker = (
-    <div style={{ padding: 10, maxHeight: 260, overflowY: 'auto', minWidth: 220 }}>
-      <AntCheckbox.Group
-        value={visibleColumns}
-        onChange={(checkedValues) => setVisibleColumns(checkedValues.map(String))}
-      >
-        <AntSpace direction="vertical" size={6}>
-          {allColumns.map((columnName) => (
-            <AntCheckbox key={columnName} value={columnName}>
-              {columnName}
-            </AntCheckbox>
-          ))}
-        </AntSpace>
-      </AntCheckbox.Group>
-    </div>
-  )
-
-  if (allColumns.length === 0) return null
-
-  return (
-    <Box mt="sm" style={{ width: '100%', maxWidth: '100%', overflowX: 'auto' }}>
-      <Group justify="space-between" mb="xs" wrap="nowrap">
-        <Text size="xs" fw={600} c="dimmed" style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>
-          {title || 'Résultat de requête'}
-        </Text>
-        <AntDropdown popupRender={() => columnPicker} trigger={['click']}>
-          <AntButton size="small">Colonnes ({visibleColumns.length}/{allColumns.length})</AntButton>
-        </AntDropdown>
-      </Group>
-
-      <AntTable<QueryTableRow>
-        size="small"
-        columns={antColumns}
-        dataSource={rows}
-        pagination={{ pageSize: 10, showSizeChanger: true, pageSizeOptions: [10, 20, 50] }}
-        scroll={{ x: 'max-content' }}
-      />
-    </Box>
-  )
 }
 
 /* ------------------------------------------------------------------ */
@@ -1827,22 +2094,78 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
   })
   const [localUserMessages, setLocalUserMessages] = useState<Message[]>([])
 
-  // Merge Genie messages with local user messages (de-duplicate by content)
+  // Track first-seen timestamps for Genie messages (they have no timestamp field)
+  const genieTimestampsRef = useRef<Map<string, string>>(new Map())
+
+  // Remove local user messages that are now echoed in genieMessages
+  const prevGenieCountRef = useRef(genieMessages.length)
+  useEffect(() => {
+    if (genieMessages.length > prevGenieCountRef.current) {
+      // Build a set of user message contents from genie for fast lookup
+      const genieUserContents = new Set(
+        genieMessages
+          .filter((m) => m.role === 'user')
+          .map((m) => m.content.trim())
+      )
+      setLocalUserMessages((prev) =>
+        prev.filter((local) => !genieUserContents.has(local.content.trim()))
+      )
+    }
+    prevGenieCountRef.current = genieMessages.length
+  }, [genieMessages])
+
+  // Record first-seen timestamps for new Genie messages
+  useEffect(() => {
+    const ts = genieTimestampsRef.current
+    for (const m of genieMessages) {
+      const key = String(m.id)
+      if (!ts.has(key)) {
+        ts.set(key, new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }))
+      }
+    }
+  }, [genieMessages])
+
+  // Simple mirror: Genie messages + any local messages not yet picked up by Genie
+  // Filter out internal/empty messages that should not be shown to users
+  // Sort by timestamp ascending (oldest first, newest at bottom)
   const messages: Message[] = useMemo(() => {
-    const genieUserContents = new Set(
-      genieMessages.filter((m) => m.role === 'user').map((m) => m.content?.trim())
-    )
-    // Keep local messages that Genie hasn't already picked up
-    const pendingLocal = localUserMessages.filter(
-      (m) => !genieUserContents.has(m.content?.trim())
-    )
-    return [...genieMessages, ...pendingLocal]
+    const ts = genieTimestampsRef.current
+    const merged: Message[] = [...genieMessages.map((gm) => ({
+      ...gm,
+      timestamp: (gm as Message).timestamp ?? ts.get(String(gm.id)),
+    })), ...localUserMessages]
+    const filtered = merged.filter((msg) => {
+      // Always show user messages
+      if (msg.role === 'user') return true
+      // Show assistant messages that have visible content, blocks, or attachments
+      const hasContent = Boolean(msg.content?.trim())
+      const hasBlocks = Boolean('blocks' in msg && msg.blocks && msg.blocks.length > 0)
+      const hasAttachments = Boolean(msg.attachments && msg.attachments.length > 0)
+      const isLoading = Boolean('loading' in msg && msg.loading)
+      const isPeriodPrompt = Boolean('periodPrompt' in msg && msg.periodPrompt)
+      return hasContent || hasBlocks || hasAttachments || isLoading || isPeriodPrompt
+    })
+    // Sort by timestamp ascending so newest messages appear at the bottom
+    filtered.sort((a, b) => {
+      const ta = a.timestamp ?? ''
+      const tb = b.timestamp ?? ''
+      if (ta < tb) return -1
+      if (ta > tb) return 1
+      return 0
+    })
+    return filtered
   }, [genieMessages, localUserMessages])
 
   const [input, setInput] = useState('')
   const [showSuggestions, setShowSuggestions] = useState(true)
   const viewport = useRef<HTMLDivElement>(null)
   const [generatedSpecs, setGeneratedSpecs] = useState<Record<string, GenericUiSpec>>({})
+  const [chartProposals, setChartProposals] = useState<Record<string, ChartProposalItem[]>>({})
+  const [selectedCharts, setSelectedCharts] = useState<Record<string, string>>({})
+  const handleChartSelect = useCallback((messageId: string, chartType: string) => {
+    setSelectedCharts((prev) => ({ ...prev, [messageId]: chartType }))
+  }, [])
+  const attemptedChartProposalIdsRef = useRef<Set<string>>(new Set())
   const inFlightSpecIdsRef = useRef<Set<string>>(new Set())
   const attemptedSpecIdsRef = useRef<Set<string>>(new Set())
   const sessionIdRef = useRef(typeof crypto !== 'undefined' ? crypto.randomUUID() : `session-${Date.now()}`)
@@ -1852,6 +2175,7 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
   const [supervisorHint, setSupervisorHint] = useState<SupervisorApiResponse | null>(null)
   const [pendingClarification, setPendingClarification] = useState<PendingClarification | null>(null)
   const [clarificationAnswers, setClarificationAnswers] = useState<Record<string, string>>({})
+  const [clarificationRetryCount, setClarificationRetryCount] = useState(0)
 
   const handlePublishTeamControls = (controls: TeamControl[]) => {
     if (onSaveControl) {
@@ -1925,6 +2249,7 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
     setShowSuggestions(false)
     setSupervisorLoading(true)
     setSupervisorHint(null)
+    setInput('')
 
     // Immediately show the user message in the chat
     setLocalUserMessages((prev) => [
@@ -1948,7 +2273,7 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
         setClarificationAnswers({})
         setSupervisorHint({
           decision: 'error',
-          message: 'Le supervisor n’a pas répondu. L’envoi à Genie est bloqué tant que la requête n’est pas validée.',
+          message: 'L\'agent IA n’a pas répondu. L’envoi à Genie est bloqué tant que la requête n’est pas validée.',
         })
         return
       }
@@ -1961,16 +2286,31 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
       }
 
       if (supervisorResponse.decision === 'clarify') {
+        const newRetryCount = clarificationRetryCount + 1
+        setClarificationRetryCount(newRetryCount)
+
+        if (newRetryCount >= 3) {
+          setPendingClarification(null)
+          setClarificationAnswers({})
+          setSupervisorHint({
+            decision: 'error',
+            message: 'Après plusieurs tentatives de clarification, je ne suis pas en mesure de traiter cette demande. Veuillez contacter l\'équipe support pour obtenir de l\'aide.',
+          })
+          return
+        }
+
         const questions = supervisorResponse.questions ?? []
         setPendingClarification({
           originalPrompt: trimmedPrompt,
           message: supervisorResponse.message,
           decision: supervisorResponse.decision,
           rewrittenPrompt: supervisorResponse.rewrittenPrompt,
+          enrichedPrompt: supervisorResponse.enrichedPrompt,
           questions,
           suggestedTables: supervisorResponse.suggestedTables ?? [],
           suggestedFunctions: supervisorResponse.suggestedFunctions ?? [],
           traceId: supervisorResponse.traceId,
+          canSendDirectly: false,
         })
         setClarificationAnswers(
           Object.fromEntries(questions.map((question) => [question.id, ''])) as Record<string, string>
@@ -1978,27 +2318,29 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
         return
       }
 
-      // 'proceed' with high confidence → send directly to Genie
+      // 'proceed' with high confidence → send enriched prompt to Genie
       if (isSupervisorApproved(supervisorResponse.decision, supervisorResponse.confidence)) {
         setPendingClarification(null)
         setClarificationAnswers({})
-        sendMessage(supervisorResponse.rewrittenPrompt?.trim() || trimmedPrompt)
-        setInput('')
+        setClarificationRetryCount(0)
+        sendMessage(supervisorResponse.enrichedPrompt || supervisorResponse.rewrittenPrompt?.trim() || trimmedPrompt)
         return
       }
 
-      // 'proceed' with low confidence or 'guide' → show as clarification
-      // so the user can review and re-submit with the rewritten prompt
+      // 'proceed' with low confidence or 'guide' → show confirmation with
+      // option to send directly to Genie (supervisor already approved via cookie)
       const questions = supervisorResponse.questions ?? []
       setPendingClarification({
         originalPrompt: trimmedPrompt,
-        message: supervisorResponse.message || 'Le superviseur recommande de vérifier la reformulation avant envoi à Genie.',
+        message: supervisorResponse.message || 'L\'agent IA recommande de vérifier la reformulation avant envoi à Genie.',
         decision: supervisorResponse.decision,
         rewrittenPrompt: supervisorResponse.rewrittenPrompt,
+        enrichedPrompt: supervisorResponse.enrichedPrompt,
         questions,
         suggestedTables: supervisorResponse.suggestedTables ?? [],
         suggestedFunctions: supervisorResponse.suggestedFunctions ?? [],
         traceId: supervisorResponse.traceId,
+        canSendDirectly: true,
       })
       setClarificationAnswers(
         Object.fromEntries(questions.map((question) => [question.id, ''])) as Record<string, string>
@@ -2006,7 +2348,7 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
     } finally {
       setSupervisorLoading(false)
     }
-  }, [buildConversationContext, sendMessage])
+  }, [buildConversationContext, clarificationRetryCount, sendMessage])
 
   // Track the last assistant message for which a GenUI spec was requested.
   const lastSpecCandidateIdRef = useRef<string | null>(null)
@@ -2051,6 +2393,36 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
       .finally(() => {
         inFlightSpecIdsRef.current.delete(messageId)
       })
+
+    // Fire chart proposal request if the message has Genie query results
+    const hasQueryResults = latestAssistantMessage.attachments?.some(
+      (a) => a.attachmentId && latestAssistantMessage.queryResults?.has(a.attachmentId)
+    )
+    if (hasQueryResults && !attemptedChartProposalIdsRef.current.has(messageId)) {
+      attemptedChartProposalIdsRef.current.add(messageId)
+      const firstAttachment = latestAssistantMessage.attachments?.find(
+        (a) => a.attachmentId && latestAssistantMessage.queryResults?.has(a.attachmentId)
+      )
+      if (firstAttachment?.attachmentId) {
+        const queryData = latestAssistantMessage.queryResults?.get(firstAttachment.attachmentId)
+        const statement = toGenieStatementResponse(queryData)
+        if (statement && statement.result.data_array.length > 1) {
+          // Truncate before sending — the backend only uses the first 10 rows
+          const truncatedStatement = {
+            manifest: statement.manifest,
+            result: { data_array: statement.result.data_array.slice(0, 50) },
+          }
+          void requestChartProposal({
+            prompt: latestAssistantMessage.content || 'Analyze the query results',
+            statementResponse: truncatedStatement,
+          }).then((result) => {
+            if (result?.chartProposals && result.chartProposals.length > 0) {
+              setChartProposals((prev) => ({ ...prev, [messageId]: result.chartProposals }))
+            }
+          })
+        }
+      }
+    }
   }, [chatStatus, messages])
 
   /* -------- Period confirmation handler (for "fournisseurs inactifs" workflow) -------- */
@@ -2077,15 +2449,19 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
   const handleClear = () => {
     reset()
     setGeneratedSpecs({})
+    setChartProposals({})
+    setSelectedCharts({})
     setLocalUserMessages([])
     inFlightSpecIdsRef.current.clear()
     attemptedSpecIdsRef.current.clear()
+    attemptedChartProposalIdsRef.current.clear()
     lastSpecCandidateIdRef.current = null
     setShowSuggestions(true)
     setSupervisorLoading(false)
     setSupervisorHint(null)
     setPendingClarification(null)
     setClarificationAnswers({})
+    setClarificationRetryCount(0)
   }
 
   const handleClarificationSubmit = useCallback(() => {
@@ -2105,8 +2481,16 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
       : basePrompt
 
     setPendingClarification(null)
-    void submitPromptThroughSupervisor(clarifiedPrompt)
-  }, [clarificationAnswers, pendingClarification, submitPromptThroughSupervisor])
+
+    if (pendingClarification.canSendDirectly) {
+      // Supervisor already approved — send directly to Genie
+      sendMessage(pendingClarification.enrichedPrompt || clarifiedPrompt)
+    } else {
+      // True clarification (decision was 'clarify') — re-submit through supervisor
+      // with the enriched prompt so it gets a fresh approval cookie
+      void submitPromptThroughSupervisor(clarifiedPrompt)
+    }
+  }, [clarificationAnswers, pendingClarification, sendMessage, submitPromptThroughSupervisor])
 
   const handleOpenSave = (msg: Message) => {
     const plainResults = msg.content + (msg.blocks ? '\n' + blocksToPlainText(msg.blocks) : '')
@@ -2334,271 +2718,6 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
             </Stack>
           )}
 
-          {supervisorLoading && (
-            <Paper
-              p="sm"
-              radius="md"
-              mb="md"
-              style={{ backgroundColor: '#f8f9fa', border: '1px solid #e9ecef' }}
-            >
-              <Group gap="xs">
-                <Loader size="xs" color="teal" type="dots" />
-                <Text size="sm" c="dimmed">Le supervisor analyse l&apos;intention et les métadonnées Genie...</Text>
-              </Group>
-            </Paper>
-          )}
-
-          {genieError && !supervisorLoading && (
-            <Alert
-              variant="light"
-              color="red"
-              radius="md"
-              mb="md"
-              icon={<IconAlertTriangle size={16} />}
-            >
-              <Text size="sm" fw={600}>Appel Genie refusé</Text>
-              <Text size="xs" mt={4} style={{ lineHeight: 1.55 }}>
-                {typeof genieError === 'string' ? genieError : String(genieError)}
-              </Text>
-            </Alert>
-          )}
-
-          {pendingClarification && !supervisorLoading && (
-            <Paper
-              p="sm"
-              radius="md"
-              mb="md"
-              style={{ backgroundColor: '#f8f9fa', border: '1px solid #dee2e6' }}
-            >
-              <Group gap="xs" mb="xs" align="flex-start">
-                <IconAlertTriangle size={16} color="#f08c00" />
-                <Box style={{ flex: 1 }}>
-                  <Text size="sm" fw={600}>Clarification requise avant l&apos;envoi à Genie</Text>
-                  <Text size="xs" c="dimmed" mt={2} style={{ lineHeight: 1.55 }}>
-                    {pendingClarification.message}
-                  </Text>
-                </Box>
-              </Group>
-
-              {pendingClarification.rewrittenPrompt && (
-                <Box mb="sm">
-                  <Text size="xs" fw={600} c="dimmed" mb={4}>Reformulation proposée</Text>
-                  <Paper p="xs" radius="sm" style={{ backgroundColor: '#ffffff', border: '1px solid #e9ecef' }}>
-                    <Text size="xs" style={{ lineHeight: 1.55 }}>{pendingClarification.rewrittenPrompt}</Text>
-                  </Paper>
-                </Box>
-              )}
-
-              {pendingClarification.traceId && (
-                <Box mb="sm">
-                  <Text size="xs" fw={600} c="dimmed" mb={4}>Trace MLflow supervisor</Text>
-                  <Paper p="xs" radius="sm" style={{ backgroundColor: '#ffffff', border: '1px solid #e9ecef' }}>
-                    <Text size="xs" ff="monospace">{pendingClarification.traceId}</Text>
-                  </Paper>
-                </Box>
-              )}
-
-              {pendingClarification.questions.map((question) => (
-                <Box key={question.id} mb="sm">
-                  <Text size="xs" fw={500} mb={4}>{question.label}</Text>
-                  {question.inputType === 'select' && question.options && question.options.length > 0 ? (
-                    <Select
-                      data={question.options}
-                      value={clarificationAnswers[question.id] ?? ''}
-                      onChange={(value) => {
-                        setClarificationAnswers((previous) => ({
-                          ...previous,
-                          [question.id]: value ?? '',
-                        }))
-                      }}
-                      placeholder={question.placeholder || 'Sélectionnez une option'}
-                      size="sm"
-                      radius="sm"
-                      allowDeselect={!question.required}
-                    />
-                  ) : question.inputType === 'number' ? (
-                    <NumberInput
-                      value={clarificationAnswers[question.id] ? Number(clarificationAnswers[question.id]) : undefined}
-                      onChange={(value) => {
-                        setClarificationAnswers((previous) => ({
-                          ...previous,
-                          [question.id]: value == null || value === '' ? '' : String(value),
-                        }))
-                      }}
-                      placeholder={question.placeholder || 'Ajoutez une valeur numérique'}
-                      size="sm"
-                      radius="sm"
-                    />
-                  ) : question.inputType === 'toggle' ? (
-                    <Switch
-                      checked={clarificationAnswers[question.id] === 'true'}
-                      onChange={(event) => {
-                        setClarificationAnswers((previous) => ({
-                          ...previous,
-                          [question.id]: String(event.currentTarget.checked),
-                        }))
-                      }}
-                      size="md"
-                      color="teal"
-                      label={question.placeholder || 'Activer cette option'}
-                    />
-                  ) : (
-                    <TextInput
-                      value={clarificationAnswers[question.id] ?? ''}
-                      onChange={(event) => {
-                        const value = event.currentTarget.value
-                        setClarificationAnswers((previous) => ({
-                          ...previous,
-                          [question.id]: value,
-                        }))
-                      }}
-                      placeholder={question.placeholder || 'Ajoutez une précision'}
-                      size="sm"
-                      radius="sm"
-                    />
-                  )}
-                </Box>
-              ))}
-
-              {(pendingClarification.suggestedTables.length > 0 || pendingClarification.suggestedFunctions.length > 0) && (
-                <Stack gap={6} mb="sm">
-                  {pendingClarification.suggestedTables.length > 0 && (
-                    <Box>
-                      <Text size="xs" fw={600} c="dimmed" mb={4}>Tables suggérées par le knowledge store</Text>
-                      <Group gap={6}>
-                        {pendingClarification.suggestedTables.map((tableName) => (
-                          <Badge key={tableName} size="xs" variant="light" color="teal">{tableName}</Badge>
-                        ))}
-                      </Group>
-                    </Box>
-                  )}
-                  {pendingClarification.suggestedFunctions.length > 0 && (
-                    <Box>
-                      <Text size="xs" fw={600} c="dimmed" mb={4}>Fonctions suggérées par le knowledge store</Text>
-                      <Group gap={6}>
-                        {pendingClarification.suggestedFunctions.map((functionName) => (
-                          <Badge key={functionName} size="xs" variant="outline" color="gray">{functionName}</Badge>
-                        ))}
-                      </Group>
-                    </Box>
-                  )}
-                </Stack>
-              )}
-
-              <Group justify="flex-end" mt="xs">
-                {pendingClarification.rewrittenPrompt && (
-                  <Button
-                    size="xs"
-                    variant="default"
-                    onClick={() => {
-                      const rewrittenPrompt = pendingClarification.rewrittenPrompt?.trim()
-                      if (!rewrittenPrompt) return
-                      setPendingClarification(null)
-                      void submitPromptThroughSupervisor(rewrittenPrompt)
-                    }}
-                  >
-                    Utiliser la reformulation
-                  </Button>
-                )}
-                <Button size="xs" color="teal" onClick={handleClarificationSubmit}>
-                  Relancer avec ces précisions
-                </Button>
-              </Group>
-            </Paper>
-          )}
-
-          {supervisorHint && !pendingClarification && !supervisorLoading && (
-            <Paper
-              p="sm"
-              radius="md"
-              mb="md"
-              style={{ backgroundColor: '#f8f9fa', border: '1px solid #e9ecef' }}
-            >
-              <Group gap="xs" align="flex-start">
-                <IconRobot size={16} color="#0c8599" />
-                <Box style={{ flex: 1 }}>
-                  <Text size="xs" fw={600}>Pré-analyse supervisor</Text>
-                  <Text size="xs" c="dimmed" style={{ lineHeight: 1.55 }}>
-                    {supervisorHint.message}
-                  </Text>
-                  <Group gap={6} mt={6}>
-                    <Badge size="xs" variant="light" color={
-                      supervisorHint.decision === 'error'
-                        ? 'red'
-                        : supervisorHint.decision === 'clarify'
-                          ? 'orange'
-                          : supervisorHint.decision === 'guide'
-                            ? 'blue'
-                            : 'teal'
-                    }>
-                      {supervisorHint.decision}
-                    </Badge>
-                    {typeof supervisorHint.confidence === 'number' && (
-                      <Badge size="xs" variant="outline" color="gray">
-                        {`Confiance ${Math.round(supervisorHint.confidence * 100)}%`}
-                      </Badge>
-                    )}
-                    {supervisorHint.queryClassification && (
-                      <Badge size="xs" variant="outline" color="gray">{supervisorHint.queryClassification}</Badge>
-                    )}
-                    {supervisorHint.catalogSource && (
-                      <Badge size="xs" variant="outline" color="gray">{supervisorHint.catalogSource}</Badge>
-                    )}
-                  </Group>
-                  {supervisorHint.traceId && (
-                    <Box mt={6}>
-                      <Text size="xs" fw={600} c="dimmed" mb={4}>Trace MLflow supervisor</Text>
-                      <Paper p="xs" radius="sm" style={{ backgroundColor: '#ffffff', border: '1px solid #e9ecef' }}>
-                        <Text size="xs" ff="monospace">{supervisorHint.traceId}</Text>
-                      </Paper>
-                    </Box>
-                  )}
-                  {(supervisorHint.suggestedTables?.length || supervisorHint.suggestedFunctions?.length) ? (
-                    <Group gap={6} mt={6}>
-                      {(supervisorHint.suggestedTables ?? []).map((tableName) => (
-                        <Badge key={tableName} size="xs" variant="light" color="teal">{tableName}</Badge>
-                      ))}
-                      {(supervisorHint.suggestedFunctions ?? []).map((functionName) => (
-                        <Badge key={functionName} size="xs" variant="outline" color="gray">{functionName}</Badge>
-                      ))}
-                    </Group>
-                  ) : null}
-                  {supervisorHint.requiredColumns && supervisorHint.requiredColumns.length > 0 && (
-                    <Box mt={6}>
-                      <Text size="xs" fw={600} c="dimmed" mb={4}>Colonnes ciblées</Text>
-                      <Group gap={6}>
-                        {supervisorHint.requiredColumns.map((columnName) => (
-                          <Badge key={columnName} size="xs" variant="light" color="gray">{columnName}</Badge>
-                        ))}
-                      </Group>
-                    </Box>
-                  )}
-                  {supervisorHint.predictiveFunctions && supervisorHint.predictiveFunctions.length > 0 && (
-                    <Box mt={6}>
-                      <Text size="xs" fw={600} c="dimmed" mb={4}>Fonctions AI suggérées</Text>
-                      <Group gap={6}>
-                        {supervisorHint.predictiveFunctions.map((functionName) => (
-                          <Badge key={functionName} size="xs" variant="outline" color="orange">{functionName}</Badge>
-                        ))}
-                      </Group>
-                    </Box>
-                  )}
-                  {supervisorHint.decision === 'error' && (
-                    <Button
-                      size="xs"
-                      variant="light"
-                      color="red"
-                      mt="xs"
-                      onClick={() => setSupervisorHint(null)}
-                    >
-                      Fermer et réessayer
-                    </Button>
-                  )}
-                </Box>
-              </Group>
-            </Paper>
-          )}
-
           {/* Chat messages */}
           <Stack gap="md" mt={showSuggestions && messages.length === 0 ? 0 : undefined}>
             {messages.map((msg) => (
@@ -2741,8 +2860,12 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
                         >
                           <MessageContent
                             msg={msg}
+                            messageId={String(msg.id)}
                             generatedSpec={generatedSpecs[String(msg.id)]}
                             registry={chatUiRegistry}
+                            chartProposals={chartProposals[String(msg.id)]}
+                            selectedChart={selectedCharts[String(msg.id)]}
+                            onChartSelect={handleChartSelect}
                           />
                         </Paper>
                       )}
@@ -2781,6 +2904,257 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
               </Box>
             ))}
           </Stack>
+
+          {/* Supervisor loading / result / clarification — always at bottom after messages */}
+          {supervisorLoading && (
+            <Paper
+              p="sm"
+              radius="md"
+              mt="md"
+              mb="md"
+              style={{ backgroundColor: '#f8f9fa', border: '1px solid #e9ecef' }}
+            >
+              <Group gap="xs">
+                <Loader size="xs" color="teal" type="dots" />
+                <Text size="sm" c="dimmed">L'agent IA analyse l&apos;intention et les métadonnées Genie...</Text>
+              </Group>
+            </Paper>
+          )}
+
+          {genieError && !supervisorLoading && (
+            <Alert
+              variant="light"
+              color="red"
+              radius="md"
+              mt="md"
+              mb="md"
+              icon={<IconAlertTriangle size={16} />}
+            >
+              <Text size="sm" fw={600}>Appel Genie refusé</Text>
+              <Text size="xs" mt={4} style={{ lineHeight: 1.55 }}>
+                {typeof genieError === 'string' ? genieError : String(genieError)}
+              </Text>
+            </Alert>
+          )}
+
+          {pendingClarification && !supervisorLoading && (
+            <Paper
+              p="sm"
+              radius="md"
+              mt="md"
+              mb="md"
+              style={{ backgroundColor: '#f8f9fa', border: '1px solid #dee2e6' }}
+            >
+              <Group gap="xs" mb="xs" align="flex-start">
+                <IconAlertTriangle size={16} color="#f08c00" />
+                <Box style={{ flex: 1 }}>
+                  <Text size="sm" fw={600}>Clarification requise avant l&apos;envoi à Genie</Text>
+                  <Text size="xs" c="dimmed" mt={2} style={{ lineHeight: 1.55 }}>
+                    {pendingClarification.message}
+                  </Text>
+                </Box>
+              </Group>
+
+              {pendingClarification.rewrittenPrompt && (
+                <Box mb="sm">
+                  <Text size="xs" fw={600} c="dimmed" mb={4}>Reformulation proposée</Text>
+                  <Paper p="xs" radius="sm" style={{ backgroundColor: '#ffffff', border: '1px solid #e9ecef' }}>
+                    <Text size="xs" style={{ lineHeight: 1.55 }}>{pendingClarification.rewrittenPrompt}</Text>
+                  </Paper>
+                </Box>
+              )}
+
+              {pendingClarification.questions.map((question) => (
+                <Box key={question.id} mb="sm">
+                  <Text size="xs" fw={500} mb={4}>{question.label}</Text>
+                  {question.inputType === 'select' && question.options && question.options.length > 0 ? (
+                    <Select
+                      data={question.options}
+                      value={clarificationAnswers[question.id] ?? ''}
+                      onChange={(value) => {
+                        setClarificationAnswers((previous) => ({
+                          ...previous,
+                          [question.id]: value ?? '',
+                        }))
+                      }}
+                      placeholder={question.placeholder || 'Sélectionnez une option'}
+                      size="sm"
+                      radius="sm"
+                      allowDeselect={!question.required}
+                    />
+                  ) : question.inputType === 'number' ? (
+                    <NumberInput
+                      value={clarificationAnswers[question.id] ? Number(clarificationAnswers[question.id]) : undefined}
+                      onChange={(value) => {
+                        setClarificationAnswers((previous) => ({
+                          ...previous,
+                          [question.id]: value == null || value === '' ? '' : String(value),
+                        }))
+                      }}
+                      placeholder={question.placeholder || 'Ajoutez une valeur numérique'}
+                      size="sm"
+                      radius="sm"
+                    />
+                  ) : question.inputType === 'toggle' ? (
+                    <Switch
+                      checked={clarificationAnswers[question.id] === 'true'}
+                      onChange={(event) => {
+                        setClarificationAnswers((previous) => ({
+                          ...previous,
+                          [question.id]: String(event.currentTarget.checked),
+                        }))
+                      }}
+                      size="md"
+                      color="teal"
+                      label={question.placeholder || 'Activer cette option'}
+                    />
+                  ) : (
+                    <TextInput
+                      value={clarificationAnswers[question.id] ?? ''}
+                      onChange={(event) => {
+                        const value = event.currentTarget.value
+                        setClarificationAnswers((previous) => ({
+                          ...previous,
+                          [question.id]: value,
+                        }))
+                      }}
+                      placeholder={question.placeholder || 'Ajoutez une précision'}
+                      size="sm"
+                      radius="sm"
+                    />
+                  )}
+                </Box>
+              ))}
+
+              {(pendingClarification.suggestedTables.length > 0 || pendingClarification.suggestedFunctions.length > 0) && (
+                <Stack gap={6} mb="sm">
+                  {pendingClarification.suggestedTables.length > 0 && (
+                    <Box>
+                      <Text size="xs" fw={600} c="dimmed" mb={4}>Tables suggérées par le knowledge store</Text>
+                      <Group gap={6}>
+                        {pendingClarification.suggestedTables.map((tableName) => (
+                          <Badge key={tableName} size="xs" variant="light" color="teal">{tableName}</Badge>
+                        ))}
+                      </Group>
+                    </Box>
+                  )}
+                  {pendingClarification.suggestedFunctions.length > 0 && (
+                    <Box>
+                      <Text size="xs" fw={600} c="dimmed" mb={4}>Fonctions suggérées par le knowledge store</Text>
+                      <Group gap={6}>
+                        {pendingClarification.suggestedFunctions.map((functionName) => (
+                          <Badge key={functionName} size="xs" variant="outline" color="gray">{functionName}</Badge>
+                        ))}
+                      </Group>
+                    </Box>
+                  )}
+                </Stack>
+              )}
+
+              <Group justify="flex-end" mt="xs">
+                {pendingClarification.rewrittenPrompt && (
+                  <Button
+                    size="xs"
+                    variant="default"
+                    onClick={() => {
+                      const enriched = pendingClarification.enrichedPrompt
+                      const rewritten = pendingClarification.rewrittenPrompt?.trim()
+                      if (!enriched && !rewritten) return
+                      setPendingClarification(null)
+                      if (pendingClarification.canSendDirectly) {
+                        sendMessage(enriched || rewritten!)
+                      } else {
+                        void submitPromptThroughSupervisor(rewritten!)
+                      }
+                    }}
+                  >
+                    {pendingClarification.canSendDirectly ? 'Envoyer à Genie' : 'Utiliser la reformulation'}
+                  </Button>
+                )}
+                <Button size="xs" color="teal" onClick={handleClarificationSubmit}>
+                  {pendingClarification.canSendDirectly ? 'Confirmer et envoyer' : 'Relancer avec ces précisions'}
+                </Button>
+              </Group>
+            </Paper>
+          )}
+
+          {supervisorHint && !pendingClarification && !supervisorLoading && (
+            <Paper
+              p="sm"
+              radius="md"
+              mt="md"
+              mb="md"
+              style={{ backgroundColor: '#f8f9fa', border: '1px solid #e9ecef' }}
+            >
+              <Group gap="xs" align="flex-start">
+                <IconRobot size={16} color="#0c8599" />
+                <Box style={{ flex: 1 }}>
+                  <Text size="xs" fw={600}>Pré-analyse par un agent IA</Text>
+                  <Text size="xs" c="dimmed" style={{ lineHeight: 1.55 }}>
+                    {supervisorHint.message}
+                  </Text>
+                  <Group gap={6} mt={6}>
+                    <Badge size="xs" variant="light" color={
+                      supervisorHint.decision === 'error'
+                        ? 'red'
+                        : supervisorHint.decision === 'clarify'
+                          ? 'orange'
+                          : supervisorHint.decision === 'guide'
+                            ? 'blue'
+                            : 'teal'
+                    }>
+                      {supervisorHint.decision}
+                    </Badge>
+                    {typeof supervisorHint.confidence === 'number' && (
+                      <Badge size="xs" variant="outline" color="gray">
+                        {`Confiance ${Math.round(supervisorHint.confidence * 100)}%`}
+                      </Badge>
+                    )}
+                  </Group>
+                  {supervisorHint.decision === 'error' && (
+                    <Button
+                      size="xs"
+                      variant="light"
+                      color="red"
+                      mt="xs"
+                      onClick={() => setSupervisorHint(null)}
+                    >
+                      Fermer et réessayer
+                    </Button>
+                  )}
+                </Box>
+              </Group>
+            </Paper>
+          )}
+
+          {/* Streaming indicator when Genie is actively responding */}
+          {chatStatus === 'streaming' && !supervisorLoading && (
+            <Box mt="md" px={4}>
+              <Group align="flex-start" gap="xs" wrap="nowrap">
+                <ThemeIcon
+                  size="sm"
+                  radius="xl"
+                  mt={2}
+                  style={{
+                    flexShrink: 0,
+                    background: 'linear-gradient(105deg, #0c8599 0%, #15aabf 100%)',
+                  }}
+                >
+                  <IconSparkles size={12} color="#fff" />
+                </ThemeIcon>
+                <Paper
+                  p="sm"
+                  radius="md"
+                  style={{ backgroundColor: '#f8f9fa', flex: 1 }}
+                >
+                  <Group gap="xs">
+                    <Loader size="xs" color="teal" type="dots" />
+                    <Text size="sm" c="dimmed">Analyse en cours...</Text>
+                  </Group>
+                </Paper>
+              </Group>
+            </Box>
+          )}
         </Box>
       </ScrollArea>
 
@@ -2813,14 +3187,14 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
             size="lg"
             radius="md"
             onClick={() => handleSend()}
-            disabled={!input.trim()}
+            disabled={!input.trim() || chatStatus === 'streaming' || supervisorLoading}
             aria-label="Envoyer"
             style={{
-              background: input.trim()
+              background: input.trim() && chatStatus !== 'streaming' && !supervisorLoading
                 ? 'linear-gradient(105deg, #0c8599 0%, #15aabf 100%)'
                 : '#e9ecef',
               border: 'none',
-              color: input.trim() ? '#fff' : '#adb5bd',
+              color: input.trim() && chatStatus !== 'streaming' && !supervisorLoading ? '#fff' : '#adb5bd',
             }}
           >
             <IconSend size={16} />

@@ -55,6 +55,18 @@ export const chatUiCatalog = defineCatalog(jsonRenderSchema, {
       slots: [],
       description: 'Bar chart visualization.',
     },
+    QueryDataTable: {
+      props: z.object({
+        queryKey: z.string(),
+        parameters: z.record(z.string(), z.any()).optional(),
+        filterColumn: z.string().optional(),
+        filterPlaceholder: z.string().optional(),
+        pageSize: z.number().optional(),
+        caption: z.string().optional(),
+      }),
+      slots: [],
+      description: 'Query-driven data table powered by Databricks Analytics plugin. Uses queryKey to fetch data from a SQL warehouse with built-in pagination, sorting, and filtering.',
+    },
     FormPanel: {
       props: z.object({
         title: z.string().optional(),
@@ -138,6 +150,22 @@ export const chatUiCatalog = defineCatalog(jsonRenderSchema, {
       }),
       slots: [],
       description: 'Workflow input builder for conditions such as equals, contains, greater than, or strictly lower than.',
+    },
+    ChartProposal: {
+      props: z.object({
+        title: z.string().optional(),
+        description: z.string().optional(),
+        proposals: z.array(
+          z.object({
+            chartType: z.string(),
+            label: z.string(),
+            rationale: z.string(),
+          }),
+        ),
+      }),
+      slots: [],
+      description:
+        'Supervisor chart proposal component. Presents 2 chart type suggestions inferred from Genie query results and lets the user pick which visualization to render.',
     },
   },
   actions: {},

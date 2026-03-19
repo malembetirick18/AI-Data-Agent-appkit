@@ -42,7 +42,6 @@
     "@mantine/core": "^8.3.18",
     "@mantine/hooks": "^8.3.18",
     "@tabler/icons-react": "^3.40.0",
-    "antd": "^6.3.3",
     "clsx": "^2.1.1",
     "embla-carousel-react": "^8.6.0",
     "lucide-react": "^0.546.0",
