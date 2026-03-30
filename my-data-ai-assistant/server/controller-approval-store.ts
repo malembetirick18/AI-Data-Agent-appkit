@@ -12,10 +12,10 @@ type ApprovalEntry = {
 
 const approvalStore = new Map<string, ApprovalEntry>();
 
-export const SUPERVISOR_APPROVAL_COOKIE_NAME = 'genie_supervisor_approval';
+export const CONTROLLER_APPROVAL_COOKIE_NAME = 'genie_controller_approval';
 
 function getApprovalTtlMs(): number {
-  const rawValue = Number(process.env.GENIE_SUPERVISOR_APPROVAL_TTL_MS || DEFAULT_APPROVAL_TTL_MS);
+  const rawValue = Number(process.env.GENIE_CONTROLLER_APPROVAL_TTL_MS || DEFAULT_APPROVAL_TTL_MS);
   return Number.isFinite(rawValue) && rawValue > 0 ? rawValue : DEFAULT_APPROVAL_TTL_MS;
 }
 
@@ -31,7 +31,7 @@ function sweepExpiredApprovals(now = Date.now()): void {
   }
 }
 
-export function issueSupervisorApproval(params: { approvedPrompt: string; traceId?: string }): string {
+export function issueControllerApproval(params: { approvedPrompt: string; traceId?: string }): string {
   const approvedPrompt = normalizePrompt(params.approvedPrompt);
   const now = Date.now();
   const ttlMs = getApprovalTtlMs();
@@ -48,7 +48,7 @@ export function issueSupervisorApproval(params: { approvedPrompt: string; traceI
   return token;
 }
 
-export function consumeSupervisorApproval(params: { token: string; content: string }):
+export function consumeControllerApproval(params: { token: string; content: string }):
   | { ok: true; traceId?: string }
   | { ok: false; reason: string } {
   const now = Date.now();
@@ -58,15 +58,15 @@ export function consumeSupervisorApproval(params: { token: string; content: stri
   approvalStore.delete(params.token);
 
   if (!approval) {
-    return { ok: false, reason: 'Missing or expired supervisor approval.' };
+    return { ok: false, reason: 'Missing or expired controller approval.' };
   }
 
   if (approval.expiresAt <= now) {
-    return { ok: false, reason: 'Supervisor approval expired.' };
+    return { ok: false, reason: 'Controller approval expired.' };
   }
 
   if (normalizePrompt(params.content) !== approval.approvedPrompt) {
-    return { ok: false, reason: 'Supervisor approval does not match the Genie prompt.' };
+    return { ok: false, reason: 'Controller approval does not match the Genie prompt.' };
   }
 
   return { ok: true, traceId: approval.traceId };
@@ -88,8 +88,8 @@ export function parseCookieValue(cookieHeader: string | undefined, cookieName: s
   return undefined;
 }
 
-export function setSupervisorApprovalCookie(res: Response, token: string): void {
-  res.cookie(SUPERVISOR_APPROVAL_COOKIE_NAME, token, {
+export function setControllerApprovalCookie(res: Response, token: string): void {
+  res.cookie(CONTROLLER_APPROVAL_COOKIE_NAME, token, {
     httpOnly: true,
     sameSite: 'lax',
     secure: process.env.NODE_ENV === 'production',
@@ -98,8 +98,8 @@ export function setSupervisorApprovalCookie(res: Response, token: string): void 
   });
 }
 
-export function clearSupervisorApprovalCookie(res: Response): void {
-  res.clearCookie(SUPERVISOR_APPROVAL_COOKIE_NAME, {
+export function clearControllerApprovalCookie(res: Response): void {
+  res.clearCookie(CONTROLLER_APPROVAL_COOKIE_NAME, {
     httpOnly: true,
     sameSite: 'lax',
     secure: process.env.NODE_ENV === 'production',

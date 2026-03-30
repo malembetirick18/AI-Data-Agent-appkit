@@ -65,16 +65,6 @@ import {
   ResponsiveContainer,
   BarChart,
   Bar,
-  AreaChart,
-  Area,
-  PieChart,
-  Pie,
-  Cell,
-  RadarChart,
-  Radar,
-  PolarAngleAxis,
-  PolarGrid,
-  PolarRadiusAxis,
   Tooltip as RechartTooltip,
 } from 'recharts'
 import { type Spec } from '@json-render/core'
@@ -786,7 +776,6 @@ const { registry: chatUiRegistry } = defineRegistry(chatUiCatalog, {
         </Paper>
       )
     },
-    ChartProposal: ({ props }) => <ChartProposalPanel proposals={props.proposals} title={props.title} description={props.description} />,
   },
 })
 
@@ -816,87 +805,6 @@ function toStatementResponseFromTable(
   } as GenieStatementResponse
 }
 
-/* ------------------------------------------------------------------ */
-/*  ChartProposalPanel — interactive chart type selector                */
-/* ------------------------------------------------------------------ */
-
-interface ChartProposalItem {
-  chartType: string
-  label: string
-  rationale: string
-}
-
-interface ChartProposalApiResponse {
-  chartProposals: ChartProposalItem[]
-  recommendation: string | null
-  analysisNote?: string
-  traceId?: string
-}
-
-const CHART_TYPE_ICONS: Record<string, string> = {
-  bar: '📊',
-  line: '📈',
-  area: '📉',
-  donut: '🍩',
-  radar: '🕸️',
-}
-
-function ChartProposalPanel({
-  proposals,
-  title,
-  description,
-  selected,
-  onSelect,
-}: {
-  proposals: ChartProposalItem[]
-  title?: string
-  description?: string
-  selected?: string | null
-  onSelect?: (chartType: string) => void
-}) {
-  if (!proposals || proposals.length === 0) return null
-
-  return (
-    <Paper p="sm" withBorder radius="md" mt="xs" mb="xs" style={{ backgroundColor: '#fefefe' }}>
-      {title && <Text size="sm" fw={600} mb={4}>{title}</Text>}
-      {description && <Text size="xs" c="dimmed" mb="sm">{description}</Text>}
-
-      <Group gap="sm" grow>
-        {proposals.map((proposal) => {
-          const isSelected = selected === proposal.chartType
-          return (
-            <Paper
-              key={proposal.chartType}
-              p="sm"
-              radius="sm"
-              withBorder
-              style={{
-                cursor: 'pointer',
-                borderColor: isSelected ? '#228be6' : '#dee2e6',
-                backgroundColor: isSelected ? '#e7f5ff' : '#fff',
-                transition: 'all 150ms ease',
-              }}
-              onClick={() => onSelect?.(proposal.chartType)}
-            >
-              <Group gap={6} mb={4}>
-                <Text size="lg">{CHART_TYPE_ICONS[proposal.chartType] ?? '📊'}</Text>
-                <Text size="xs" fw={600}>{proposal.label}</Text>
-              </Group>
-              <Text size="xs" c="dimmed" style={{ lineHeight: 1.4 }}>
-                {proposal.rationale}
-              </Text>
-              {isSelected && (
-                <Badge size="xs" variant="light" color="blue" mt={6}>
-                  Sélectionné
-                </Badge>
-              )}
-            </Paper>
-          )
-        })}
-      </Group>
-    </Paper>
-  )
-}
 
 /* ------------------------------------------------------------------ */
 /*  Chart data transformation + rendering from GenieStatementResponse  */
@@ -969,207 +877,6 @@ function transformStatementToChartData(statement: GenieStatementResponse): {
   })
 
   return { columns, categoryColumn, numericColumns, data }
-}
-
-/**
- * Renders the selected chart type using Recharts, consuming Genie statement data.
- */
-function SelectedChartRenderer({
-  chartType,
-  statement,
-}: {
-  chartType: string
-  statement: GenieStatementResponse
-}) {
-  const { categoryColumn, numericColumns, data } = useMemo(
-    () => transformStatementToChartData(statement),
-    [statement],
-  )
-
-  if (data.length === 0 || numericColumns.length === 0) {
-    return (
-      <Text size="xs" c="dimmed" ta="center" mt="xs">
-        Données insuffisantes pour générer un graphique.
-      </Text>
-    )
-  }
-
-  const xKey = categoryColumn ?? numericColumns[0]
-  const valueKeys = categoryColumn ? numericColumns : numericColumns.slice(1)
-
-  if (valueKeys.length === 0) {
-    return (
-      <Text size="xs" c="dimmed" ta="center" mt="xs">
-        Pas assez de colonnes numériques pour ce type de graphique.
-      </Text>
-    )
-  }
-
-  if (chartType === 'bar') {
-    return (
-      <Paper p="xs" withBorder radius="sm" mt="sm" style={{ backgroundColor: '#fff' }}>
-        <ResponsiveContainer width="100%" height={220}>
-          <BarChart data={data} margin={{ top: 5, right: 10, left: 0, bottom: 5 }}>
-            <CartesianGrid strokeDasharray="3 3" stroke="#e9ecef" />
-            <XAxis dataKey={xKey} tick={{ fontSize: 10 }} axisLine={{ stroke: '#dee2e6' }} />
-            <YAxis tick={{ fontSize: 10 }} axisLine={{ stroke: '#dee2e6' }} />
-            <RechartTooltip contentStyle={{ fontSize: 11, borderRadius: 6, borderColor: '#dee2e6' }} />
-            <Legend wrapperStyle={{ fontSize: 10 }} />
-            {valueKeys.map((key, i) => (
-              <Bar key={key} dataKey={key} fill={CHART_COLORS[i % CHART_COLORS.length]} radius={[4, 4, 0, 0]} />
-            ))}
-          </BarChart>
-        </ResponsiveContainer>
-      </Paper>
-    )
-  }
-
-  if (chartType === 'line') {
-    return (
-      <Paper p="xs" withBorder radius="sm" mt="sm" style={{ backgroundColor: '#fff' }}>
-        <ResponsiveContainer width="100%" height={220}>
-          <LineChart data={data} margin={{ top: 5, right: 10, left: 0, bottom: 5 }}>
-            <CartesianGrid strokeDasharray="3 3" stroke="#e9ecef" />
-            <XAxis dataKey={xKey} tick={{ fontSize: 10 }} axisLine={{ stroke: '#dee2e6' }} />
-            <YAxis tick={{ fontSize: 10 }} axisLine={{ stroke: '#dee2e6' }} />
-            <RechartTooltip contentStyle={{ fontSize: 11, borderRadius: 6, borderColor: '#dee2e6' }} />
-            <Legend wrapperStyle={{ fontSize: 10 }} iconType="plainline" />
-            {valueKeys.map((key, i) => (
-              <Line key={key} type="monotone" dataKey={key} stroke={CHART_COLORS[i % CHART_COLORS.length]} strokeWidth={2} dot={false} />
-            ))}
-          </LineChart>
-        </ResponsiveContainer>
-      </Paper>
-    )
-  }
-
-  if (chartType === 'area') {
-    return (
-      <Paper p="xs" withBorder radius="sm" mt="sm" style={{ backgroundColor: '#fff' }}>
-        <ResponsiveContainer width="100%" height={220}>
-          <AreaChart data={data} margin={{ top: 5, right: 10, left: 0, bottom: 5 }}>
-            <CartesianGrid strokeDasharray="3 3" stroke="#e9ecef" />
-            <XAxis dataKey={xKey} tick={{ fontSize: 10 }} axisLine={{ stroke: '#dee2e6' }} />
-            <YAxis tick={{ fontSize: 10 }} axisLine={{ stroke: '#dee2e6' }} />
-            <RechartTooltip contentStyle={{ fontSize: 11, borderRadius: 6, borderColor: '#dee2e6' }} />
-            <Legend wrapperStyle={{ fontSize: 10 }} />
-            {valueKeys.map((key, i) => (
-              <Area
-                key={key}
-                type="monotone"
-                dataKey={key}
-                stroke={CHART_COLORS[i % CHART_COLORS.length]}
-                fill={CHART_COLORS[i % CHART_COLORS.length]}
-                fillOpacity={0.15}
-                strokeWidth={2}
-              />
-            ))}
-          </AreaChart>
-        </ResponsiveContainer>
-      </Paper>
-    )
-  }
-
-  if (chartType === 'donut') {
-    // For donut/pie, use the first numeric column as value and category column as name
-    const valueKey = valueKeys[0]
-    const pieData = data.map((row) => ({
-      name: String(row[xKey] ?? ''),
-      value: Number(row[valueKey]) || 0,
-    }))
-    return (
-      <Paper p="xs" withBorder radius="sm" mt="sm" style={{ backgroundColor: '#fff' }}>
-        <ResponsiveContainer width="100%" height={260}>
-          <PieChart>
-            <Pie
-              data={pieData}
-              cx="50%"
-              cy="50%"
-              innerRadius={55}
-              outerRadius={90}
-              paddingAngle={3}
-              dataKey="value"
-              nameKey="name"
-              label={({ name, percent }) => `${name} (${((percent ?? 0) * 100).toFixed(0)}%)`}
-              labelLine={{ strokeWidth: 1 }}
-              style={{ fontSize: 10 }}
-            >
-              {pieData.map((entry) => (
-                <Cell key={`${entry.name}-${entry.value}`} fill={CHART_COLORS[pieData.indexOf(entry) % CHART_COLORS.length]} />
-              ))}
-            </Pie>
-            <RechartTooltip contentStyle={{ fontSize: 11, borderRadius: 6, borderColor: '#dee2e6' }} />
-            <Legend wrapperStyle={{ fontSize: 10 }} />
-          </PieChart>
-        </ResponsiveContainer>
-      </Paper>
-    )
-  }
-
-  if (chartType === 'radar') {
-    // For radar, each row is a subject and each numeric column is a metric
-    return (
-      <Paper p="xs" withBorder radius="sm" mt="sm" style={{ backgroundColor: '#fff' }}>
-        <ResponsiveContainer width="100%" height={280}>
-          <RadarChart data={data} cx="50%" cy="50%" outerRadius="70%">
-            <PolarGrid stroke="#e9ecef" />
-            <PolarAngleAxis dataKey={xKey} tick={{ fontSize: 10 }} />
-            <PolarRadiusAxis tick={{ fontSize: 9 }} />
-            {valueKeys.map((key, i) => (
-              <Radar
-                key={key}
-                name={key}
-                dataKey={key}
-                stroke={CHART_COLORS[i % CHART_COLORS.length]}
-                fill={CHART_COLORS[i % CHART_COLORS.length]}
-                fillOpacity={0.15}
-              />
-            ))}
-            <Legend wrapperStyle={{ fontSize: 10 }} />
-            <RechartTooltip contentStyle={{ fontSize: 11, borderRadius: 6, borderColor: '#dee2e6' }} />
-          </RadarChart>
-        </ResponsiveContainer>
-      </Paper>
-    )
-  }
-
-  // Fallback: bar chart
-  return (
-    <Paper p="xs" withBorder radius="sm" mt="sm" style={{ backgroundColor: '#fff' }}>
-      <ResponsiveContainer width="100%" height={220}>
-        <BarChart data={data} margin={{ top: 5, right: 10, left: 0, bottom: 5 }}>
-          <CartesianGrid strokeDasharray="3 3" stroke="#e9ecef" />
-          <XAxis dataKey={xKey} tick={{ fontSize: 10 }} axisLine={{ stroke: '#dee2e6' }} />
-          <YAxis tick={{ fontSize: 10 }} axisLine={{ stroke: '#dee2e6' }} />
-          <RechartTooltip contentStyle={{ fontSize: 11, borderRadius: 6, borderColor: '#dee2e6' }} />
-          <Legend wrapperStyle={{ fontSize: 10 }} />
-          {valueKeys.map((key, i) => (
-            <Bar key={key} dataKey={key} fill={CHART_COLORS[i % CHART_COLORS.length]} radius={[4, 4, 0, 0]} />
-          ))}
-        </BarChart>
-      </ResponsiveContainer>
-    </Paper>
-  )
-}
-
-async function requestChartProposal(params: {
-  prompt: string
-  statementResponse: unknown
-}): Promise<ChartProposalApiResponse | null> {
-  try {
-    const response = await fetch('/api/genUiDspy/chart-proposal', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        prompt: params.prompt,
-        statementResponse: params.statementResponse,
-      }),
-    })
-    if (!response.ok) return null
-    return (await response.json()) as ChartProposalApiResponse
-  } catch {
-    return null
-  }
 }
 
 function buildGenerativeUiSpec(blocks: ContentBlock[]): GenericUiSpec | null {
@@ -1286,14 +993,16 @@ function buildGenieResultPayload(message: Message): unknown {
 async function generateUiSpecForMessage(params: {
   prompt: string
   genieResult: unknown
+  catalogPrompt: string
 }): Promise<GenericUiSpec | null> {
   try {
-    const response = await fetch('/api/genUiDspy/spec', {
+    const response = await fetch('/api/controllerAiAgent/spec', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         prompt: params.prompt,
         genieResult: params.genieResult,
+        catalogPrompt: params.catalogPrompt,
       }),
     })
 
@@ -1311,7 +1020,7 @@ async function runSupervisorPreflight(params: {
   conversationContext: SupervisorConversationContext
 }): Promise<SupervisorApiResponse | null> {
   try {
-    const response = await fetch('/api/genUiDspy/supervisor', {
+    const response = await fetch('/api/controllerAiAgent/controller', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -1376,39 +1085,16 @@ const MessageContent = memo(function MessageContent({
   messageId,
   generatedSpec,
   registry,
-  chartProposals,
-  selectedChart,
-  onChartSelect,
 }: {
   msg: Message
   messageId: string
   generatedSpec: GenericUiSpec | undefined
   registry: typeof chatUiRegistry
-  chartProposals?: ChartProposalItem[]
-  selectedChart?: string | null
-  onChartSelect?: (messageId: string, chartType: string) => void
 }) {
   const fallbackSpec = useMemo(
     () => (msg.blocks && msg.blocks.length > 0 ? buildGenerativeUiSpec(msg.blocks) : null),
     [msg.blocks]
   )
-
-  const handleSelect = useCallback(
-    (chartType: string) => onChartSelect?.(messageId, chartType),
-    [messageId, onChartSelect],
-  )
-
-  // Extract the first Genie statement from attachments for chart rendering
-  const firstStatement = useMemo(() => {
-    if (!msg.attachments || !msg.queryResults) return null
-    for (const attachment of msg.attachments) {
-      if (!attachment.attachmentId) continue
-      const queryData = msg.queryResults.get(attachment.attachmentId)
-      const statement = toGenieStatementResponse(queryData)
-      if (statement && statement.result?.data_array?.length > 0) return statement
-    }
-    return null
-  }, [msg.attachments, msg.queryResults])
 
   /* Plugin-generated spec available → render via json-render */
   if (generatedSpec) {
@@ -1417,18 +1103,6 @@ const MessageContent = memo(function MessageContent({
         <JSONUIProvider registry={registry}>
           <Renderer spec={generatedSpec} registry={registry} />
         </JSONUIProvider>
-        {chartProposals && chartProposals.length > 0 && (
-          <ChartProposalPanel
-            proposals={chartProposals}
-            title="Suggestions de visualisation"
-            description="Le superviseur propose ces types de graphiques pour vos résultats. Choisissez celui qui vous convient."
-            selected={selectedChart}
-            onSelect={handleSelect}
-          />
-        )}
-        {selectedChart && firstStatement && (
-          <SelectedChartRenderer chartType={selectedChart} statement={firstStatement} />
-        )}
       </>
     )
   }
@@ -1473,18 +1147,6 @@ const MessageContent = memo(function MessageContent({
             </Box>
           )
         })}
-      {chartProposals && chartProposals.length > 0 && !generatedSpec && (
-        <ChartProposalPanel
-          proposals={chartProposals}
-          title="Suggestions de visualisation"
-          description="Le superviseur propose ces types de graphiques pour vos résultats. Choisissez celui qui vous convient."
-          selected={selectedChart}
-          onSelect={handleSelect}
-        />
-      )}
-      {selectedChart && firstStatement && !generatedSpec && (
-        <SelectedChartRenderer chartType={selectedChart} statement={firstStatement} />
-      )}
     </>
   )
 })
@@ -2097,15 +1759,23 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
   // Track first-seen timestamps for Genie messages (they have no timestamp field)
   const genieTimestampsRef = useRef<Map<string, string>>(new Map())
 
+  // Map enriched/rewritten prompts sent to Genie → original user prompt
+  // so the UI always shows the user's original text, not the technical enriched version
+  const enrichedToOriginalRef = useRef<Map<string, string>>(new Map())
+
   // Remove local user messages that are now echoed in genieMessages
   const prevGenieCountRef = useRef(genieMessages.length)
   useEffect(() => {
     if (genieMessages.length > prevGenieCountRef.current) {
       // Build a set of user message contents from genie for fast lookup
+      // Also check enrichedToOriginal mapping so dedup works when enriched prompt was sent
       const genieUserContents = new Set(
         genieMessages
           .filter((m) => m.role === 'user')
-          .map((m) => m.content.trim())
+          .map((m) => {
+            const original = enrichedToOriginalRef.current.get(m.content.trim())
+            return original ?? m.content.trim()
+          })
       )
       setLocalUserMessages((prev) =>
         prev.filter((local) => !genieUserContents.has(local.content.trim()))
@@ -2130,10 +1800,17 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
   // Sort by timestamp ascending (oldest first, newest at bottom)
   const messages: Message[] = useMemo(() => {
     const ts = genieTimestampsRef.current
-    const merged: Message[] = [...genieMessages.map((gm) => ({
-      ...gm,
-      timestamp: (gm as Message).timestamp ?? ts.get(String(gm.id)),
-    })), ...localUserMessages]
+    const eMap = enrichedToOriginalRef.current
+    const merged: Message[] = [...genieMessages.map((gm) => {
+      // Replace enriched/rewritten content with the original user prompt so
+      // technical details (tables, functions, columns) are never shown in the UI
+      const originalContent = gm.role === 'user' ? eMap.get(gm.content.trim()) : undefined
+      return {
+        ...gm,
+        content: originalContent ?? gm.content,
+        timestamp: (gm as Message).timestamp ?? ts.get(String(gm.id)),
+      }
+    }), ...localUserMessages]
     const filtered = merged.filter((msg) => {
       // Always show user messages
       if (msg.role === 'user') return true
@@ -2160,12 +1837,7 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
   const [showSuggestions, setShowSuggestions] = useState(true)
   const viewport = useRef<HTMLDivElement>(null)
   const [generatedSpecs, setGeneratedSpecs] = useState<Record<string, GenericUiSpec>>({})
-  const [chartProposals, setChartProposals] = useState<Record<string, ChartProposalItem[]>>({})
-  const [selectedCharts, setSelectedCharts] = useState<Record<string, string>>({})
-  const handleChartSelect = useCallback((messageId: string, chartType: string) => {
-    setSelectedCharts((prev) => ({ ...prev, [messageId]: chartType }))
-  }, [])
-  const attemptedChartProposalIdsRef = useRef<Set<string>>(new Set())
+
   const inFlightSpecIdsRef = useRef<Set<string>>(new Set())
   const attemptedSpecIdsRef = useRef<Set<string>>(new Set())
   const sessionIdRef = useRef(typeof crypto !== 'undefined' ? crypto.randomUUID() : `session-${Date.now()}`)
@@ -2323,7 +1995,11 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
         setPendingClarification(null)
         setClarificationAnswers({})
         setClarificationRetryCount(0)
-        sendMessage(supervisorResponse.enrichedPrompt || supervisorResponse.rewrittenPrompt?.trim() || trimmedPrompt)
+        const promptToSend = supervisorResponse.enrichedPrompt || supervisorResponse.rewrittenPrompt?.trim() || trimmedPrompt
+        if (promptToSend !== trimmedPrompt) {
+          enrichedToOriginalRef.current.set(promptToSend.trim(), trimmedPrompt)
+        }
+        sendMessage(promptToSend)
         return
       }
 
@@ -2382,6 +2058,7 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
     void generateUiSpecForMessage({
       prompt: latestAssistantMessage.content || blocksToPlainText(latestAssistantMessage.blocks || []),
       genieResult: buildGenieResultPayload(latestAssistantMessage),
+      catalogPrompt: chatUiCatalog.prompt(),
     })
       .then((spec) => {
         setGeneratedSpecs((previous) => {
@@ -2393,36 +2070,6 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
       .finally(() => {
         inFlightSpecIdsRef.current.delete(messageId)
       })
-
-    // Fire chart proposal request if the message has Genie query results
-    const hasQueryResults = latestAssistantMessage.attachments?.some(
-      (a) => a.attachmentId && latestAssistantMessage.queryResults?.has(a.attachmentId)
-    )
-    if (hasQueryResults && !attemptedChartProposalIdsRef.current.has(messageId)) {
-      attemptedChartProposalIdsRef.current.add(messageId)
-      const firstAttachment = latestAssistantMessage.attachments?.find(
-        (a) => a.attachmentId && latestAssistantMessage.queryResults?.has(a.attachmentId)
-      )
-      if (firstAttachment?.attachmentId) {
-        const queryData = latestAssistantMessage.queryResults?.get(firstAttachment.attachmentId)
-        const statement = toGenieStatementResponse(queryData)
-        if (statement && statement.result.data_array.length > 1) {
-          // Truncate before sending — the backend only uses the first 10 rows
-          const truncatedStatement = {
-            manifest: statement.manifest,
-            result: { data_array: statement.result.data_array.slice(0, 50) },
-          }
-          void requestChartProposal({
-            prompt: latestAssistantMessage.content || 'Analyze the query results',
-            statementResponse: truncatedStatement,
-          }).then((result) => {
-            if (result?.chartProposals && result.chartProposals.length > 0) {
-              setChartProposals((prev) => ({ ...prev, [messageId]: result.chartProposals }))
-            }
-          })
-        }
-      }
-    }
   }, [chatStatus, messages])
 
   /* -------- Period confirmation handler (for "fournisseurs inactifs" workflow) -------- */
@@ -2449,13 +2096,11 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
   const handleClear = () => {
     reset()
     setGeneratedSpecs({})
-    setChartProposals({})
-    setSelectedCharts({})
     setLocalUserMessages([])
     inFlightSpecIdsRef.current.clear()
     attemptedSpecIdsRef.current.clear()
-    attemptedChartProposalIdsRef.current.clear()
     lastSpecCandidateIdRef.current = null
+    enrichedToOriginalRef.current.clear()
     setShowSuggestions(true)
     setSupervisorLoading(false)
     setSupervisorHint(null)
@@ -2484,7 +2129,11 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
 
     if (pendingClarification.canSendDirectly) {
       // Supervisor already approved — send directly to Genie
-      sendMessage(pendingClarification.enrichedPrompt || clarifiedPrompt)
+      const promptToSend = pendingClarification.enrichedPrompt || clarifiedPrompt
+      if (promptToSend !== pendingClarification.originalPrompt) {
+        enrichedToOriginalRef.current.set(promptToSend.trim(), pendingClarification.originalPrompt)
+      }
+      sendMessage(promptToSend)
     } else {
       // True clarification (decision was 'clarify') — re-submit through supervisor
       // with the enriched prompt so it gets a fresh approval cookie
@@ -2863,9 +2512,6 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
                             messageId={String(msg.id)}
                             generatedSpec={generatedSpecs[String(msg.id)]}
                             registry={chatUiRegistry}
-                            chartProposals={chartProposals[String(msg.id)]}
-                            selectedChart={selectedCharts[String(msg.id)]}
-                            onChartSelect={handleChartSelect}
                           />
                         </Paper>
                       )}
@@ -2955,15 +2601,6 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
                 </Box>
               </Group>
 
-              {pendingClarification.rewrittenPrompt && (
-                <Box mb="sm">
-                  <Text size="xs" fw={600} c="dimmed" mb={4}>Reformulation proposée</Text>
-                  <Paper p="xs" radius="sm" style={{ backgroundColor: '#ffffff', border: '1px solid #e9ecef' }}>
-                    <Text size="xs" style={{ lineHeight: 1.55 }}>{pendingClarification.rewrittenPrompt}</Text>
-                  </Paper>
-                </Box>
-              )}
-
               {pendingClarification.questions.map((question) => (
                 <Box key={question.id} mb="sm">
                   <Text size="xs" fw={500} mb={4}>{question.label}</Text>
@@ -3026,51 +2663,7 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
                 </Box>
               ))}
 
-              {(pendingClarification.suggestedTables.length > 0 || pendingClarification.suggestedFunctions.length > 0) && (
-                <Stack gap={6} mb="sm">
-                  {pendingClarification.suggestedTables.length > 0 && (
-                    <Box>
-                      <Text size="xs" fw={600} c="dimmed" mb={4}>Tables suggérées par le knowledge store</Text>
-                      <Group gap={6}>
-                        {pendingClarification.suggestedTables.map((tableName) => (
-                          <Badge key={tableName} size="xs" variant="light" color="teal">{tableName}</Badge>
-                        ))}
-                      </Group>
-                    </Box>
-                  )}
-                  {pendingClarification.suggestedFunctions.length > 0 && (
-                    <Box>
-                      <Text size="xs" fw={600} c="dimmed" mb={4}>Fonctions suggérées par le knowledge store</Text>
-                      <Group gap={6}>
-                        {pendingClarification.suggestedFunctions.map((functionName) => (
-                          <Badge key={functionName} size="xs" variant="outline" color="gray">{functionName}</Badge>
-                        ))}
-                      </Group>
-                    </Box>
-                  )}
-                </Stack>
-              )}
-
               <Group justify="flex-end" mt="xs">
-                {pendingClarification.rewrittenPrompt && (
-                  <Button
-                    size="xs"
-                    variant="default"
-                    onClick={() => {
-                      const enriched = pendingClarification.enrichedPrompt
-                      const rewritten = pendingClarification.rewrittenPrompt?.trim()
-                      if (!enriched && !rewritten) return
-                      setPendingClarification(null)
-                      if (pendingClarification.canSendDirectly) {
-                        sendMessage(enriched || rewritten!)
-                      } else {
-                        void submitPromptThroughSupervisor(rewritten!)
-                      }
-                    }}
-                  >
-                    {pendingClarification.canSendDirectly ? 'Envoyer à Genie' : 'Utiliser la reformulation'}
-                  </Button>
-                )}
                 <Button size="xs" color="teal" onClick={handleClarificationSubmit}>
                   {pendingClarification.canSendDirectly ? 'Confirmer et envoyer' : 'Relancer avec ces précisions'}
                 </Button>

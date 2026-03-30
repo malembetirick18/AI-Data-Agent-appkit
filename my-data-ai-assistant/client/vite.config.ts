@@ -6,6 +6,9 @@ import path from 'node:path';
 // https://vite.dev/config/
 export default defineConfig({
   root: __dirname,
+  define: {
+    __AGGRID_LICENSE_KEY__: JSON.stringify(process.env.AGGRID_LICENSE_KEY ?? ''),
+  },
   plugins: [react(), tailwindcss()],
   server: {
     middlewareMode: true,

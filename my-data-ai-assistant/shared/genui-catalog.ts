@@ -151,22 +151,6 @@ export const chatUiCatalog = defineCatalog(jsonRenderSchema, {
       slots: [],
       description: 'Workflow input builder for conditions such as equals, contains, greater than, or strictly lower than.',
     },
-    ChartProposal: {
-      props: z.object({
-        title: z.string().optional(),
-        description: z.string().optional(),
-        proposals: z.array(
-          z.object({
-            chartType: z.string(),
-            label: z.string(),
-            rationale: z.string(),
-          }),
-        ),
-      }),
-      slots: [],
-      description:
-        'Supervisor chart proposal component. Presents 2 chart type suggestions inferred from Genie query results and lets the user pick which visualization to render.',
-    },
   },
   actions: {},
 })

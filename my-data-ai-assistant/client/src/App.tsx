@@ -1,5 +1,7 @@
 import { useState } from 'react'
 import { Box } from '@mantine/core'
+import { LicenseManager as LicenseManagerAgCharts } from 'ag-charts-enterprise';
+import { LicenseManager as LicenseManagerAgGrid } from 'ag-grid-enterprise';
 import { Navbar } from '@/components/navbar'
 import { BreadcrumbBar, PeriodBar } from '@/components/breadcrumb-bar'
 import { ActionBar } from '@/components/action-bar'
@@ -10,6 +12,10 @@ import { ControlsList } from '@/components/controls-list'
 import { AiChatDrawer } from '@/components/ai-chat-drawer'
 import type { SavedControl } from '@/components/ai-chat-drawer'
 import type { SavedControlItem } from '@/components/controls-list'
+
+declare const __AGGRID_LICENSE_KEY__: string;
+LicenseManagerAgCharts.setLicenseKey(__AGGRID_LICENSE_KEY__);
+LicenseManagerAgGrid.setLicenseKey(__AGGRID_LICENSE_KEY__);
 
 export default function App() {
   return <HomePage />;

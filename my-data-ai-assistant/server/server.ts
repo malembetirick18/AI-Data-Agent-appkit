@@ -1,12 +1,12 @@
 import { createApp, genie, server } from '@databricks/appkit';
-import type { Request, Response } from 'express';
-import { genUiDspy } from './genui-dspy-plugin';
+import type { Application, Request, Response } from 'express';
+import { controllerAiAgent } from '../plugins/controller-ai-agent';
 import {
-  SUPERVISOR_APPROVAL_COOKIE_NAME,
-  clearSupervisorApprovalCookie,
-  consumeSupervisorApproval,
+  CONTROLLER_APPROVAL_COOKIE_NAME,
+  clearControllerApprovalCookie,
+  consumeControllerApproval,
   parseCookieValue,
-} from './supervisor-approval-store';
+} from './controller-approval-store';
 
 const genieSpaceId = process.env.DATABRICKS_GENIE_SPACE_ID;
 
@@ -30,7 +30,7 @@ function openSseStream(res: Response): void {
 createApp({
   plugins: [
     server({ autoStart: false }),
-    genUiDspy(),
+    controllerAiAgent(),
     genie(
       genieSpaceId
         ? {
@@ -42,7 +42,7 @@ createApp({
     ),
   ],
 }).then(async (appKit) => {
-  appKit.server.extend((app) => {
+  appKit.server.extend((app: Application) => {
     app.post('/api/supervised-genie/:alias/messages', async (req: Request, res: Response) => {
       const alias = Array.isArray(req.params.alias) ? req.params.alias[0] : req.params.alias;
       const body = req.body as GuardedGenieMessageBody | undefined;
@@ -50,28 +50,28 @@ createApp({
       const conversationId = typeof body?.conversationId === 'string' ? body.conversationId : undefined;
 
       if (!alias) {
-        clearSupervisorApprovalCookie(res);
+        clearControllerApprovalCookie(res);
         res.status(400).json({ error: 'alias is required' });
         return;
       }
 
       if (!content) {
-        clearSupervisorApprovalCookie(res);
+        clearControllerApprovalCookie(res);
         res.status(400).json({ error: 'content is required' });
         return;
       }
 
-      const approvalToken = parseCookieValue(req.headers.cookie, SUPERVISOR_APPROVAL_COOKIE_NAME);
+      const approvalToken = parseCookieValue(req.headers.cookie, CONTROLLER_APPROVAL_COOKIE_NAME);
       if (!approvalToken) {
-        clearSupervisorApprovalCookie(res);
+        clearControllerApprovalCookie(res);
         res.status(403).json({
-          error: 'Genie request blocked: supervisor approval is required before sending a prompt.',
+          error: 'Genie request blocked: controller approval is required before sending a prompt.',
         });
         return;
       }
 
-      const approval = consumeSupervisorApproval({ token: approvalToken, content });
-      clearSupervisorApprovalCookie(res);
+      const approval = consumeControllerApproval({ token: approvalToken, content });
+      clearControllerApprovalCookie(res);
 
       if (!approval.ok) {
         res.status(403).json({

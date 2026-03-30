@@ -4,3 +4,5 @@ env:
     valueFrom: genie-space
   - name: GENIE_KNOWLEDGE_STORE_PATH
     value: catalog_schemas_description/genie_knowledge_store.json
+  - name: AGGRID_LICENSE_KEY
+    valueFrom: aggrid-license-key
