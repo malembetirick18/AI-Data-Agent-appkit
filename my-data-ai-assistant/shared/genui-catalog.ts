@@ -36,24 +36,28 @@ export const chatUiCatalog = defineCatalog(jsonRenderSchema, {
       props: z.object({
         title: z.string(),
         data: z.array(z.record(z.string(), z.union([z.string(), z.number()]))),
-        lines: z.array(z.object({ key: z.string(), color: z.string(), name: z.string() })),
         xKey: z.string(),
+        series: z.array(z.object({
+          yKey: z.string(),
+          yName: z.string(),
+          stroke: z.string().optional(),
+        })),
         yLabel: z.string().optional(),
         source: z.string().optional(),
       }),
       slots: [],
-      description: 'Line chart visualization.',
+      description: 'Line chart using AgCharts. series is an array of {yKey, yName, stroke?}.',
     },
     BarChartViz: {
       props: z.object({
         title: z.string(),
         data: z.array(z.record(z.string(), z.union([z.string(), z.number()]))),
-        barKey: z.string(),
         xKey: z.string(),
-        color: z.string(),
+        yKey: z.string(),
+        color: z.string().optional(),
       }),
       slots: [],
-      description: 'Bar chart visualization.',
+      description: 'Bar chart using AgCharts.',
     },
     QueryDataTable: {
       props: z.object({

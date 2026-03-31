@@ -55,18 +55,11 @@ import {
   IconUpload,
   IconFilter,
 } from '@tabler/icons-react'
-import {
-  LineChart,
-  Line,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  Legend,
-  ResponsiveContainer,
-  BarChart,
-  Bar,
-  Tooltip as RechartTooltip,
-} from 'recharts'
+import { AgGridReact } from 'ag-grid-react'
+import { AgCharts } from 'ag-charts-react'
+import { AllEnterpriseModule, ModuleRegistry, themeQuartz } from 'ag-grid-enterprise'
+
+ModuleRegistry.registerModules([AllEnterpriseModule])
 import { type Spec } from '@json-render/core'
 import { JSONUIProvider, Renderer, defineRegistry } from '@json-render/react'
 import { chatUiCatalog } from '../../../shared/genui-catalog'
@@ -109,8 +102,8 @@ interface LineChartBlock {
   type: 'lineChart'
   title: string
   data: Record<string, string | number>[]
-  lines: { key: string; color: string; name: string }[]
   xKey: string
+  series: { yKey: string; yName: string; stroke?: string }[]
   yLabel?: string
   source?: string
 }
@@ -119,7 +112,7 @@ interface BarChartBlock {
   type: 'barChart'
   title: string
   data: Record<string, string | number>[]
-  barKey: string
+  yKey: string
   xKey: string
   color: string
 }
@@ -153,6 +146,9 @@ interface SupervisorQuestion {
   required?: boolean
   placeholder?: string
   options?: SupervisorQuestionOption[]
+  min?: number
+  max?: number
+  step?: number
 }
 
 interface SupervisorApiResponse {
@@ -170,6 +166,8 @@ interface SupervisorApiResponse {
   traceId?: string
   model?: string
   catalogSource?: 'payload' | 'env-json' | 'env-file' | 'empty'
+  /** True when the agent needs runtime parameters (thresholds, amounts, filters) rather than disambiguation */
+  needsParams?: boolean
 }
 
 interface SupervisorConversationContext {
@@ -191,6 +189,8 @@ interface PendingClarification {
   traceId?: string
   /** When true, the supervisor already approved — user just needs to confirm before Genie */
   canSendDirectly?: boolean
+  /** When true, the agent is collecting runtime parameters (thresholds, amounts, filters) */
+  needsParams?: boolean
 }
 
 function isSupervisorApproved(decision: SupervisorApiResponse['decision'], confidence?: number): boolean {
@@ -288,10 +288,10 @@ function _buildRichResponse(): ContentBlock[] {
       data: lineChartData,
       xKey: 'mois',
       yLabel: 'Dépenses totales (M\u20ac)',
-      lines: [
-        { key: 'a', color: '#1c7ed6', name: '363-vw3sul04' },
-        { key: 'b', color: '#f08c00', name: '3kmctw701a4k' },
-        { key: 'c', color: '#2b8a3e', name: 'cv0zqy89z9xo' },
+      series: [
+        { yKey: 'a', yName: '363-vw3sul04', stroke: '#1c7ed6' },
+        { yKey: 'b', yName: '3kmctw701a4k', stroke: '#f08c00' },
+        { yKey: 'c', yName: 'cv0zqy89z9xo', stroke: '#2b8a3e' },
       ],
       source: 'Tendances mensuelles pour visualisation (3 dossiers principaux)',
     },
@@ -323,7 +323,7 @@ function _buildRichResponse(): ContentBlock[] {
       type: 'barChart',
       title: 'Répartition des fournisseurs par statut de cohérence',
       data: barChartData,
-      barKey: 'count',
+      yKey: 'count',
       xKey: 'statut',
       color: '#1c7ed6',
     },
@@ -525,7 +525,7 @@ function _buildEcartsResponse(): ContentBlock[] {
       type: 'barChart',
       title: 'Nombre de comptes par tranche d\'écart',
       data: ecartsBarData,
-      barKey: 'count',
+      yKey: 'count',
       xKey: 'categorie',
       color: '#e8590c',
     },
@@ -578,58 +578,91 @@ const { registry: chatUiRegistry } = defineRegistry(chatUiCatalog, {
       </List>
     ),
     DataTable: ({ props }) => {
-      const stmtData = toStatementResponseFromTable(props.headers, props.rows)
+      const columnDefs = props.headers.map((h: string) => ({
+        field: h,
+        headerName: h,
+        sortable: true,
+        filter: true,
+        resizable: true,
+        flex: 1,
+        minWidth: 80,
+      }))
+      const rowData = props.rows.map((row: string[]) =>
+        Object.fromEntries(props.headers.map((h: string, i: number) => [h, row[i] ?? '']))
+      )
       return (
         <Box mt="xs" mb="xs">
           {props.caption && <Text size="xs" c="dimmed" mb={4} fs="italic">{props.caption}</Text>}
-          <GenieQueryVisualization data={stmtData} />
+          <div style={{ height: Math.min(300, 48 + rowData.length * 42), width: '100%' }}>
+            <AgGridReact
+              theme={themeQuartz}
+              columnDefs={columnDefs}
+              rowData={rowData}
+              domLayout="normal"
+              suppressMovableColumns
+              pagination={rowData.length > 10}
+              paginationPageSize={10}
+            />
+          </div>
         </Box>
       )
     },
-    LineChartViz: ({ props }) => (
-      <Box mt="md" mb="sm">
-        <Text size="xs" fw={600} mb="xs">{props.title}</Text>
-        <Paper p="xs" withBorder radius="sm" style={{ backgroundColor: '#fff' }}>
-          <ResponsiveContainer width="100%" height={200}>
-            <LineChart data={props.data} margin={{ top: 5, right: 10, left: 0, bottom: 5 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#e9ecef" />
-              <XAxis dataKey={props.xKey} tick={{ fontSize: 10 }} axisLine={{ stroke: '#dee2e6' }} />
-              <YAxis
-                tick={{ fontSize: 10 }}
-                axisLine={{ stroke: '#dee2e6' }}
-                label={props.yLabel ? { value: props.yLabel, angle: -90, position: 'insideLeft', fontSize: 10, dx: -5 } : undefined}
-              />
-              <RechartTooltip contentStyle={{ fontSize: 11, borderRadius: 6, borderColor: '#dee2e6' }} />
-              <Legend wrapperStyle={{ fontSize: 10 }} iconType="plainline" />
-              {props.lines.map((line) => (
-                <Line key={line.key} type="monotone" dataKey={line.key} stroke={line.color} strokeWidth={2} dot={false} name={line.name} />
-              ))}
-            </LineChart>
-          </ResponsiveContainer>
-          {props.source && (
-            <Text size="xs" c="dimmed" ta="right" mt={4} fs="italic">
-              {'Source : ' + props.source}
-            </Text>
-          )}
-        </Paper>
-      </Box>
-    ),
-    BarChartViz: ({ props }) => (
-      <Box mt="md" mb="sm">
-        <Text size="xs" fw={600} mb="xs">{props.title}</Text>
-        <Paper p="xs" withBorder radius="sm" style={{ backgroundColor: '#fff' }}>
-          <ResponsiveContainer width="100%" height={160}>
-            <BarChart data={props.data} margin={{ top: 5, right: 10, left: 0, bottom: 5 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#e9ecef" />
-              <XAxis dataKey={props.xKey} tick={{ fontSize: 10 }} axisLine={{ stroke: '#dee2e6' }} />
-              <YAxis tick={{ fontSize: 10 }} axisLine={{ stroke: '#dee2e6' }} />
-              <RechartTooltip contentStyle={{ fontSize: 11, borderRadius: 6, borderColor: '#dee2e6' }} />
-              <Bar dataKey={props.barKey} fill={props.color} radius={[4, 4, 0, 0]} />
-            </BarChart>
-          </ResponsiveContainer>
-        </Paper>
-      </Box>
-    ),
+    LineChartViz: ({ props }) => {
+      const options = {
+        data: props.data,
+        title: { text: props.title, fontSize: 12, fontWeight: 'bold' as const },
+        series: props.series.map((s: { yKey: string; yName: string; stroke?: string }) => ({
+          type: 'line' as const,
+          xKey: props.xKey,
+          yKey: s.yKey,
+          yName: s.yName,
+          stroke: s.stroke,
+          marker: { enabled: false },
+        })),
+        axes: [
+          { type: 'category' as const, position: 'bottom' as const },
+          {
+            type: 'number' as const,
+            position: 'left' as const,
+            title: props.yLabel ? { text: props.yLabel } : undefined,
+          },
+        ],
+        height: 200,
+        legend: { position: 'bottom' as const },
+      }
+      return (
+        <Box mt="md" mb="sm">
+          <Paper p="xs" withBorder radius="sm" style={{ backgroundColor: '#fff' }}>
+            <AgCharts options={options} />
+            {props.source && (
+              <Text size="xs" c="dimmed" ta="right" mt={4} fs="italic">
+                {'Source : ' + props.source}
+              </Text>
+            )}
+          </Paper>
+        </Box>
+      )
+    },
+    BarChartViz: ({ props }) => {
+      const options = {
+        data: props.data,
+        title: { text: props.title, fontSize: 12, fontWeight: 'bold' as const },
+        series: [{ type: 'bar' as const, xKey: props.xKey, yKey: props.yKey, fill: props.color }],
+        axes: [
+          { type: 'category' as const, position: 'bottom' as const },
+          { type: 'number' as const, position: 'left' as const },
+        ],
+        height: 160,
+        legend: { enabled: false },
+      }
+      return (
+        <Box mt="md" mb="sm">
+          <Paper p="xs" withBorder radius="sm" style={{ backgroundColor: '#fff' }}>
+            <AgCharts options={options} />
+          </Paper>
+        </Box>
+      )
+    },
     QueryDataTable: ({ props }) => (
       <Box mt="xs" mb="xs">
         {props.caption && <Text size="xs" c="dimmed" mb={4} fs="italic">{props.caption}</Text>}
@@ -915,7 +948,7 @@ function buildGenerativeUiSpec(blocks: ContentBlock[]): GenericUiSpec | null {
         props: {
           title: block.title,
           data: block.data,
-          lines: block.lines,
+          series: block.series,
           xKey: block.xKey,
           yLabel: block.yLabel,
           source: block.source,
@@ -928,7 +961,7 @@ function buildGenerativeUiSpec(blocks: ContentBlock[]): GenericUiSpec | null {
         props: {
           title: block.title,
           data: block.data,
-          barKey: block.barKey,
+          yKey: block.yKey,
           xKey: block.xKey,
           color: block.color,
         },
@@ -1230,49 +1263,33 @@ function RenderBlock({ block }: { block: ContentBlock }) {
         </Box>
       )
     }
-    case 'lineChart':
+    case 'lineChart': {
+      const lineOptions = {
+        data: block.data,
+        title: { text: block.title, fontSize: 12, fontWeight: 'bold' as const },
+        series: block.series.map((s) => ({
+          type: 'line' as const,
+          xKey: block.xKey,
+          yKey: s.yKey,
+          yName: s.yName,
+          stroke: s.stroke,
+          marker: { enabled: false },
+        })),
+        axes: [
+          { type: 'category' as const, position: 'bottom' as const },
+          {
+            type: 'number' as const,
+            position: 'left' as const,
+            title: block.yLabel ? { text: block.yLabel } : undefined,
+          },
+        ],
+        height: 200,
+        legend: { position: 'bottom' as const },
+      }
       return (
         <Box mt="md" mb="sm">
-          <Text size="xs" fw={600} mb="xs">{block.title}</Text>
           <Paper p="xs" withBorder radius="sm" style={{ backgroundColor: '#fff' }}>
-            <ResponsiveContainer width="100%" height={200}>
-              <LineChart data={block.data} margin={{ top: 5, right: 10, left: 0, bottom: 5 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#e9ecef" />
-                <XAxis
-                  dataKey={block.xKey}
-                  tick={{ fontSize: 10 }}
-                  axisLine={{ stroke: '#dee2e6' }}
-                  label={{ value: 'Mois', position: 'insideBottomRight', offset: -5, fontSize: 10 }}
-                />
-                <YAxis
-                  tick={{ fontSize: 10 }}
-                  axisLine={{ stroke: '#dee2e6' }}
-                  label={
-                    block.yLabel
-                      ? { value: block.yLabel, angle: -90, position: 'insideLeft', fontSize: 10, dx: -5 }
-                      : undefined
-                  }
-                />
-                <RechartTooltip
-                  contentStyle={{ fontSize: 11, borderRadius: 6, borderColor: '#dee2e6' }}
-                />
-                <Legend
-                  wrapperStyle={{ fontSize: 10 }}
-                  iconType="plainline"
-                />
-                {block.lines.map((line) => (
-                  <Line
-                    key={line.key}
-                    type="monotone"
-                    dataKey={line.key}
-                    stroke={line.color}
-                    strokeWidth={2}
-                    dot={false}
-                    name={line.name}
-                  />
-                ))}
-              </LineChart>
-            </ResponsiveContainer>
+            <AgCharts options={lineOptions} />
             {block.source && (
               <Text size="xs" c="dimmed" ta="right" mt={4} fs="italic">
                 {'Source : ' + block.source}
@@ -1281,23 +1298,27 @@ function RenderBlock({ block }: { block: ContentBlock }) {
           </Paper>
         </Box>
       )
-    case 'barChart':
+    }
+    case 'barChart': {
+      const barOptions = {
+        data: block.data,
+        title: { text: block.title, fontSize: 12, fontWeight: 'bold' as const },
+        series: [{ type: 'bar' as const, xKey: block.xKey, yKey: block.yKey, fill: block.color }],
+        axes: [
+          { type: 'category' as const, position: 'bottom' as const },
+          { type: 'number' as const, position: 'left' as const },
+        ],
+        height: 160,
+        legend: { enabled: false },
+      }
       return (
         <Box mt="md" mb="sm">
-          <Text size="xs" fw={600} mb="xs">{block.title}</Text>
           <Paper p="xs" withBorder radius="sm" style={{ backgroundColor: '#fff' }}>
-            <ResponsiveContainer width="100%" height={160}>
-              <BarChart data={block.data} margin={{ top: 5, right: 10, left: 0, bottom: 5 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#e9ecef" />
-                <XAxis dataKey={block.xKey} tick={{ fontSize: 10 }} axisLine={{ stroke: '#dee2e6' }} />
-                <YAxis tick={{ fontSize: 10 }} axisLine={{ stroke: '#dee2e6' }} />
-                <RechartTooltip contentStyle={{ fontSize: 11, borderRadius: 6, borderColor: '#dee2e6' }} />
-                <Bar dataKey={block.barKey} fill={block.color} radius={[4, 4, 0, 0]} />
-              </BarChart>
-            </ResponsiveContainer>
+            <AgCharts options={barOptions} />
           </Paper>
         </Box>
       )
+    }
     default:
       return null
   }
@@ -1983,6 +2004,7 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
           suggestedFunctions: supervisorResponse.suggestedFunctions ?? [],
           traceId: supervisorResponse.traceId,
           canSendDirectly: false,
+          needsParams: supervisorResponse.needsParams ?? false,
         })
         setClarificationAnswers(
           Object.fromEntries(questions.map((question) => [question.id, ''])) as Record<string, string>
@@ -2589,12 +2611,23 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
               radius="md"
               mt="md"
               mb="md"
-              style={{ backgroundColor: '#f8f9fa', border: '1px solid #dee2e6' }}
+              style={{
+                backgroundColor: pendingClarification.needsParams ? '#f0faf9' : '#f8f9fa',
+                border: `1px solid ${pendingClarification.needsParams ? '#0c8599' : '#dee2e6'}`,
+              }}
             >
               <Group gap="xs" mb="xs" align="flex-start">
-                <IconAlertTriangle size={16} color="#f08c00" />
+                {pendingClarification.needsParams
+                  ? <IconFilter size={16} color="#0c8599" />
+                  : <IconAlertTriangle size={16} color="#f08c00" />
+                }
                 <Box style={{ flex: 1 }}>
-                  <Text size="sm" fw={600}>Clarification requise avant l&apos;envoi à Genie</Text>
+                  <Text size="sm" fw={600}>
+                    {pendingClarification.needsParams
+                      ? 'Paramètres requis pour affiner la requête'
+                      : 'Clarification requise avant l\u2019envoi à Genie'
+                    }
+                  </Text>
                   <Text size="xs" c="dimmed" mt={2} style={{ lineHeight: 1.55 }}>
                     {pendingClarification.message}
                   </Text>
@@ -2629,6 +2662,9 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
                         }))
                       }}
                       placeholder={question.placeholder || 'Ajoutez une valeur numérique'}
+                      min={question.min}
+                      max={question.max}
+                      step={question.step}
                       size="sm"
                       radius="sm"
                     />
@@ -2664,8 +2700,8 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
               ))}
 
               <Group justify="flex-end" mt="xs">
-                <Button size="xs" color="teal" onClick={handleClarificationSubmit}>
-                  {pendingClarification.canSendDirectly ? 'Confirmer et envoyer' : 'Relancer avec ces précisions'}
+                <Button size="xs" color="teal" leftSection={pendingClarification.needsParams ? <IconFilter size={12} /> : undefined} onClick={handleClarificationSubmit}>
+                  {pendingClarification.canSendDirectly ? 'Confirmer et envoyer' : pendingClarification.needsParams ? 'Appliquer les filtres' : 'Relancer avec ces précisions'}
                 </Button>
               </Group>
             </Paper>

@@ -1,0 +1,2404 @@
+{
+  "source": "catalog_schemas_description",
+  "generated_from": [
+    "catalog_schemas_description/mv_table_description_csv.csv",
+    "catalog_schemas_description/mv_table_columns_description_csv.csv",
+    "catalog_schemas_description/functions_defined.csv"
+  ],
+  "table_count": 15,
+  "function_count": 2,
+  "tables": [
+    {
+      "catalog": "jxpeehqyifuv",
+      "schema": "geoficiency",
+      "name": "mv_scheme_account_mapping",
+      "full_name": "jxpeehqyifuv.geoficiency.mv_scheme_account_mapping",
+      "type": "MATERIALIZED_VIEW",
+      "description": "The table contains mappings between accounting schemes and various accounts used in financial operations. It includes details about account identifiers, account numbers, and associated parameters for different categories such as banks, suppliers, and customers. This data can be utilized for financial reporting, account management, and analyzing accounting practices within different schemes.",
+      "columns": [
+        {
+          "name": "sp_folder_id",
+          "ordinal_position": 0,
+          "data_type": "STRING",
+          "description": "Identifier representing the specific folder under which the financial accounts are organized."
+        },
+        {
+          "name": "sp_accounting_scheme_id",
+          "ordinal_position": 1,
+          "data_type": "STRING",
+          "description": "Unique identifier for the accounting scheme associated with the account mapping."
+        },
+        {
+          "name": "sp_account_id",
+          "ordinal_position": 2,
+          "data_type": "STRING",
+          "description": "Identifier for the specific account being used in the financial operations."
+        },
+        {
+          "name": "geo_calc_direction",
+          "ordinal_position": 3,
+          "data_type": "STRING",
+          "description": "Direction of calculation indicating the flow of transactions, which may affect how accounting entries are recorded."
+        },
+        {
+          "name": "scheme_nb_accounting_entry",
+          "ordinal_position": 4,
+          "data_type": "LONG",
+          "description": "A count of the total accounting entries associated with a specific accounting scheme."
+        },
+        {
+          "name": "account_number",
+          "ordinal_position": 5,
+          "data_type": "STRING",
+          "description": "The number assigned to the account, used for unique identification in financial transactions."
+        },
+        {
+          "name": "account_label",
+          "ordinal_position": 6,
+          "data_type": "STRING",
+          "description": "A descriptive label for the account, providing clarity about the account's purpose or type."
+        },
+        {
+          "name": "param_acc_bs_bank",
+          "ordinal_position": 7,
+          "data_type": "INT",
+          "description": "Parameter representing the bank account identifier used in the balance sheet."
+        },
+        {
+          "name": "param_acc_bs_bank_petty_cash",
+          "ordinal_position": 8,
+          "data_type": "INT",
+          "description": "Parameter indicating the petty cash account identifier for banking entries on the balance sheet."
+        },
+        {
+          "name": "param_acc_bs_suppliers",
+          "ordinal_position": 9,
+          "data_type": "INT",
+          "description": "Identifier for the accounts related to suppliers as recorded in the balance sheet."
+        },
+        {
+          "name": "param_acc_bs_customers",
+          "ordinal_position": 10,
+          "data_type": "INT",
+          "description": "Identifier for the accounts related to customers as recorded in the balance sheet."
+        },
+        {
+          "name": "param_acc_pl_expense",
+          "ordinal_position": 11,
+          "data_type": "INT",
+          "description": "Parameter representing the account identifier used for expense entries in the profit and loss statement."
+        },
+        {
+          "name": "param_acc_pl_expense_financial_costs",
+          "ordinal_position": 12,
+          "data_type": "INT",
+          "description": "Specifies the account identifier for financial costs recorded in the profit and loss statement."
+        },
+        {
+          "name": "param_acc_pl_income",
+          "ordinal_position": 13,
+          "data_type": "INT",
+          "description": "Identifier for accounts related to income as recorded in the profit and loss statement."
+        },
+        {
+          "name": "param_acc_pl_income_financial_income",
+          "ordinal_position": 14,
+          "data_type": "INT",
+          "description": "Specifies the account identifier for financial income in the profit and loss statement."
+        },
+        {
+          "name": "param_acc_bs_vat_deductible",
+          "ordinal_position": 15,
+          "data_type": "INT",
+          "description": "Parameter for the account identifier used to track deductible VAT in the balance sheet."
+        },
+        {
+          "name": "param_acc_bs_vat_collected",
+          "ordinal_position": 16,
+          "data_type": "INT",
+          "description": "Identifier for the account that tracks VAT collected, as reflected in the balance sheet."
+        }
+      ]
+    },
+    {
+      "catalog": "jxpeehqyifuv",
+      "schema": "geoficiency",
+      "name": "mv_accounting_entry_enriched",
+      "full_name": "jxpeehqyifuv.geoficiency.mv_accounting_entry_enriched",
+      "type": "MATERIALIZED_VIEW",
+      "description": "The table contains enriched accounting entries, designed to provide detailed insights into financial transactions. This includes data on debits, credits, and balances, as well as various related accounting parameters. Colleagues may find it useful for auditing, financial reporting, and analyzing financial performance across different accounts and document types.",
+      "columns": [
+        {
+          "name": "sp_folder_id",
+          "ordinal_position": 0,
+          "data_type": "STRING",
+          "description": "Identifies the folder associated with the accounting entry, helping organize and categorize financial transactions within the system."
+        },
+        {
+          "name": "sp_accounting_entry_id",
+          "ordinal_position": 1,
+          "data_type": "STRING",
+          "description": "Represents the unique identifier for each accounting entry, facilitating tracking and referencing specific transactions."
+        },
+        {
+          "name": "sp_accounting_scheme_id",
+          "ordinal_position": 2,
+          "data_type": "STRING",
+          "description": "Denotes the accounting scheme applicable to the entry, which defines the framework for recording financial transactions."
+        },
+        {
+          "name": "sp_document_type_id",
+          "ordinal_position": 3,
+          "data_type": "STRING",
+          "description": "Specifies the type of document related to the accounting entry, aiding in the classification of transactions."
+        },
+        {
+          "name": "accounting_entry_number",
+          "ordinal_position": 4,
+          "data_type": "STRING",
+          "description": "Serves as a sequential number assigned to each accounting entry for easy identification and retrieval."
+        },
+        {
+          "name": "total_debit",
+          "ordinal_position": 5,
+          "data_type": "DECIMAL",
+          "description": "Summarizes the total amount of debits recorded in the accounting entry, reflecting outflows or expenses."
+        },
+        {
+          "name": "total_credit",
+          "ordinal_position": 6,
+          "data_type": "DECIMAL",
+          "description": "Summarizes the total amount of credits recorded in the accounting entry, representing inflows or revenues."
+        },
+        {
+          "name": "total_balance",
+          "ordinal_position": 7,
+          "data_type": "DECIMAL",
+          "description": "Calculates the net balance resulting from the total debits and credits, providing a snapshot of the account's standing."
+        },
+        {
+          "name": "nb_lines",
+          "ordinal_position": 8,
+          "data_type": "LONG",
+          "description": "Indicates the number of line items included in the accounting entry, showcasing the level of detail in the transaction."
+        },
+        {
+          "name": "geo_calc_acc_pl_expense_amount",
+          "ordinal_position": 9,
+          "data_type": "DECIMAL",
+          "description": "Represents the calculated amount for expenses within the profit and loss accounting context, aiding in financial reporting."
+        },
+        {
+          "name": "geo_calc_acc_pl_expense_purchase_amount",
+          "ordinal_position": 10,
+          "data_type": "DECIMAL",
+          "description": "Indicates the calculated amount specifically for purchase-related expenses in the profit and loss accounting context."
+        },
+        {
+          "name": "geo_calc_acc_pl_income_revenue_amount",
+          "ordinal_position": 11,
+          "data_type": "DECIMAL",
+          "description": "Reflects the calculated amount for income or revenue within the profit and loss accounting framework."
+        },
+        {
+          "name": "geo_calc_acc_bs_bank_amount",
+          "ordinal_position": 12,
+          "data_type": "DECIMAL",
+          "description": "Summarizes the calculated balance related to bank accounts, essential for balance sheet reporting."
+        },
+        {
+          "name": "geo_calc_acc_bs_suspense_amount",
+          "ordinal_position": 13,
+          "data_type": "DECIMAL",
+          "description": "Indicates the calculated amount associated with suspense accounts, used for temporarily holding transactions that require clarification."
+        },
+        {
+          "name": "geo_calc_acc_bs_deferred_expense_amount",
+          "ordinal_position": 14,
+          "data_type": "DECIMAL",
+          "description": "Represents the calculated amount for deferred expenses on the balance sheet, which are costs incurred but not yet recognized."
+        },
+        {
+          "name": "geo_calc_acc_bs_deferred_income_amount",
+          "ordinal_position": 15,
+          "data_type": "DECIMAL",
+          "description": "Shows the calculated amount for deferred income, indicating revenue received but not yet earned from a balance sheet perspective."
+        },
+        {
+          "name": "geo_calc_acc_bs_accrued_expense_amount",
+          "ordinal_position": 16,
+          "data_type": "DECIMAL",
+          "description": "Summarizes the calculated amount of accrued expenses, which are costs that have been incurred but not yet paid."
+        },
+        {
+          "name": "geo_calc_acc_bs_provision_liabilities_amount",
+          "ordinal_position": 17,
+          "data_type": "DECIMAL",
+          "description": "Indicates the calculated amount for provisions or liabilities, reflecting anticipated obligations on the balance sheet."
+        },
+        {
+          "name": "geo_calc_acc_bs_suppliers_accrued_invoices_amount",
+          "ordinal_position": 18,
+          "data_type": "DECIMAL",
+          "description": "Highlights the calculated amount of accrued invoices related to suppliers, essential for accurate liability reporting."
+        },
+        {
+          "name": "geo_calc_acc_bs_customers_invoices_to_be_issued_amount",
+          "ordinal_position": 19,
+          "data_type": "DECIMAL",
+          "description": "Represents the calculated amount for invoices that are to be issued to customers, indicating future revenue adjustments."
+        },
+        {
+          "name": "geo_calc_entry_deductible_vat_rate",
+          "ordinal_position": 20,
+          "data_type": "DECIMAL",
+          "description": "Shows the calculated rate of VAT that is deductible for the accounting entry, useful for tax reporting and compliance."
+        },
+        {
+          "name": "geo_calc_entry_collected_vat_rate",
+          "ordinal_position": 21,
+          "data_type": "DECIMAL",
+          "description": "Indicates the calculated rate of VAT that has been collected from sales, crucial for understanding tax liabilities."
+        },
+        {
+          "name": "geo_calc_acc_bs_suppliers_amount",
+          "ordinal_position": 22,
+          "data_type": "DECIMAL",
+          "description": "Represents the calculated total amount owed to suppliers, aiding in accounts payable management."
+        },
+        {
+          "name": "geo_calc_acc_bs_customers_amount",
+          "ordinal_position": 23,
+          "data_type": "DECIMAL",
+          "description": "Summarizes the calculated total amount owed by customers, essential for managing accounts receivable."
+        },
+        {
+          "name": "document_type_code",
+          "ordinal_position": 24,
+          "data_type": "STRING",
+          "description": "Contains the code representing the specific type of document related to the accounting entry, useful for categorization."
+        },
+        {
+          "name": "document_type_label",
+          "ordinal_position": 25,
+          "data_type": "STRING",
+          "description": "Provides the label description for the document type associated with the accounting entry, facilitating easier understanding."
+        },
+        {
+          "name": "param_dt_opening_balance",
+          "ordinal_position": 26,
+          "data_type": "INT",
+          "description": "Indicates the parameter for the opening balance, essential for establishing starting points in accounting periods."
+        },
+        {
+          "name": "param_dt_general_journal",
+          "ordinal_position": 27,
+          "data_type": "INT",
+          "description": "Represents the parameter setting for the general journal, which is key to maintaining a comprehensive record of transactions."
+        },
+        {
+          "name": "param_acc_pl_expense",
+          "ordinal_position": 28,
+          "data_type": "INT",
+          "description": "Specifies the parameter for recording expenses in the profit and loss context, critical for accurate financial reporting."
+        },
+        {
+          "name": "param_acc_pl_expense_purchase",
+          "ordinal_position": 29,
+          "data_type": "INT",
+          "description": "Denotes the parameter for expenses specifically related to purchases, aiding in detailed expense tracking."
+        },
+        {
+          "name": "param_acc_pl_income",
+          "ordinal_position": 30,
+          "data_type": "INT",
+          "description": "Indicates the parameter for revenue recognition in the profit and loss accounting framework, important for financial analysis."
+        },
+        {
+          "name": "param_acc_pl_income_revenue",
+          "ordinal_position": 31,
+          "data_type": "INT",
+          "description": "Specifies the parameter for reporting income and revenue, essential for understanding business performance."
+        },
+        {
+          "name": "scheme_param_acc_bs_suppliers",
+          "ordinal_position": 32,
+          "data_type": "INT",
+          "description": "Represents the parameter for the accounting scheme related to suppliers, necessary for managing supplier accounts."
+        },
+        {
+          "name": "scheme_param_acc_bs_customers",
+          "ordinal_position": 33,
+          "data_type": "INT",
+          "description": "Denotes the parameter for the accounting scheme associated with customers, key for managing customer accounts."
+        },
+        {
+          "name": "param_acc_bs_vat_deductible",
+          "ordinal_position": 34,
+          "data_type": "INT",
+          "description": "Indicates the parameter for VAT that is deductible on the balance sheet, important for tax compliance."
+        },
+        {
+          "name": "param_acc_bs_vat_collected",
+          "ordinal_position": 35,
+          "data_type": "INT",
+          "description": "Specifies the parameter for VAT that has been collected, crucial for understanding tax obligations."
+        },
+        {
+          "name": "param_acc_bs_partners_current_accounts",
+          "ordinal_position": 36,
+          "data_type": "INT",
+          "description": "Represents the parameter for managing current accounts related to partners, aiding in partnership accounting."
+        },
+        {
+          "name": "scheme_nb_accounting_entry",
+          "ordinal_position": 37,
+          "data_type": "LONG",
+          "description": "Summarizes the total number of accounting entries within the scheme, providing insights into transaction volume."
+        },
+        {
+          "name": "geo_accounting_scheme_type_code",
+          "ordinal_position": 38,
+          "data_type": "STRING",
+          "description": "Contains the type code for the accounting scheme, helping to categorize and differentiate between various accounting methods."
+        }
+      ]
+    },
+    {
+      "catalog": "jxpeehqyifuv",
+      "schema": "geoficiency",
+      "name": "mv_abnormal_balance_detection",
+      "full_name": "jxpeehqyifuv.geoficiency.mv_abnormal_balance_detection",
+      "type": "MATERIALIZED_VIEW",
+      "description": "The table focuses on detecting abnormal account balances. It includes information about accounts, amounts, and associated dates. This data can be used to identify potential discrepancies in account balances, analyze account behavior, and monitor the performance of supplier and customer accounts.",
+      "columns": [
+        {
+          "name": "sp_folder_id",
+          "ordinal_position": 0,
+          "data_type": "STRING",
+          "description": "Represents the unique identifier for the specific folder associated with the account data, helping to categorize and manage account entries efficiently."
+        },
+        {
+          "name": "sp_data_gl_id",
+          "ordinal_position": 1,
+          "data_type": "STRING",
+          "description": "The unique identifier for the General Ledger entry related to the account, facilitating tracking and reconciliation with financial records."
+        },
+        {
+          "name": "sp_account_id",
+          "ordinal_position": 2,
+          "data_type": "STRING",
+          "description": "Unique identifier for the account being monitored, essential for distinguishing between different account records."
+        },
+        {
+          "name": "amount",
+          "ordinal_position": 3,
+          "data_type": "DECIMAL",
+          "description": "Specifies the monetary value associated with the account entry, which is crucial for evaluating financial activity and discrepancies."
+        },
+        {
+          "name": "account_number",
+          "ordinal_position": 4,
+          "data_type": "STRING",
+          "description": "The primary number assigned to the account, used for identification and reference within financial systems."
+        },
+        {
+          "name": "account_label",
+          "ordinal_position": 5,
+          "data_type": "STRING",
+          "description": "A descriptive label for the account that provides additional context for its purpose or nature, aiding in clarity and understanding."
+        },
+        {
+          "name": "account_class",
+          "ordinal_position": 6,
+          "data_type": "STRING",
+          "description": "Indicates the classification of the account, which helps in segmenting accounts based on their characteristics or usage."
+        },
+        {
+          "name": "aux_account_number",
+          "ordinal_position": 7,
+          "data_type": "STRING",
+          "description": "An auxiliary account number that may provide additional identification or categorization for related accounts."
+        },
+        {
+          "name": "aux_account_label",
+          "ordinal_position": 8,
+          "data_type": "STRING",
+          "description": "An auxiliary label for the account that offers further context and details which may not be captured in the main account label."
+        },
+        {
+          "name": "accounting_entry_date",
+          "ordinal_position": 9,
+          "data_type": "DATE",
+          "description": "The date when the financial entry was recorded, important for tracking the timing of transactions and understanding cash flow."
+        },
+        {
+          "name": "clearing_date",
+          "ordinal_position": 10,
+          "data_type": "DATE",
+          "description": "The date when the account balance was officially cleared, helping to ascertain the timing of reconciliations and transactions."
+        },
+        {
+          "name": "account_balance",
+          "ordinal_position": 11,
+          "data_type": "DECIMAL",
+          "description": "Reflects the current balance of the account, which is pivotal for assessing the financial health and activity of the account."
+        },
+        {
+          "name": "entry_count",
+          "ordinal_position": 12,
+          "data_type": "LONG",
+          "description": "The total number of entries associated with the account, providing insight into the frequency and volume of transactions."
+        },
+        {
+          "name": "expected_balance_type",
+          "ordinal_position": 13,
+          "data_type": "STRING",
+          "description": "Defines the anticipated classification of the balance, which aids in comparing expected versus actual account performance."
+        },
+        {
+          "name": "actual_balance_type",
+          "ordinal_position": 14,
+          "data_type": "STRING",
+          "description": "Indicates the classification of the current balance, playing a crucial role in discrepancy analysis and account review."
+        },
+        {
+          "name": "is_abnormal_balance",
+          "ordinal_position": 15,
+          "data_type": "INT",
+          "description": "A flag indicating whether the account balance is considered abnormal, which is key for identifying irregularities that may require further investigation."
+        },
+        {
+          "name": "is_supplier_account",
+          "ordinal_position": 16,
+          "data_type": "INT",
+          "description": "Denotes whether the account is classified as a supplier account, providing context for the relationship and transactions involved."
+        },
+        {
+          "name": "is_customer_account",
+          "ordinal_position": 17,
+          "data_type": "INT",
+          "description": "Indicates if the account is a customer account, helping in distinguishing account types for analytical purposes."
+        }
+      ]
+    },
+    {
+      "catalog": "jxpeehqyifuv",
+      "schema": "geoficiency",
+      "name": "mv_gl_by_document_type",
+      "full_name": "jxpeehqyifuv.geoficiency.mv_gl_by_document_type",
+      "type": "MATERIALIZED_VIEW",
+      "description": "The table contains data related to general ledger entries categorized by document type. It records essential details such as account IDs, transaction amounts, and dates. This information can be utilized for financial analysis, ensuring accurate accounting practices, and tracking changes over time, among other accounting-related queries.",
+      "columns": [
+        {
+          "name": "sp_folder_id",
+          "ordinal_position": 0,
+          "data_type": "STRING",
+          "description": "Identifier for the folder associated with the specific document, used for organizational purposes within the ledger system."
+        },
+        {
+          "name": "sp_data_gl_id",
+          "ordinal_position": 1,
+          "data_type": "STRING",
+          "description": "Unique identifier for the general ledger data entry, allowing for precise tracking of financial records."
+        },
+        {
+          "name": "sp_accounting_entry_id",
+          "ordinal_position": 2,
+          "data_type": "STRING",
+          "description": "Identifier for each individual accounting entry, facilitating easy reference and audit trails."
+        },
+        {
+          "name": "sp_account_id",
+          "ordinal_position": 3,
+          "data_type": "STRING",
+          "description": "Unique identifier for the specific account involved in the transaction, essential for accurate financial reporting."
+        },
+        {
+          "name": "sp_third_party_id",
+          "ordinal_position": 4,
+          "data_type": "STRING",
+          "description": "Identifier for third-party entities associated with the transaction, which may include vendors or customers."
+        },
+        {
+          "name": "sp_data_user_id",
+          "ordinal_position": 5,
+          "data_type": "STRING",
+          "description": "Identifier for the user who entered the data, providing accountability and traceability for the entries."
+        },
+        {
+          "name": "amount",
+          "ordinal_position": 6,
+          "data_type": "DECIMAL",
+          "description": "The monetary value associated with the transaction, representing the difference in the ledger for this entry."
+        },
+        {
+          "name": "debit",
+          "ordinal_position": 7,
+          "data_type": "DECIMAL",
+          "description": "Total debit amount recorded in the transaction, contributing to the fundamental accounting principles of double-entry bookkeeping."
+        },
+        {
+          "name": "credit",
+          "ordinal_position": 8,
+          "data_type": "DECIMAL",
+          "description": "Total credit amount recorded in the transaction, balancing the corresponding debits in accordance with accounting standards."
+        },
+        {
+          "name": "accounting_entry_date",
+          "ordinal_position": 9,
+          "data_type": "DATE",
+          "description": "The date on which the accounting entry was recorded, critical for tracking financial events accurately."
+        },
+        {
+          "name": "valid_date",
+          "ordinal_position": 10,
+          "data_type": "DATE",
+          "description": "The date indicating when the entry is valid for accounting purposes, influencing reporting and compliance."
+        },
+        {
+          "name": "doc_date",
+          "ordinal_position": 11,
+          "data_type": "DATE",
+          "description": "The date when the document or transaction occurred, important for understanding the timeline of financial activities."
+        },
+        {
+          "name": "doc_ref",
+          "ordinal_position": 12,
+          "data_type": "STRING",
+          "description": "Reference number for the document related to the entry, aiding in easy retrieval and verification of supporting documentation."
+        },
+        {
+          "name": "creation_date",
+          "ordinal_position": 13,
+          "data_type": "DATE",
+          "description": "The date the entry was created in the ledger system, useful for understanding the timeliness of data input."
+        },
+        {
+          "name": "clearing_ref",
+          "ordinal_position": 14,
+          "data_type": "STRING",
+          "description": "Reference number for any clearing transactions related to this entry, significant for reconciling offsets."
+        },
+        {
+          "name": "clearing_date",
+          "ordinal_position": 15,
+          "data_type": "DATE",
+          "description": "The date when any clearing transactions occurred, which is important for closing and finalizing financial records."
+        },
+        {
+          "name": "accounting_entry_label",
+          "ordinal_position": 16,
+          "data_type": "STRING",
+          "description": "Descriptive label providing information about the nature or purpose of the accounting entry for clarity and context."
+        },
+        {
+          "name": "geo_calc_direction",
+          "ordinal_position": 17,
+          "data_type": "STRING",
+          "description": "Indicates the directional aspect of the calculation related to the geographic allocation, relevant for spatial financial analysis."
+        },
+        {
+          "name": "data_user_code",
+          "ordinal_position": 18,
+          "data_type": "STRING",
+          "description": "Code representing the user who inputted the data, critical for performance tracking and error accountability."
+        },
+        {
+          "name": "document_type_id",
+          "ordinal_position": 19,
+          "data_type": "STRING",
+          "description": "Identifier for the type of document, categorizing the entry for reporting and analysis purposes."
+        },
+        {
+          "name": "document_type_code",
+          "ordinal_position": 20,
+          "data_type": "STRING",
+          "description": "Code representing the type of document, helping in quick identification and classification in the ledger."
+        },
+        {
+          "name": "document_type_label",
+          "ordinal_position": 21,
+          "data_type": "STRING",
+          "description": "Label describing the document type, providing intuitive insights into the category of the financial entry."
+        },
+        {
+          "name": "param_dt_opening_balance",
+          "ordinal_position": 22,
+          "data_type": "INT",
+          "description": "Parameter indicating the opening balance at a specific date, essential for examining initial financial standing."
+        },
+        {
+          "name": "param_dt_general_journal",
+          "ordinal_position": 23,
+          "data_type": "INT",
+          "description": "Parameter detailing the general journal entries, which are foundational to financial record-keeping."
+        },
+        {
+          "name": "dt_total_balance",
+          "ordinal_position": 24,
+          "data_type": "DECIMAL",
+          "description": "The cumulative balance after all entries have been processed, representing the financial status at a given moment."
+        },
+        {
+          "name": "dt_nb_accounting_entry",
+          "ordinal_position": 25,
+          "data_type": "LONG",
+          "description": "Total number of accounting entries recorded, providing insights into the volume of transactions processed."
+        },
+        {
+          "name": "geo_calc_nb_entry_batch_by_doc_type",
+          "ordinal_position": 26,
+          "data_type": "INT",
+          "description": "Counts the number of entries in batches by document type, aiding in analysis of transaction patterns."
+        },
+        {
+          "name": "geo_calc_nb_entry_manual_by_doc_type",
+          "ordinal_position": 27,
+          "data_type": "INT",
+          "description": "Counts the number of manually entered entries by document type, important for understanding manual intervention in data accuracy."
+        }
+      ]
+    },
+    {
+      "catalog": "jxpeehqyifuv",
+      "schema": "geoficiency",
+      "name": "mv_vendor_master",
+      "full_name": "jxpeehqyifuv.geoficiency.mv_vendor_master",
+      "type": "MATERIALIZED_VIEW",
+      "description": "The table contains information about vendors, including their identification details and banking information. This data can be used for vendor management purposes, such as onboarding vendors, verifying their credentials, and facilitating payments. Key information includes vendor IDs, registration numbers, and bank account details.",
+      "columns": [
+        {
+          "name": "sp_folder_id",
+          "ordinal_position": 0,
+          "data_type": "STRING",
+          "description": "Identifier for the specific folder associated with the vendor, used for organization and categorization within the system."
+        },
+        {
+          "name": "sp_vendor_id",
+          "ordinal_position": 1,
+          "data_type": "STRING",
+          "description": "Unique identifier assigned to each vendor for tracking and reference throughout the vendor management process."
+        },
+        {
+          "name": "aux_account_number",
+          "ordinal_position": 2,
+          "data_type": "STRING",
+          "description": "Alternative account number for the vendor, which may be used for various accounting purposes or additional banking information."
+        },
+        {
+          "name": "aux_account_label",
+          "ordinal_position": 3,
+          "data_type": "STRING",
+          "description": "Descriptive label associated with the alternative account number to clarify its purpose or usage."
+        },
+        {
+          "name": "vat_registration_number",
+          "ordinal_position": 4,
+          "data_type": "STRING",
+          "description": "Unique number assigned to the vendor for VAT purposes, important for tax compliance and invoicing."
+        },
+        {
+          "name": "company_registration_number",
+          "ordinal_position": 5,
+          "data_type": "STRING",
+          "description": "Official registration number of the vendor's company, required for legal identification and verification processes."
+        },
+        {
+          "name": "country",
+          "ordinal_position": 6,
+          "data_type": "STRING",
+          "description": "Country where the vendor is located, which is crucial for regional compliance and logistics."
+        },
+        {
+          "name": "city",
+          "ordinal_position": 7,
+          "data_type": "STRING",
+          "description": "City in which the vendor operates or is registered, providing additional geographical context."
+        },
+        {
+          "name": "postal_code",
+          "ordinal_position": 8,
+          "data_type": "STRING",
+          "description": "Postal code associated with the vendor's address, necessary for accurate mail delivery and verification."
+        },
+        {
+          "name": "address",
+          "ordinal_position": 9,
+          "data_type": "STRING",
+          "description": "Complete address of the vendor, including street details, which is important for communications and shipping."
+        },
+        {
+          "name": "bank_iban",
+          "ordinal_position": 10,
+          "data_type": "STRING",
+          "description": "International Bank Account Number assigned to the vendor's bank account, used for international transactions."
+        },
+        {
+          "name": "bank_swift",
+          "ordinal_position": 11,
+          "data_type": "STRING",
+          "description": "SWIFT code representing the vendor's bank, essential for identifying the bank during international money transfers."
+        },
+        {
+          "name": "bank_account_number",
+          "ordinal_position": 12,
+          "data_type": "STRING",
+          "description": "Specific bank account number of the vendor, required for processing payments and transactions."
+        },
+        {
+          "name": "bank_key",
+          "ordinal_position": 13,
+          "data_type": "STRING",
+          "description": "Bank key associated with the vendor's account, which may be necessary for payment processing and accounting."
+        },
+        {
+          "name": "bank_country",
+          "ordinal_position": 14,
+          "data_type": "STRING",
+          "description": "Country where the vendor's bank is located, important for understanding the banking regulations that apply."
+        },
+        {
+          "name": "bank_control_key",
+          "ordinal_position": 15,
+          "data_type": "STRING",
+          "description": "Control key used for bank account verification purposes, providing an additional layer of security in transactions."
+        }
+      ]
+    },
+    {
+      "catalog": "jxpeehqyifuv",
+      "schema": "geoficiency",
+      "name": "mv_potential_duplicates_supplier",
+      "full_name": "jxpeehqyifuv.geoficiency.mv_potential_duplicates_supplier",
+      "type": "MATERIALIZED_VIEW",
+      "description": "The table lists potential duplicate suppliers within the system. It includes data such as identifiers, amounts associated with transactions, and the date of documentation. Possible use cases include identifying and merging duplicate supplier accounts, tracking the frequency of occurrences, and analyzing financial data associated with these suppliers.",
+      "columns": [
+        {
+          "name": "sp_folder_id",
+          "ordinal_position": 0,
+          "data_type": "STRING",
+          "description": "Identifies the specific folder associated with the supplier, providing context for where the supplier's records are stored within the system."
+        },
+        {
+          "name": "sp_third_party_id",
+          "ordinal_position": 1,
+          "data_type": "STRING",
+          "description": "Represents the unique identifier assigned to the third-party supplier, facilitating the link between the supplier and external systems."
+        },
+        {
+          "name": "amount",
+          "ordinal_position": 2,
+          "data_type": "DECIMAL",
+          "description": "Indicates the financial amount related to transactions involving the supplier, which can be critical for auditing and reconciling accounts."
+        },
+        {
+          "name": "doc_date",
+          "ordinal_position": 3,
+          "data_type": "DATE",
+          "description": "Represents the date when the documentation for the supplier was created or recorded, essential for tracking historical changes and activities."
+        },
+        {
+          "name": "doc_ref",
+          "ordinal_position": 4,
+          "data_type": "STRING",
+          "description": "Contains the reference number or code for the documentation related to the supplier, serving as a pointer for further details or verification."
+        },
+        {
+          "name": "occurrence_count",
+          "ordinal_position": 5,
+          "data_type": "LONG",
+          "description": "Shows the number of times a potential duplicate supplier has been detected, useful for identifying heavily duplicated accounts."
+        },
+        {
+          "name": "gl_ids",
+          "ordinal_position": 6,
+          "data_type": "ARRAY",
+          "description": "Lists the general ledger IDs associated with the supplier, allowing tracking of related financial transactions across different accounts."
+        },
+        {
+          "name": "entry_ids",
+          "ordinal_position": 7,
+          "data_type": "ARRAY",
+          "description": "Contains the entry IDs linked to transactions of the supplier, providing a way to trace back individual transactions for further analysis."
+        }
+      ]
+    },
+    {
+      "catalog": "jxpeehqyifuv",
+      "schema": "geoficiency",
+      "name": "mv_gl_core",
+      "full_name": "jxpeehqyifuv.geoficiency.mv_gl_core",
+      "type": "MATERIALIZED_VIEW",
+      "description": "The table contains financial data related to accounting entries. It includes information such as amounts, account IDs, transaction dates, and various parameters associated with financial operations. Possible use cases include financial reporting, analyzing account balances, and auditing transactions to ensure accuracy and compliance.",
+      "columns": [
+        {
+          "name": "sp_folder_id",
+          "ordinal_position": 0,
+          "data_type": "STRING",
+          "description": "Identifies the folder associated with the specific set of accounting entries for organizational purposes."
+        },
+        {
+          "name": "sp_data_gl_id",
+          "ordinal_position": 1,
+          "data_type": "STRING",
+          "description": "Represents the unique identifier for ledger entries within the general ledger, facilitating tracking and reporting."
+        },
+        {
+          "name": "sp_accounting_entry_id",
+          "ordinal_position": 2,
+          "data_type": "STRING",
+          "description": "A unique identifier for each accounting entry, crucial for tracing and auditing financial transactions."
+        },
+        {
+          "name": "sp_account_id",
+          "ordinal_position": 3,
+          "data_type": "STRING",
+          "description": "Denotes the specific account associated with the transaction, linking it to relevant financial records."
+        },
+        {
+          "name": "sp_third_party_id",
+          "ordinal_position": 4,
+          "data_type": "STRING",
+          "description": "Specifies the identifier for third-party entities involved in the transaction, ensuring clarity in external interactions."
+        },
+        {
+          "name": "sp_data_user_id",
+          "ordinal_position": 5,
+          "data_type": "STRING",
+          "description": "Represents the identifier for the user who recorded the accounting entry, assisting in accountability and traceability."
+        },
+        {
+          "name": "sp_document_type_id",
+          "ordinal_position": 6,
+          "data_type": "STRING",
+          "description": "Categorizes the type of document related to the accounting entry, aiding in classification and search efforts."
+        },
+        {
+          "name": "amount",
+          "ordinal_position": 7,
+          "data_type": "DECIMAL",
+          "description": "Indicates the total monetary value of the transaction, essential for financial analysis and reporting."
+        },
+        {
+          "name": "debit",
+          "ordinal_position": 8,
+          "data_type": "DECIMAL",
+          "description": "Represents the total debit amount recorded for the accounting entry, key for balancing accounts."
+        },
+        {
+          "name": "credit",
+          "ordinal_position": 9,
+          "data_type": "DECIMAL",
+          "description": "Shows the total credit amount in the accounting entry, providing critical information for financial balancing."
+        },
+        {
+          "name": "currency",
+          "ordinal_position": 10,
+          "data_type": "STRING",
+          "description": "Specifies the currency used in the transaction, which is vital for accurate financial reporting across different currencies."
+        },
+        {
+          "name": "amount_currency",
+          "ordinal_position": 11,
+          "data_type": "DECIMAL",
+          "description": "Displays the equivalent amount in a specific currency, facilitating conversions and comparative financial analysis."
+        },
+        {
+          "name": "account_number",
+          "ordinal_position": 12,
+          "data_type": "STRING",
+          "description": "Denotes the number associated with the account involved in the transaction, essential for identification."
+        },
+        {
+          "name": "account_label",
+          "ordinal_position": 13,
+          "data_type": "STRING",
+          "description": "Provides a descriptive label for the account, enhancing clarity in financial documentation and reporting."
+        },
+        {
+          "name": "aux_account_number",
+          "ordinal_position": 14,
+          "data_type": "STRING",
+          "description": "Represents the auxiliary account number, which may be related to special transactions or sub-accounts."
+        },
+        {
+          "name": "aux_account_label",
+          "ordinal_position": 15,
+          "data_type": "STRING",
+          "description": "Offers a label for the auxiliary account, aiding in understanding its purpose and relation to the primary account."
+        },
+        {
+          "name": "accounting_entry_date",
+          "ordinal_position": 16,
+          "data_type": "DATE",
+          "description": "Indicates the date when the accounting entry was recorded, essential for chronological documentation."
+        },
+        {
+          "name": "valid_date",
+          "ordinal_position": 17,
+          "data_type": "DATE",
+          "description": "Represents the date from which the entry is valid, important for managing the timing of financial operations."
+        },
+        {
+          "name": "doc_date",
+          "ordinal_position": 18,
+          "data_type": "DATE",
+          "description": "Specifies the date on the related document, critical for reconciling records with external documents."
+        },
+        {
+          "name": "doc_ref",
+          "ordinal_position": 19,
+          "data_type": "STRING",
+          "description": "Contains a reference number for the document related to the transaction, facilitating easier lookup and tracing."
+        },
+        {
+          "name": "creation_date",
+          "ordinal_position": 20,
+          "data_type": "DATE",
+          "description": "Shows the date when the entry was created, helping track the origin of the data."
+        },
+        {
+          "name": "clearing_ref",
+          "ordinal_position": 21,
+          "data_type": "STRING",
+          "description": "Indicates a reference number used in clearing transactions, significant for ensuring proper settlement."
+        },
+        {
+          "name": "clearing_date",
+          "ordinal_position": 22,
+          "data_type": "DATE",
+          "description": "Represents the date when the clearing process was completed, important for financial reporting accuracy."
+        },
+        {
+          "name": "accounting_entry_label",
+          "ordinal_position": 23,
+          "data_type": "STRING",
+          "description": "Provides a descriptive label for the accounting entry, enhancing comprehension and context."
+        },
+        {
+          "name": "geo_calc_direction",
+          "ordinal_position": 24,
+          "data_type": "STRING",
+          "description": "Denotes the calculation direction for geographical financial assessments, aiding in diverse analytical needs."
+        },
+        {
+          "name": "geo_calc_due_date",
+          "ordinal_position": 25,
+          "data_type": "DATE",
+          "description": "Indicates the due date for geographical financial calculations, crucial for timely financial obligations."
+        },
+        {
+          "name": "purchase_order",
+          "ordinal_position": 26,
+          "data_type": "STRING",
+          "description": "Represents the purchase order number associated with the transaction, important for procurement-related entries."
+        },
+        {
+          "name": "data_user_code",
+          "ordinal_position": 27,
+          "data_type": "STRING",
+          "description": "Contains a code representing the user responsible for the data entry, facilitating accountability."
+        },
+        {
+          "name": "param_acc_bs_bank",
+          "ordinal_position": 28,
+          "data_type": "INT",
+          "description": "Refers to the parameter associated with bank balances in the balance sheet, critical for financial analysis."
+        },
+        {
+          "name": "param_acc_bs_bank_petty_cash",
+          "ordinal_position": 29,
+          "data_type": "INT",
+          "description": "Indicates the parameter for petty cash in the balance sheet, important for managing smaller cash transactions."
+        },
+        {
+          "name": "param_acc_bs_customers",
+          "ordinal_position": 30,
+          "data_type": "INT",
+          "description": "Represents the parameter for customer balances in the balance sheet, essential for accounts receivable tracking."
+        },
+        {
+          "name": "param_acc_bs_suppliers",
+          "ordinal_position": 31,
+          "data_type": "INT",
+          "description": "Denotes the parameter for supplier balances in the balance sheet, critical for accounts payable management."
+        },
+        {
+          "name": "param_acc_bs_inventory",
+          "ordinal_position": 32,
+          "data_type": "INT",
+          "description": "Indicates the parameter associated with inventory levels in the balance sheet, important for asset management."
+        },
+        {
+          "name": "param_acc_bs_assets",
+          "ordinal_position": 33,
+          "data_type": "INT",
+          "description": "Refers to the general asset parameters included in the balance sheet, crucial for asset evaluation."
+        },
+        {
+          "name": "param_acc_bs_suspense",
+          "ordinal_position": 34,
+          "data_type": "INT",
+          "description": "Represents parameters for suspense accounts in the balance sheet, used for unallocated transactions."
+        },
+        {
+          "name": "param_acc_bs_intragroup",
+          "ordinal_position": 35,
+          "data_type": "INT",
+          "description": "Indicates parameters for intragroup transactions in the balance sheet, significant for inter-company accounting."
+        },
+        {
+          "name": "param_acc_bs_vat_collected",
+          "ordinal_position": 36,
+          "data_type": "INT",
+          "description": "Refers to the parameters for VAT collected as shown on the balance sheet, important for compliance."
+        },
+        {
+          "name": "param_acc_bs_vat_deductible",
+          "ordinal_position": 37,
+          "data_type": "INT",
+          "description": "Denotes parameters for deductible VAT in the balance sheet, crucial for tax assessments."
+        },
+        {
+          "name": "param_acc_bs_vat_to_be_paid",
+          "ordinal_position": 38,
+          "data_type": "INT",
+          "description": "Represents parameters for VAT obligations in the balance sheet, important for liability tracking."
+        },
+        {
+          "name": "param_acc_bs_vat_credit_to_be_carried_forward",
+          "ordinal_position": 39,
+          "data_type": "INT",
+          "description": "Indicates parameters for VAT credits to be carried forward, significant for future tax considerations."
+        },
+        {
+          "name": "param_acc_bs_tax_social_debts",
+          "ordinal_position": 40,
+          "data_type": "INT",
+          "description": "Denotes parameters for taxes and social contributions in the balance sheet, essential for regulatory compliance."
+        },
+        {
+          "name": "param_acc_bs_other_payables_receivables",
+          "ordinal_position": 41,
+          "data_type": "INT",
+          "description": "Refers to parameters for other payable and receivable accounts in the balance sheet, important for comprehensive accounting."
+        },
+        {
+          "name": "param_acc_bs_deferred_expense",
+          "ordinal_position": 42,
+          "data_type": "INT",
+          "description": "Indicates parameters for deferred expenses in the balance sheet, relevant for accounting principles."
+        },
+        {
+          "name": "param_acc_bs_deferred_income",
+          "ordinal_position": 43,
+          "data_type": "INT",
+          "description": "Represents parameters for deferred income, important for revenue recognition standards."
+        },
+        {
+          "name": "param_acc_bs_accrued_expense",
+          "ordinal_position": 44,
+          "data_type": "INT",
+          "description": "Denotes parameters for accrued expenses in the balance sheet, crucial for accurate financial reporting."
+        },
+        {
+          "name": "param_acc_bs_provision_liabilities",
+          "ordinal_position": 45,
+          "data_type": "INT",
+          "description": "Refers to parameters for liabilities provisions in the balance sheet, significant for risk management."
+        },
+        {
+          "name": "param_acc_bs_suppliers_accrued_invoices",
+          "ordinal_position": 46,
+          "data_type": "INT",
+          "description": "Indicates parameters for invoices accrued from suppliers, vital for financial operations."
+        },
+        {
+          "name": "param_acc_bs_suppliers_accrued_credit_notes",
+          "ordinal_position": 47,
+          "data_type": "INT",
+          "description": "Represents parameters for accrued credit notes from suppliers, important for tracking financial adjustments."
+        },
+        {
+          "name": "param_acc_bs_customers_invoices_to_be_issued",
+          "ordinal_position": 48,
+          "data_type": "INT",
+          "description": "Denotes parameters for invoices due to be issued to customers, crucial for cash flow management."
+        },
+        {
+          "name": "param_acc_bs_customers_credit_notes_to_be_issued",
+          "ordinal_position": 49,
+          "data_type": "INT",
+          "description": "Indicates parameters for credit notes yet to be issued to customers, important for accounts receivable accuracy."
+        },
+        {
+          "name": "param_acc_bs_customers_accrued_notes",
+          "ordinal_position": 50,
+          "data_type": "INT",
+          "description": "Counts of accrued notes related to customers in the balance sheet, indicating potential liabilities owed to customers."
+        },
+        {
+          "name": "param_acc_bs_customers_doubtful_customer",
+          "ordinal_position": 51,
+          "data_type": "INT",
+          "description": "Represents the number of accounts classified as doubtful, reflecting potential losses from uncollectible accounts receivable."
+        },
+        {
+          "name": "param_acc_bs_customers_accounts_depreciation",
+          "ordinal_position": 52,
+          "data_type": "INT",
+          "description": "Indicates the number of customer accounts that are subject to depreciation, affecting the balance sheet's asset values."
+        },
+        {
+          "name": "param_acc_bs_suppliers_notes_to_be_paid",
+          "ordinal_position": 53,
+          "data_type": "INT",
+          "description": "Counts of notes payable to suppliers, representing obligations that the company owes to its vendors."
+        },
+        {
+          "name": "param_acc_bs_partners_current_accounts",
+          "ordinal_position": 54,
+          "data_type": "INT",
+          "description": "Tracks the number of current accounts related to business partners, impacting the financial relationships and balances with partners."
+        },
+        {
+          "name": "param_acc_bs_staff_expenses",
+          "ordinal_position": 55,
+          "data_type": "INT",
+          "description": "Represents the count of recorded staff-related expenses in the balance sheet, crucial for tracking human resource costs."
+        },
+        {
+          "name": "param_acc_bs_payroll",
+          "ordinal_position": 56,
+          "data_type": "INT",
+          "description": "Indicates the number of payroll entries recorded, essential for managing employee compensation and financial planning."
+        },
+        {
+          "name": "param_acc_pl_expense",
+          "ordinal_position": 57,
+          "data_type": "INT",
+          "description": "Tracks the count of various expense transactions reflected in the profit and loss statement, providing insight into spending."
+        },
+        {
+          "name": "param_acc_pl_expense_purchase",
+          "ordinal_position": 58,
+          "data_type": "INT",
+          "description": "Represents the number of expenses associated with purchases, key for analyzing cost of goods sold."
+        },
+        {
+          "name": "param_acc_pl_expense_payroll",
+          "ordinal_position": 59,
+          "data_type": "INT",
+          "description": "Indicates the count of payroll-related expenses recorded in profit and loss, highlighting labor costs."
+        },
+        {
+          "name": "param_acc_pl_expense_consultant_fees",
+          "ordinal_position": 60,
+          "data_type": "INT",
+          "description": "Tracks the number of expenses related to consultant fees, offering insight into outsourced services costs."
+        },
+        {
+          "name": "param_acc_pl_expense_freight_customs",
+          "ordinal_position": 61,
+          "data_type": "INT",
+          "description": "Represents the count of expenses incurred from freight and customs fees, relevant for import and export activities."
+        },
+        {
+          "name": "param_acc_pl_expense_tax_licenses_permits",
+          "ordinal_position": 62,
+          "data_type": "INT",
+          "description": "Indicates the number of expenses associated with taxes, licenses, and permits, affecting overall operational costs."
+        },
+        {
+          "name": "param_acc_pl_expense_gifts",
+          "ordinal_position": 63,
+          "data_type": "INT",
+          "description": "Tracks the number of expenses for gifts, which may impact the expense reporting for marketing and relationship management."
+        },
+        {
+          "name": "param_acc_pl_expense_marketing",
+          "ordinal_position": 64,
+          "data_type": "INT",
+          "description": "Represents the count of marketing expenses recorded, essential for analyzing promotional investments."
+        },
+        {
+          "name": "param_acc_pl_expense_travel_expense",
+          "ordinal_position": 65,
+          "data_type": "INT",
+          "description": "Indicates the number of travel-related expenses recorded, impacting budgeting and employee travel policies."
+        },
+        {
+          "name": "param_acc_pl_expense_donations",
+          "ordinal_position": 66,
+          "data_type": "INT",
+          "description": "Tracks the count of expenses related to donations made, which may be relevant for corporate social responsibility reporting."
+        },
+        {
+          "name": "param_acc_pl_expense_financial_costs",
+          "ordinal_position": 67,
+          "data_type": "INT",
+          "description": "Indicates the number of financial cost entries recorded, which typically include interest and bank fees."
+        },
+        {
+          "name": "param_acc_pl_expense_miscellaneous_operating_expenses",
+          "ordinal_position": 68,
+          "data_type": "INT",
+          "description": "Represents the count of miscellaneous operating expenses recorded, helping to identify less common costs."
+        },
+        {
+          "name": "param_acc_pl_expense_lobbying",
+          "ordinal_position": 69,
+          "data_type": "INT",
+          "description": "Tracks the number of lobbying expenses, important for compliance and government affairs reporting."
+        },
+        {
+          "name": "param_acc_pl_income",
+          "ordinal_position": 70,
+          "data_type": "INT",
+          "description": "Indicates the count of income entries recorded in the profit and loss statement, providing insight into revenue generation."
+        },
+        {
+          "name": "param_acc_pl_income_revenue",
+          "ordinal_position": 71,
+          "data_type": "INT",
+          "description": "Represents the number of revenue transactions recorded, crucial for understanding the main income sources."
+        },
+        {
+          "name": "param_acc_pl_income_financial_income",
+          "ordinal_position": 72,
+          "data_type": "INT",
+          "description": "Tracks the count of financial income entries recorded, which typically represent interest and investment earnings."
+        },
+        {
+          "name": "param_acc_pl_income_miscellaneous_operating_income",
+          "ordinal_position": 73,
+          "data_type": "INT",
+          "description": "Indicates the number of miscellaneous operating income transactions, providing insight into less typical revenue sources."
+        },
+        {
+          "name": "param_acc_pl_income_discount",
+          "ordinal_position": 74,
+          "data_type": "INT",
+          "description": "Represents the count of discount entries offered, impacting the revenue and profit margins."
+        },
+        {
+          "name": "account_total_balance",
+          "ordinal_position": 75,
+          "data_type": "DECIMAL",
+          "description": "Reflects the total balance of the account after all transactions have been accounted for, essential for financial reporting."
+        },
+        {
+          "name": "account_nb_accounting_entry",
+          "ordinal_position": 76,
+          "data_type": "LONG",
+          "description": "Indicates the number of accounting entries associated with the account, useful for tracking activity and audits."
+        },
+        {
+          "name": "geo_calc_nb_entry_manual_by_account",
+          "ordinal_position": 77,
+          "data_type": "INT",
+          "description": "Tracks the number of manually entered transactions by account, highlighting discrepancies and manual entry efforts."
+        },
+        {
+          "name": "geo_calc_nb_entry_batch_by_account",
+          "ordinal_position": 78,
+          "data_type": "INT",
+          "description": "Indicates the number of batch transactions processed for the account, ensuring efficiency and accuracy."
+        },
+        {
+          "name": "geo_calc_nb_entry_with_deductible_vat_counterpart",
+          "ordinal_position": 79,
+          "data_type": "INT",
+          "description": "Represents the count of entries with deductible VAT, critical for tax reporting and compliance."
+        },
+        {
+          "name": "geo_calc_nb_entry_with_collected_vat_counterpart",
+          "ordinal_position": 80,
+          "data_type": "INT",
+          "description": "Tracks the number of entries linked to collected VAT, important for value-added tax submissions."
+        },
+        {
+          "name": "geo_calc_tax_code_id",
+          "ordinal_position": 81,
+          "data_type": "STRING",
+          "description": "Identifies the tax code associated with the financial entries, affecting tax calculations and reporting."
+        },
+        {
+          "name": "document_type_code",
+          "ordinal_position": 82,
+          "data_type": "STRING",
+          "description": "Represents the code designating the type of document related to the financial entry, important for categorizing transactions."
+        },
+        {
+          "name": "document_type_label",
+          "ordinal_position": 83,
+          "data_type": "STRING",
+          "description": "Provides a descriptive label for the document type, enhancing clarity and understanding of the entry context."
+        },
+        {
+          "name": "param_dt_opening_balance",
+          "ordinal_position": 84,
+          "data_type": "INT",
+          "description": "Tracks the number of entries reflecting the opening balance in the accounting period, crucial for accurate financial starting points."
+        },
+        {
+          "name": "param_dt_general_journal",
+          "ordinal_position": 85,
+          "data_type": "INT",
+          "description": "Indicates the number of entries recorded in the general journal, essential for comprehensive financial records."
+        },
+        {
+          "name": "dt_total_balance",
+          "ordinal_position": 86,
+          "data_type": "DECIMAL",
+          "description": "Reflects the total balance for the defined time period in the document type view, critical for assessing financial status."
+        },
+        {
+          "name": "dt_nb_accounting_entry",
+          "ordinal_position": 87,
+          "data_type": "LONG",
+          "description": "Represents the count of accounting entries recorded during the specified time frame, important for performance analysis."
+        },
+        {
+          "name": "geo_calc_nb_entry_batch_by_doc_type",
+          "ordinal_position": 88,
+          "data_type": "INT",
+          "description": "Tracks the number of batch entries associated with each document type, aiding in transaction analysis."
+        },
+        {
+          "name": "geo_calc_nb_entry_manual_by_doc_type",
+          "ordinal_position": 89,
+          "data_type": "INT",
+          "description": "Indicates the number of manually entered entries categorized by document type, useful for identifying manual input areas."
+        },
+        {
+          "name": "user_data_user_code",
+          "ordinal_position": 90,
+          "data_type": "STRING",
+          "description": "Represents the code identifying the user associated with the financial entries, important for accountability and tracking accountability."
+        },
+        {
+          "name": "param_usr_batch",
+          "ordinal_position": 91,
+          "data_type": "INT",
+          "description": "Tracks the number of batch processes associated with users, impacting efficiency assessment."
+        },
+        {
+          "name": "param_usr_accounting_department",
+          "ordinal_position": 92,
+          "data_type": "INT",
+          "description": "Indicates the number of entries related to specific accounting departments, helping in departmental analysis."
+        },
+        {
+          "name": "param_usr_gone",
+          "ordinal_position": 93,
+          "data_type": "INT",
+          "description": "Represents the number of entries tied to user data marked as inactive or 'gone', important for user management."
+        },
+        {
+          "name": "user_nb_accounting_entry",
+          "ordinal_position": 94,
+          "data_type": "LONG",
+          "description": "Tracks the number of accounting entries made by a specific user, providing insights into individual performance metrics."
+        },
+        {
+          "name": "tp_aux_account_number",
+          "ordinal_position": 95,
+          "data_type": "STRING",
+          "description": "Identifies the auxiliary account number used for additional tracking, relevant for detailed accounting analyses."
+        },
+        {
+          "name": "tp_aux_account_label",
+          "ordinal_position": 96,
+          "data_type": "STRING",
+          "description": "Provides a label for the auxiliary account, enhancing the understanding of how it relates to other accounts."
+        },
+        {
+          "name": "param_tp_intragroup",
+          "ordinal_position": 97,
+          "data_type": "INT",
+          "description": "Counts the transactions categorized as intragroup, important for internal group accounting and consolidation."
+        },
+        {
+          "name": "param_tp_generic",
+          "ordinal_position": 98,
+          "data_type": "INT",
+          "description": "Represents generic transaction types that do not fall into specific categories, aiding in the general analytics."
+        },
+        {
+          "name": "param_tp_sensitive",
+          "ordinal_position": 99,
+          "data_type": "INT",
+          "description": "Tracks the number of sensitive transactions that may require additional scrutiny, important for risk management."
+        },
+        {
+          "name": "tp_nb_accounting_entry",
+          "ordinal_position": 100,
+          "data_type": "LONG",
+          "description": "Represents the total number of accounting entries recorded in the financial system, which is crucial for tracking the volume of transactions processed."
+        },
+        {
+          "name": "geo_calc_is_impacting_general_supplier_accounts",
+          "ordinal_position": 101,
+          "data_type": "INT",
+          "description": "Indicates whether the financial entries have an impact on the general supplier accounts, essential for assessing supplier-related financial activities."
+        },
+        {
+          "name": "geo_calc_is_impacting_general_customer_accounts",
+          "ordinal_position": 102,
+          "data_type": "INT",
+          "description": "Shows if the transactions affect the general customer accounts, helping to understand customer-related financial interactions."
+        },
+        {
+          "name": "geo_calc_nb_entry_impacting_expense_accounts",
+          "ordinal_position": 103,
+          "data_type": "INT",
+          "description": "Counts the number of entries that are affecting expense accounts, which is vital for financial analysis and budgeting purposes."
+        },
+        {
+          "name": "geo_calc_nb_entry_impacting_income_accounts",
+          "ordinal_position": 104,
+          "data_type": "INT",
+          "description": "Tracks the number of entries impacting income accounts, which is important for revenue assessment and financial performance evaluation."
+        },
+        {
+          "name": "geo_calc_nb_entry_impacting_asset_accounts",
+          "ordinal_position": 105,
+          "data_type": "INT",
+          "description": "Represents the number of entries that influence asset accounts, providing insight into the organization's asset management and valuation."
+        },
+        {
+          "name": "geo_calc_nb_entry_in_miscellaneous_doc_type",
+          "ordinal_position": 106,
+          "data_type": "INT",
+          "description": "Counts the number of financial entries associated with miscellaneous document types, which can serve specific analytical or reporting needs."
+        }
+      ]
+    },
+    {
+      "catalog": "jxpeehqyifuv",
+      "schema": "geoficiency",
+      "name": "mv_account_balance_by_period",
+      "full_name": "jxpeehqyifuv.geoficiency.mv_account_balance_by_period",
+      "type": "MATERIALIZED_VIEW",
+      "description": "The table contains account balance information segmented by accounting periods. It includes data such as account identifiers, balance amounts, and transaction details like debits and credits. Possible use cases include financial reporting, monitoring account performance over time, and analyzing account activities for budgeting and forecasting purposes.",
+      "columns": [
+        {
+          "name": "sp_folder_id",
+          "ordinal_position": 0,
+          "data_type": "STRING",
+          "description": "Identifier for the folder that organizes account-related information for easier navigation and access."
+        },
+        {
+          "name": "sp_account_id",
+          "ordinal_position": 1,
+          "data_type": "STRING",
+          "description": "Unique identifier associated with a specific account within the system."
+        },
+        {
+          "name": "account_number",
+          "ordinal_position": 2,
+          "data_type": "STRING",
+          "description": "The numerical representation of the account, used for transactions and account management."
+        },
+        {
+          "name": "account_label",
+          "ordinal_position": 3,
+          "data_type": "STRING",
+          "description": "A descriptive label assigned to the account for easier identification and reference."
+        },
+        {
+          "name": "account_class",
+          "ordinal_position": 4,
+          "data_type": "STRING",
+          "description": "Classification of the account, indicating its type or category for financial reporting purposes."
+        },
+        {
+          "name": "accounting_period",
+          "ordinal_position": 5,
+          "data_type": "STRING",
+          "description": "The specific time frame during which the account balance and transactions are recorded."
+        },
+        {
+          "name": "period_balance",
+          "ordinal_position": 6,
+          "data_type": "DECIMAL",
+          "description": "The total balance available in the account at the end of the accounting period."
+        },
+        {
+          "name": "period_debit",
+          "ordinal_position": 7,
+          "data_type": "DECIMAL",
+          "description": "The total amount of debits recorded against the account during the accounting period."
+        },
+        {
+          "name": "period_credit",
+          "ordinal_position": 8,
+          "data_type": "DECIMAL",
+          "description": "The total amount of credits recorded in favor of the account during the accounting period."
+        },
+        {
+          "name": "entry_count",
+          "ordinal_position": 9,
+          "data_type": "LONG",
+          "description": "The total number of transactions that occurred within the accounting period related to the account."
+        },
+        {
+          "name": "balance_type",
+          "ordinal_position": 10,
+          "data_type": "STRING",
+          "description": "Classification of the balance, indicating whether it is a debit or credit balance."
+        },
+        {
+          "name": "is_vat_collected",
+          "ordinal_position": 11,
+          "data_type": "INT",
+          "description": "Indicator of whether Value Added Tax (VAT) has been collected for the transactions in the period."
+        },
+        {
+          "name": "is_vat_deductible",
+          "ordinal_position": 12,
+          "data_type": "INT",
+          "description": "Indicator of whether VAT can be deducted for the transactions recorded during the period."
+        },
+        {
+          "name": "is_financial_income",
+          "ordinal_position": 13,
+          "data_type": "INT",
+          "description": "Indicator of whether the account contains financial income from transactions during the accounting period."
+        },
+        {
+          "name": "is_financial_expense",
+          "ordinal_position": 14,
+          "data_type": "INT",
+          "description": "Indicator of whether the account includes financial expenses incurred during the accounting period."
+        },
+        {
+          "name": "is_suspense",
+          "ordinal_position": 15,
+          "data_type": "INT",
+          "description": "Indicator of whether the account holds suspense entries, which are typically temporary and require further clarification."
+        }
+      ]
+    },
+    {
+      "catalog": "jxpeehqyifuv",
+      "schema": "geoficiency",
+      "name": "mv_scheme_account_analysis",
+      "full_name": "jxpeehqyifuv.geoficiency.mv_scheme_account_analysis",
+      "type": "MATERIALIZED_VIEW",
+      "description": "The table contains analysis related to accounting entries within a scheme. It provides information on debit and credit totals, account balances, and various parameters linked to bank, supplier, and customer accounts. Possible use cases include financial reporting, analysis of account performance, and monitoring of cash flow dynamics.",
+      "columns": [
+        {
+          "name": "sp_folder_id",
+          "ordinal_position": 0,
+          "data_type": "STRING",
+          "description": "Identifier for the folder associated with the scheme, used for organizational purposes in accounting entries."
+        },
+        {
+          "name": "sp_accounting_entry_id",
+          "ordinal_position": 1,
+          "data_type": "STRING",
+          "description": "Unique identifier for each accounting entry, facilitating tracking and reference in the analysis."
+        },
+        {
+          "name": "sp_accounting_scheme_id",
+          "ordinal_position": 2,
+          "data_type": "STRING",
+          "description": "Identifier for the specific accounting scheme under which the entries are categorized, allowing for related analysis across similar schemes."
+        },
+        {
+          "name": "total_debit",
+          "ordinal_position": 3,
+          "data_type": "DECIMAL",
+          "description": "Represents the total amount of debits recorded within the accounting entries, useful for analyzing expenses and outflows."
+        },
+        {
+          "name": "total_credit",
+          "ordinal_position": 4,
+          "data_type": "DECIMAL",
+          "description": "Indicates the total amount of credits recorded, reflecting income and inflows within the accounting framework."
+        },
+        {
+          "name": "total_balance",
+          "ordinal_position": 5,
+          "data_type": "DECIMAL",
+          "description": "Calculates the overall balance by summing total debits and total credits, providing a clear view of the account's financial status."
+        },
+        {
+          "name": "sp_account_id",
+          "ordinal_position": 6,
+          "data_type": "STRING",
+          "description": "Unique identifier for the account linked to the entries, essential for associating transactions with specific accounts."
+        },
+        {
+          "name": "geo_calc_direction",
+          "ordinal_position": 7,
+          "data_type": "STRING",
+          "description": "Specifies the direction of cash flow, indicating whether the movement is inflow or outflow, which aids in financial analysis."
+        },
+        {
+          "name": "param_acc_bs_bank",
+          "ordinal_position": 8,
+          "data_type": "INT",
+          "description": "Numerical parameter representing bank-related balances in the balance sheet, crucial for assessing liquidity."
+        },
+        {
+          "name": "param_acc_bs_bank_petty_cash",
+          "ordinal_position": 9,
+          "data_type": "INT",
+          "description": "Parameter indicating petty cash balances in the balance sheet, providing insights into small cash transactions."
+        },
+        {
+          "name": "param_acc_bs_suppliers",
+          "ordinal_position": 10,
+          "data_type": "INT",
+          "description": "Represents numerical parameters related to supplier balances, important for managing payables and supplier relationships."
+        },
+        {
+          "name": "param_acc_bs_customers",
+          "ordinal_position": 11,
+          "data_type": "INT",
+          "description": "Numerical value reflecting customer balances, essential for understanding receivables and customer interactions."
+        },
+        {
+          "name": "param_acc_pl_expense",
+          "ordinal_position": 12,
+          "data_type": "INT",
+          "description": "Parameter related to expense figures in the profit and loss statement, useful for expense tracking and analysis."
+        },
+        {
+          "name": "param_acc_pl_expense_financial_costs",
+          "ordinal_position": 13,
+          "data_type": "INT",
+          "description": "Indicates financial costs as part of total expenses, essential for a comprehensive view of financial outflows."
+        },
+        {
+          "name": "param_acc_pl_income",
+          "ordinal_position": 14,
+          "data_type": "INT",
+          "description": "Represents income parameters within the profit and loss statement, crucial for revenue analysis."
+        },
+        {
+          "name": "param_acc_pl_income_financial_income",
+          "ordinal_position": 15,
+          "data_type": "INT",
+          "description": "Numerical parameter indicating financial income, aiding in detailed income assessments."
+        },
+        {
+          "name": "param_acc_bs_vat_deductible",
+          "ordinal_position": 16,
+          "data_type": "INT",
+          "description": "Parameter representing VAT amounts that are deductible from the balance sheet, important for tax reporting."
+        },
+        {
+          "name": "param_acc_bs_vat_collected",
+          "ordinal_position": 17,
+          "data_type": "INT",
+          "description": "Indicates the total VAT collected, essential for compliance and cash flow analysis related to tax obligations."
+        }
+      ]
+    },
+    {
+      "catalog": "jxpeehqyifuv",
+      "schema": "geoficiency",
+      "name": "mv_gl_date_analysis",
+      "full_name": "jxpeehqyifuv.geoficiency.mv_gl_date_analysis",
+      "type": "MATERIALIZED_VIEW",
+      "description": "The table contains analysis related to general ledger date information. It captures various dates associated with accounting entries, including the creation date and the entry date, along with metrics that show the relationship between these dates. Potential use cases include evaluating the timeliness of accounting entries, assessing the validity of dates, and analyzing trends in date-related metrics.",
+      "columns": [
+        {
+          "name": "sp_folder_id",
+          "ordinal_position": 0,
+          "data_type": "STRING",
+          "description": "Identifier for the specific folder related to the stored general ledger data, used for organizing and categorizing entries."
+        },
+        {
+          "name": "sp_data_gl_id",
+          "ordinal_position": 1,
+          "data_type": "STRING",
+          "description": "Unique identifier for the general ledger data, allowing for tracking and management of specific entries."
+        },
+        {
+          "name": "sp_accounting_entry_id",
+          "ordinal_position": 2,
+          "data_type": "STRING",
+          "description": "Distinct identifier for each accounting entry, essential for referencing and auditing purposes."
+        },
+        {
+          "name": "amount",
+          "ordinal_position": 3,
+          "data_type": "DECIMAL",
+          "description": "Represents the monetary value associated with the accounting entry in question."
+        },
+        {
+          "name": "accounting_entry_date",
+          "ordinal_position": 4,
+          "data_type": "DATE",
+          "description": "The date on which the accounting entry was recorded, reflecting when the transaction occurred in the ledger."
+        },
+        {
+          "name": "valid_date",
+          "ordinal_position": 5,
+          "data_type": "DATE",
+          "description": "The date that validates the accounting entry, often representing a deadline for the transaction's legitimacy."
+        },
+        {
+          "name": "doc_date",
+          "ordinal_position": 6,
+          "data_type": "DATE",
+          "description": "The date on which the document related to the accounting entry was issued or signed, capturing the timing of documentation."
+        },
+        {
+          "name": "creation_date",
+          "ordinal_position": 7,
+          "data_type": "DATE",
+          "description": "The date when the entry was created in the system, indicating when the data was first recorded."
+        },
+        {
+          "name": "creation_day_of_week",
+          "ordinal_position": 8,
+          "data_type": "INT",
+          "description": "Represents the day of the week corresponding to the creation date, useful for analyzing temporal trends."
+        },
+        {
+          "name": "entry_day_of_week",
+          "ordinal_position": 9,
+          "data_type": "INT",
+          "description": "Indicates the day of the week for the accounting entry date, aiding in the assessment of entry patterns."
+        },
+        {
+          "name": "days_valid_vs_entry",
+          "ordinal_position": 10,
+          "data_type": "INT",
+          "description": "Calculates the number of days between the valid date and the accounting entry date, highlighting any discrepancies."
+        },
+        {
+          "name": "days_doc_vs_entry",
+          "ordinal_position": 11,
+          "data_type": "INT",
+          "description": "Measures the interval in days between the document date and the accounting entry date, useful for assessing document timeliness."
+        },
+        {
+          "name": "days_doc_vs_valid",
+          "ordinal_position": 12,
+          "data_type": "INT",
+          "description": "Represents the difference in days between the document date and the valid date to evaluate document validity."
+        },
+        {
+          "name": "days_creation_vs_entry",
+          "ordinal_position": 13,
+          "data_type": "INT",
+          "description": "Tracks the number of days from the creation date to the entry date, providing insights into processing time."
+        },
+        {
+          "name": "is_entry_date_null",
+          "ordinal_position": 14,
+          "data_type": "INT",
+          "description": "Flags if the accounting entry date is missing, indicating potential data quality issues."
+        },
+        {
+          "name": "is_valid_date_null",
+          "ordinal_position": 15,
+          "data_type": "INT",
+          "description": "Indicates whether the valid date is absent, helping to identify incomplete data entries."
+        },
+        {
+          "name": "is_doc_date_null",
+          "ordinal_position": 16,
+          "data_type": "INT",
+          "description": "Marks if the document date is not provided, which could affect the analysis of the entry's validity."
+        },
+        {
+          "name": "is_creation_date_null",
+          "ordinal_position": 17,
+          "data_type": "INT",
+          "description": "Shows whether the creation date is undefined, signaling gaps in entry recording."
+        }
+      ]
+    },
+    {
+      "catalog": "jxpeehqyifuv",
+      "schema": "geoficiency",
+      "name": "mv_customer_master",
+      "full_name": "jxpeehqyifuv.geoficiency.mv_customer_master",
+      "type": "MATERIALIZED_VIEW",
+      "description": "The table contains customer master data relevant for managing customer accounts. It includes information such as customer IDs, account numbers, registration details, and banking information. Potential use cases include customer data integration, account monitoring, and financial reporting.",
+      "columns": [
+        {
+          "name": "sp_folder_id",
+          "ordinal_position": 0,
+          "data_type": "STRING",
+          "description": "Represents a unique identifier for the folder associated with the customer, used for organizing customer data within the system."
+        },
+        {
+          "name": "sp_customer_id",
+          "ordinal_position": 1,
+          "data_type": "STRING",
+          "description": "Serves as the unique identifier for the customer, essential for tracking and managing customer accounts."
+        },
+        {
+          "name": "aux_account_number",
+          "ordinal_position": 2,
+          "data_type": "STRING",
+          "description": "Contains the auxiliary account number associated with the customer, which may be used for additional account identification purposes."
+        },
+        {
+          "name": "aux_account_label",
+          "ordinal_position": 3,
+          "data_type": "STRING",
+          "description": "Describes the label or name associated with the auxiliary account, providing clarity on the account's purpose or type."
+        },
+        {
+          "name": "vat_registration_number",
+          "ordinal_position": 4,
+          "data_type": "STRING",
+          "description": "Lists the VAT registration number for the customer, which is crucial for tax purposes and compliance in transactions."
+        },
+        {
+          "name": "company_registration_number",
+          "ordinal_position": 5,
+          "data_type": "STRING",
+          "description": "Includes the official registration number of the company, vital for legal identification and verification of business entities."
+        },
+        {
+          "name": "country",
+          "ordinal_position": 6,
+          "data_type": "STRING",
+          "description": "States the country where the customer is located, important for regional management and compliance."
+        },
+        {
+          "name": "city",
+          "ordinal_position": 7,
+          "data_type": "STRING",
+          "description": "Provides the city information of the customer’s address, assisting in geographic segmentation and service delivery."
+        },
+        {
+          "name": "postal_code",
+          "ordinal_position": 8,
+          "data_type": "STRING",
+          "description": "Indicates the postal code associated with the customer’s address, useful for shipping and logistics purposes."
+        },
+        {
+          "name": "address",
+          "ordinal_position": 9,
+          "data_type": "STRING",
+          "description": "Contains the street address of the customer, essential for contacting and servicing the customer correctly."
+        },
+        {
+          "name": "bank_iban",
+          "ordinal_position": 10,
+          "data_type": "STRING",
+          "description": "Lists the International Bank Account Number (IBAN) for the customer’s bank account, important for processing international transactions."
+        },
+        {
+          "name": "bank_swift",
+          "ordinal_position": 11,
+          "data_type": "STRING",
+          "description": "Includes the SWIFT code for the customer’s bank, which is necessary for identifying the bank during international money transfers."
+        },
+        {
+          "name": "bank_account_number",
+          "ordinal_position": 12,
+          "data_type": "STRING",
+          "description": "Represents the customer’s standard bank account number, crucial for direct debits and transactions."
+        },
+        {
+          "name": "bank_country",
+          "ordinal_position": 13,
+          "data_type": "STRING",
+          "description": "Specifies the country where the customer's bank is located, relevant for international banking regulations and operations."
+        }
+      ]
+    },
+    {
+      "catalog": "jxpeehqyifuv",
+      "schema": "geoficiency",
+      "name": "mv_gl_by_scheme_type",
+      "full_name": "jxpeehqyifuv.geoficiency.mv_gl_by_scheme_type",
+      "type": "MATERIALIZED_VIEW",
+      "description": "The table contains financial data organized by accounting schemes. It includes information about different accounts, their transaction amounts, and various types of financial entries. Use cases may involve analyzing financial performance across different schemes, tracking transaction trends, and reconciling account discrepancies. Additionally, it can help in understanding the flow of debits and credits over time.",
+      "columns": [
+        {
+          "name": "sp_folder_id",
+          "ordinal_position": 0,
+          "data_type": "STRING",
+          "description": "Identifies the specific folder associated with the financial information, helping to categorize entries based on predetermined structures."
+        },
+        {
+          "name": "sp_data_gl_id",
+          "ordinal_position": 1,
+          "data_type": "STRING",
+          "description": "Represents the unique identifier for the general ledger data entry, facilitating tracking and referencing of specific records."
+        },
+        {
+          "name": "sp_accounting_entry_id",
+          "ordinal_position": 2,
+          "data_type": "STRING",
+          "description": "Uniquely identifies each accounting entry, which is crucial for auditing and reconciliation purposes."
+        },
+        {
+          "name": "sp_account_id",
+          "ordinal_position": 3,
+          "data_type": "STRING",
+          "description": "Denotes the specific account related to the transactions, allowing for detailed account-level analysis."
+        },
+        {
+          "name": "sp_third_party_id",
+          "ordinal_position": 4,
+          "data_type": "STRING",
+          "description": "Identifies the third party involved in the transactions, essential for understanding external relationships in finance."
+        },
+        {
+          "name": "amount",
+          "ordinal_position": 5,
+          "data_type": "DECIMAL",
+          "description": "Represents the total value of the transaction being recorded, providing insight into financial flows."
+        },
+        {
+          "name": "debit",
+          "ordinal_position": 6,
+          "data_type": "DECIMAL",
+          "description": "Details the total debit amount associated with the transaction, aiding in understanding how funds are utilized."
+        },
+        {
+          "name": "credit",
+          "ordinal_position": 7,
+          "data_type": "DECIMAL",
+          "description": "Shows the total credit amount for the transaction, which is necessary for balancing financial accounts."
+        },
+        {
+          "name": "aux_account_number",
+          "ordinal_position": 8,
+          "data_type": "STRING",
+          "description": "Contains auxiliary account number information that can be used for detailed categorization of transactions."
+        },
+        {
+          "name": "aux_account_label",
+          "ordinal_position": 9,
+          "data_type": "STRING",
+          "description": "Provides a descriptive label for auxiliary accounts, helping to clarify the purpose of various transactions."
+        },
+        {
+          "name": "doc_date",
+          "ordinal_position": 10,
+          "data_type": "DATE",
+          "description": "Indicates the date when the document related to the transaction was created, important for tracking timing."
+        },
+        {
+          "name": "doc_ref",
+          "ordinal_position": 11,
+          "data_type": "STRING",
+          "description": "Holds a reference number for the document associated with the transaction, useful for linking records."
+        },
+        {
+          "name": "clearing_ref",
+          "ordinal_position": 12,
+          "data_type": "STRING",
+          "description": "Signifies the reference related to the clearing process of the transaction, important for settlement tracking."
+        },
+        {
+          "name": "clearing_date",
+          "ordinal_position": 13,
+          "data_type": "DATE",
+          "description": "The date on which the transaction is cleared, which is critical for reconciliation processes."
+        },
+        {
+          "name": "creation_date",
+          "ordinal_position": 14,
+          "data_type": "DATE",
+          "description": "Shows the date when the record was created, allowing for understanding of the data lifecycle."
+        },
+        {
+          "name": "accounting_entry_date",
+          "ordinal_position": 15,
+          "data_type": "DATE",
+          "description": "Represents the date of the accounting entry, helping to ensure accurate reporting and timelines."
+        },
+        {
+          "name": "geo_calc_direction",
+          "ordinal_position": 16,
+          "data_type": "STRING",
+          "description": "Indicates the direction of the calculation related to the transaction, which can assist in analyzing trends."
+        },
+        {
+          "name": "geo_calc_due_date",
+          "ordinal_position": 17,
+          "data_type": "DATE",
+          "description": "Denotes the due date for payment or receipt related to the accounting entry, crucial for cash flow management."
+        },
+        {
+          "name": "purchase_order",
+          "ordinal_position": 18,
+          "data_type": "STRING",
+          "description": "References the purchase order linked to the transaction, important for tracking procurement activities."
+        },
+        {
+          "name": "accounting_entry_id",
+          "ordinal_position": 19,
+          "data_type": "STRING",
+          "description": "Repeated unique identifier for the accounting entry, essential for ensuring each record can be distinctly referred to."
+        },
+        {
+          "name": "sp_accounting_scheme_id",
+          "ordinal_position": 20,
+          "data_type": "STRING",
+          "description": "Indicates which accounting scheme this entry belongs to, facilitating grouped financial analysis."
+        },
+        {
+          "name": "total_debit",
+          "ordinal_position": 21,
+          "data_type": "DECIMAL",
+          "description": "Displays the aggregate debit amount across all relevant transactions, useful for comprehensive financial assessments."
+        },
+        {
+          "name": "total_credit",
+          "ordinal_position": 22,
+          "data_type": "DECIMAL",
+          "description": "Represents the aggregate credit amount for the entries, helping to evaluate overall account performance."
+        },
+        {
+          "name": "total_balance",
+          "ordinal_position": 23,
+          "data_type": "DECIMAL",
+          "description": "Shows the total balance after considering all debits and credits, critical for financial health assessment."
+        },
+        {
+          "name": "nb_lines",
+          "ordinal_position": 24,
+          "data_type": "LONG",
+          "description": "Indicates the number of lines in the financial data, providing a measure for data volume management."
+        },
+        {
+          "name": "geo_calc_acc_pl_expense_amount",
+          "ordinal_position": 25,
+          "data_type": "DECIMAL",
+          "description": "Reflects the amount associated with profit and loss expenses, aiding in performance evaluations."
+        },
+        {
+          "name": "geo_calc_acc_pl_expense_purchase_amount",
+          "ordinal_position": 26,
+          "data_type": "DECIMAL",
+          "description": "Details the purchase amount for profit and loss-related expenses, supporting cost analysis."
+        },
+        {
+          "name": "geo_calc_acc_pl_income_revenue_amount",
+          "ordinal_position": 27,
+          "data_type": "DECIMAL",
+          "description": "Shows the income received related to profit and loss calculations, vital for revenue tracking."
+        },
+        {
+          "name": "geo_calc_acc_bs_bank_amount",
+          "ordinal_position": 28,
+          "data_type": "DECIMAL",
+          "description": "Represents bank amounts involved in the balance sheet calculations, necessary for financial reporting."
+        },
+        {
+          "name": "geo_calc_entry_deductible_vat_rate",
+          "ordinal_position": 29,
+          "data_type": "DECIMAL",
+          "description": "Indicates the deductible VAT rate applicable to the transaction, useful for tax calculations."
+        },
+        {
+          "name": "geo_calc_entry_collected_vat_rate",
+          "ordinal_position": 30,
+          "data_type": "DECIMAL",
+          "description": "Shows the collected VAT rate for the transaction, which is important for understanding tax obligations."
+        },
+        {
+          "name": "geo_accounting_scheme_type_code",
+          "ordinal_position": 31,
+          "data_type": "STRING",
+          "description": "Provides a code representing the type of accounting scheme, which can assist in categorization."
+        },
+        {
+          "name": "scheme_type_code_lower",
+          "ordinal_position": 32,
+          "data_type": "STRING",
+          "description": "Contains a lowercase representation of the scheme type code, enabling consistency in data processing."
+        }
+      ]
+    },
+    {
+      "catalog": "jxpeehqyifuv",
+      "schema": "geoficiency",
+      "name": "mv_gl_by_user",
+      "full_name": "jxpeehqyifuv.geoficiency.mv_gl_by_user",
+      "type": "MATERIALIZED_VIEW",
+      "description": "The table contains data related to general ledger entries by user. It includes information such as the amount of each entry, relevant dates, user identifiers, and some categorical parameters. Potential use cases include tracking user-specific financial data, analyzing accounting trends over time, and understanding user contributions to ledger activity.",
+      "columns": [
+        {
+          "name": "sp_folder_id",
+          "ordinal_position": 0,
+          "data_type": "STRING",
+          "description": "Unique identifier for the folder associated with the general ledger entry, allowing for organization and categorization of entries."
+        },
+        {
+          "name": "sp_data_gl_id",
+          "ordinal_position": 1,
+          "data_type": "STRING",
+          "description": "Identifier for the specific general ledger data entry, facilitating tracking and reference to financial records."
+        },
+        {
+          "name": "sp_accounting_entry_id",
+          "ordinal_position": 2,
+          "data_type": "STRING",
+          "description": "Unique identifier for each accounting entry, which is essential for differentiating between various entries within the ledger."
+        },
+        {
+          "name": "sp_account_id",
+          "ordinal_position": 3,
+          "data_type": "STRING",
+          "description": "Identifier representing the account linked to the general ledger entry, necessary for grouping and analyzing financial activities by account."
+        },
+        {
+          "name": "sp_document_type_id",
+          "ordinal_position": 4,
+          "data_type": "STRING",
+          "description": "Identifier for the type of document related to the ledger entry, providing context for the nature of the transaction recorded."
+        },
+        {
+          "name": "amount",
+          "ordinal_position": 5,
+          "data_type": "DECIMAL",
+          "description": "Represents the monetary value of the general ledger entry, indicating the financial impact of the entry on the overall ledger."
+        },
+        {
+          "name": "accounting_entry_date",
+          "ordinal_position": 6,
+          "data_type": "DATE",
+          "description": "The date on which the accounting entry was recorded, useful for chronological tracking of financial activities."
+        },
+        {
+          "name": "creation_date",
+          "ordinal_position": 7,
+          "data_type": "DATE",
+          "description": "The date the record was created in the system, helpful for understanding the timeliness of data entries."
+        },
+        {
+          "name": "geo_calc_direction",
+          "ordinal_position": 8,
+          "data_type": "STRING",
+          "description": "Indicates the direction of the calculation for the entry (e.g., debit or credit), which is critical for proper accounting analysis."
+        },
+        {
+          "name": "data_user_code",
+          "ordinal_position": 9,
+          "data_type": "STRING",
+          "description": "Code representing the user responsible for the entry, allowing for attribution of ledger activity to specific individuals."
+        },
+        {
+          "name": "data_user_id",
+          "ordinal_position": 10,
+          "data_type": "STRING",
+          "description": "Unique identifier for the user associated with the general ledger entry, enabling detailed user-level reporting and analysis."
+        },
+        {
+          "name": "user_data_user_code",
+          "ordinal_position": 11,
+          "data_type": "STRING",
+          "description": "User code for the actor involved in the transaction, serving as an additional identifier to track user actions in the ledger."
+        },
+        {
+          "name": "param_usr_batch",
+          "ordinal_position": 12,
+          "data_type": "INT",
+          "description": "Batch number associated with user transactions, facilitating the grouping of related entries for efficient processing and reporting."
+        },
+        {
+          "name": "param_usr_accounting_department",
+          "ordinal_position": 13,
+          "data_type": "INT",
+          "description": "Identifier for the accounting department tied to the entry, useful for departmental analysis and accountability."
+        },
+        {
+          "name": "param_usr_gone",
+          "ordinal_position": 14,
+          "data_type": "INT",
+          "description": "Indicator for whether the user is no longer active, which can influence data analysis and reconciliation processes."
+        },
+        {
+          "name": "user_nb_accounting_entry",
+          "ordinal_position": 15,
+          "data_type": "LONG",
+          "description": "Total number of accounting entries associated with the user, providing insight into the user's contribution to ledger activity."
+        }
+      ]
+    },
+    {
+      "catalog": "jxpeehqyifuv",
+      "schema": "geoficiency",
+      "name": "mv_round_amount_analysis",
+      "full_name": "jxpeehqyifuv.geoficiency.mv_round_amount_analysis",
+      "type": "MATERIALIZED_VIEW",
+      "description": "The table contains data related to financial round amount analysis. It records details such as amounts, accounting entry dates, and associated identifiers. Possible use cases include evaluating financial data accuracy, assessing rounding behaviors, and analyzing data quality in financial documents.",
+      "columns": [
+        {
+          "name": "sp_folder_id",
+          "ordinal_position": 0,
+          "data_type": "STRING",
+          "description": "Represents the unique identifier for the folder associated with the specific financial round amount analysis entry."
+        },
+        {
+          "name": "sp_data_gl_id",
+          "ordinal_position": 1,
+          "data_type": "STRING",
+          "description": "Unique identifier for the general ledger entry related to the financial records in this analysis."
+        },
+        {
+          "name": "sp_accounting_entry_id",
+          "ordinal_position": 2,
+          "data_type": "STRING",
+          "description": "Identifier for the specific accounting entry, linking it to the broader financial documentation and analysis."
+        },
+        {
+          "name": "sp_account_id",
+          "ordinal_position": 3,
+          "data_type": "STRING",
+          "description": "Unique account identifier that indicates which financial account the entry is associated with."
+        },
+        {
+          "name": "sp_document_type_id",
+          "ordinal_position": 4,
+          "data_type": "STRING",
+          "description": "Identifier that categorizes the type of document related to the financial data being analyzed."
+        },
+        {
+          "name": "sp_data_user_id",
+          "ordinal_position": 5,
+          "data_type": "STRING",
+          "description": "Unique identifier of the user who entered or modified the financial data, providing traceability."
+        },
+        {
+          "name": "amount",
+          "ordinal_position": 6,
+          "data_type": "DECIMAL",
+          "description": "The financial amount involved in the round analysis, representing the value that is being assessed for rounding behavior."
+        },
+        {
+          "name": "accounting_entry_date",
+          "ordinal_position": 7,
+          "data_type": "DATE",
+          "description": "The date on which the accounting entry was made, crucial for tracking the timing of financial transactions."
+        },
+        {
+          "name": "trailing_zeros",
+          "ordinal_position": 8,
+          "data_type": "INT",
+          "description": "Indicates the number of trailing zeros present in the amount, which can impact data accuracy and representation."
+        },
+        {
+          "name": "roundness_score",
+          "ordinal_position": 9,
+          "data_type": "INT",
+          "description": "A scoring metric that evaluates the degree of rounding in the financial amounts, supporting analysis of rounding practices."
+        }
+      ]
+    },
+    {
+      "catalog": "jxpeehqyifuv",
+      "schema": "geoficiency",
+      "name": "mv_inactive_third_party_analysis",
+      "full_name": "jxpeehqyifuv.geoficiency.mv_inactive_third_party_analysis",
+      "type": "MATERIALIZED_VIEW",
+      "description": "The table contains analysis of inactive third-party accounts. It includes details about account identification, transaction history, and inactivity metrics. This data can be useful for evaluating the performance of third-party partnerships, identifying accounts that may require re-engagement, and understanding trends related to account activity.",
+      "columns": [
+        {
+          "name": "sp_folder_id",
+          "ordinal_position": 0,
+          "data_type": "STRING",
+          "description": "Identifier associated with the specific folder within the system, used for organizing third-party analysis data."
+        },
+        {
+          "name": "sp_third_party_id",
+          "ordinal_position": 1,
+          "data_type": "STRING",
+          "description": "Unique identifier for the third-party entity being analyzed, allowing for easy reference and tracking."
+        },
+        {
+          "name": "aux_account_number",
+          "ordinal_position": 2,
+          "data_type": "STRING",
+          "description": "An auxiliary account number related to the third party, aiding in the identification of accounts associated with the entity."
+        },
+        {
+          "name": "aux_account_label",
+          "ordinal_position": 3,
+          "data_type": "STRING",
+          "description": "Label or description commonly associated with the auxiliary account number, providing clarity on its purpose or owner."
+        },
+        {
+          "name": "third_party_type",
+          "ordinal_position": 4,
+          "data_type": "STRING",
+          "description": "Categorization of the third party, specifying the type of third-party entity for better understanding and analysis."
+        },
+        {
+          "name": "balance",
+          "ordinal_position": 5,
+          "data_type": "DECIMAL",
+          "description": "The current balance available for the third party, representing an important financial metric in the analysis."
+        },
+        {
+          "name": "entry_count",
+          "ordinal_position": 6,
+          "data_type": "LONG",
+          "description": "Total number of entries recorded for the third party, indicating the level of activity or engagement over time."
+        },
+        {
+          "name": "first_transaction_date",
+          "ordinal_position": 7,
+          "data_type": "DATE",
+          "description": "The date when the first recorded transaction for the third party occurred, important for timeline assessments."
+        },
+        {
+          "name": "last_transaction_date",
+          "ordinal_position": 8,
+          "data_type": "DATE",
+          "description": "The date of the most recent transaction related to the third party, helping to determine recent activity."
+        },
+        {
+          "name": "months_inactive",
+          "ordinal_position": 9,
+          "data_type": "DOUBLE",
+          "description": "Number of months the third party has remained inactive, providing insight into trends and engagement issues."
+        },
+        {
+          "name": "recent_payment_count",
+          "ordinal_position": 10,
+          "data_type": "LONG",
+          "description": "Count of payments made by the third party in a specified recent period, indicating current engagement levels."
+        }
+      ]
+    }
+  ],
+  "functions": [
+    {
+      "catalog": "jxpeehqyifuv",
+      "schema": "geoficiency",
+      "name": "fn_customer_typology",
+      "full_name": "jxpeehqyifuv.geoficiency.fn_customer_typology",
+      "type": "FUNCTION",
+      "return_type": "TABLE_TYPE",
+      "language": "SQL",
+      "definition": "SELECT\n  aux_account_number,\n  aux_account_label,\n  sp_folder_id,\n  COUNT(*) AS nb_entries,\n  COUNT(DISTINCT sp_accounting_entry_id) AS nb_accounting_entries,\n  SUM(ABS(amount)) AS volume,\n  SUM(amount) AS balance\nFROM jxpeehqyifuv.geoficiency.mv_gl_core\nWHERE sp_folder_id = p_sp_folder_id\n  AND param_acc_bs_customers = 1\n  AND aux_account_number IS NOT NULL\n  AND accounting_entry_date BETWEEN CAST(p_start_date AS DATE) AND CAST(p_end_date AS DATE)\nGROUP BY aux_account_number, aux_account_label, sp_folder_id",
+      "description": "null",
+      "created": "2026-03-18T12:14:27.484Z",
+      "last_altered": "2026-03-18T12:14:27.484Z"
+    },
+    {
+      "catalog": "jxpeehqyifuv",
+      "schema": "geoficiency",
+      "name": "fn_vendor_typology",
+      "full_name": "jxpeehqyifuv.geoficiency.fn_vendor_typology",
+      "type": "FUNCTION",
+      "return_type": "TABLE_TYPE",
+      "language": "SQL",
+      "definition": "WITH flagged AS (\n  SELECT\n    aux_account_number,\n    aux_account_label,\n    sp_folder_id,\n    sp_accounting_entry_id,\n    amount,\n    accounting_entry_date,\n    CASE WHEN accounting_entry_date >= date_add(CAST(p_end_date AS DATE), -90) THEN ABS(amount) ELSE CAST(0 AS DECIMAL(30,2)) END AS recent_amount\n  FROM jxpeehqyifuv.geoficiency.mv_gl_core\n  WHERE sp_folder_id = p_sp_folder_id\n    AND param_acc_bs_suppliers = 1\n    AND aux_account_number IS NOT NULL\n    AND accounting_entry_date BETWEEN CAST(p_start_date AS DATE) AND CAST(p_end_date AS DATE)\n),\naggregated AS (\n  SELECT\n    aux_account_number,\n    aux_account_label,\n    sp_folder_id,\n    COUNT(*) AS nb_entries,\n    COUNT(DISTINCT sp_accounting_entry_id) AS nb_accounting_entries,\n    SUM(ABS(amount)) AS volume,\n    SUM(recent_amount) AS recent_volume,\n    MAX(accounting_entry_date) AS last_activity_date,\n    SUM(amount) AS balance\n  FROM flagged\n  GROUP BY aux_account_number, aux_account_label, sp_folder_id\n)\nSELECT\n  aux_account_number,\n  aux_account_label,\n  sp_folder_id,\n  nb_entries,\n  nb_accounting_entries,\n  volume,\n  recent_volume,\n  months_between(CAST(p_end_date AS DATE), last_activity_date) AS last_activity_months,\n  balance,\n  SUM(volume) OVER () AS type_total_volume,\n  last_activity_date\nFROM aggregated",
+      "description": "null",
+      "created": "2026-03-18T12:13:29.384Z",
+      "last_altered": "2026-03-18T12:13:29.384Z"
+    }
+  ]
+}
