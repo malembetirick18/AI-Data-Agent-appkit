@@ -27,13 +27,20 @@ class QueryAnalysisSignature(dspy.Signature):
     3. Identify polysemous accounting terms — key terms that have multiple incompatible
        interpretations in accounting context that would produce fundamentally different SQL:
        - "inactif": no entries vs no invoices/orders vs master file status
-       - "solde anormal": debit on credit account vs statistical outlier vs prior year variance
+       - "solde anormal" / "solde créditeur anormal" / "solde débiteur anormal": even when
+         the direction (créditeur/débiteur) is specified, "anormal" still requires a numeric
+         threshold — any amount vs above a minimum amount vs statistical outlier
        - "doublon": same amount+date vs same invoice ref vs same supplier+amount
        - "récent" / "dernièrement": no absolute date given
-       - "transaction atypique": outlier by amount vs frequency vs counterpart
+       - "transaction atypique" / "écriture atypique" / "écriture suspecte": outlier by amount
+         vs frequency vs counterpart
        - "tiers actif fournisseur et client": same SIREN vs same account vs same name
-    4. Return a concise note describing any findings. Return empty string if the query is
-       unambiguous and has no apparent contradictions.
+    4. Additionally, flag PARAMETRIC when a query's intent is clear but a required numeric
+       parameter is missing: e.g. "soldes créditeurs anormaux" without a threshold amount,
+       "retards importants" without a number of days, "écarts significatifs" without a
+       tolerance percentage. Mark as: 'PARAMETRIC: <missing parameter description>'.
+    5. Return a concise note describing any findings. Return empty string if the query is
+       unambiguous, has no apparent contradictions, and all required parameters are present.
     """
 
     prompt = dspy.InputField(desc="User query")
@@ -53,6 +60,8 @@ class QueryAnalysisSignature(dspy.Signature):
             "Semantic coherence analysis. Format: 'AUDIT_PATTERN: <explanation>' if the apparent "
             "contradiction is a valid audit finding; 'POLYSEMOUS: <term> — <interpretations>' if a key "
             "term has multiple incompatible accounting meanings; 'INCOHERENT: <reason>' if the request "
-            "is logically contradictory; or empty string if the query is straightforward."
+            "is logically contradictory; 'PARAMETRIC: <missing parameter>' if the intent is clear but "
+            "a required numeric threshold, date range, or business rule parameter is absent; "
+            "or empty string if the query is fully unambiguous and all parameters are present."
         )
     )

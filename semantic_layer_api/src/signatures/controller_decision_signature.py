@@ -5,9 +5,11 @@ class ControllerDecisionSignature(dspy.Signature):
 
     You must choose one decision among: clarify, guide, proceed, error.
 
-    IMPORTANT: Default to 'proceed' whenever the user intent is understandable and at least one
-    table in catalog_info can plausibly answer the question. Genie is capable of resolving column
-    mappings and performing joins on its own — you do NOT need perfect certainty.
+    IMPORTANT: Default to 'clarify' whenever there is any doubt about the user's intent,
+    missing parameters, or ambiguous terms. Only use 'proceed' when the query is fully
+    unambiguous AND all required numeric thresholds/parameters are explicitly stated.
+    Genie can resolve column mappings internally, but it cannot invent business rule
+    parameters (thresholds, periods, amounts) — those MUST come from the user.
 
     - proceed: use when the rewritten prompt is clear enough for Genie to generate a SQL query.
       Prefer this decision when the user question maps to known tables, even if the exact columns
@@ -36,10 +38,23 @@ class ControllerDecisionSignature(dspy.Signature):
             - "transactions atypiques" without defining the amount or frequency threshold
             - "tiers inactifs depuis longtemps" without defining the inactivity period
             - "factures avec écart significatif" without defining the tolerance percentage
+            - "soldes créditeurs anormaux en comptes clients (411)" or any "solde anormal"
+              query without a minimum threshold amount — even if the direction (débiteur/
+              créditeur) is specified, the threshold defining "anormal" is still missing.
+              Ask: seuil montant minimum (e.g. inputType number, min 0, max 100000, step 100),
+              and optionally a date range for the analysis period.
+            - "écritures de clôture suspectes" or any "suspect/atypique/anormal" pattern
+              without a numeric criterion that defines the boundary.
             In these cases: set clarify with needsParams: true, and generate targeted questions
             using inputType 'number' (for thresholds/amounts/periods) with appropriate min/max/step
             bounds, 'select' (for category choices), or 'toggle' (for boolean filters).
             Do NOT use needsParams for cases (a)(b)(c) above — those are disambiguation cases.
+        (e) SCOPE_UNDEFINED: the user's question does not explicitly specify the analysis scope.
+            This rule applies UNCONDITIONALLY — even when all other parameters are clear and the
+            decision would otherwise be 'proceed'. If neither "groupe" nor "filiale" (or a
+            sp_folder_id value) appears in the user's question or in the conversation context,
+            ALWAYS set decision to 'clarify' and include the scope_level + sp_folder_id questions
+            as the first two questions in the response.
     - error: use when the request is completely outside the supported data scope.
       NOTE: do NOT use error when coherence_note is AUDIT_PATTERN — an apparent contradiction
       that is a valid audit finding is a coherent request, not an error.
@@ -62,7 +77,9 @@ class ControllerDecisionSignature(dspy.Signature):
     - Suggested tables and functions must come only from catalog_info
     - Favor low-complexity queries and minimal joins
     - If the best answer requires clarification, ask short structured questions
-    - When in doubt between 'clarify' and 'proceed', choose 'proceed'
+    - When in doubt between 'clarify' and 'proceed', choose 'clarify'
+    - Only choose 'proceed' when the query is complete: intent is unambiguous AND all
+      required business parameters (thresholds, amounts, periods) are explicitly stated
 
     Return ONLY a JSON object string with this shape:
     {
@@ -99,6 +116,38 @@ class ControllerDecisionSignature(dspy.Signature):
     - inputType "text": use only for free-form values not covered by the above.
     - needsParams: set to true ONLY for PARAMETRIC_QUERY clarifications (case d above).
       Leave false or omit for disambiguation clarifications (cases a, b, c).
+
+    MANDATORY SCOPE QUESTION — unconditional rule:
+    Every time the user's question does not explicitly mention "groupe", "filiale", or a
+    sp_folder_id value (in the current message OR in the conversation_context), you MUST:
+      1. Set decision to 'clarify'.
+      2. Place the two scope questions below as the FIRST two questions in the response.
+      3. Append any other relevant questions (parametric, disambiguation, etc.) after them.
+    This rule overrides 'proceed' and 'guide' decisions — scope must always be confirmed before
+    sending a query to Genie, unless it was already established in the conversation context.
+
+    When scope IS already known from context (e.g. user previously answered "filiale" and
+    provided a sp_folder_id), do NOT ask again and proceed normally.
+
+    Use this exact structure (two questions, always together as the first two):
+    {
+      "id": "scope_level",
+      "label": "Périmètre d'analyse",
+      "inputType": "select",
+      "required": true,
+      "options": [
+        {"value": "group", "label": "Groupe (toutes les filiales)"},
+        {"value": "filiale", "label": "Filiale spécifique"}
+      ]
+    },
+    {
+      "id": "sp_folder_id",
+      "label": "Identifiant de la filiale (sp_folder_id)",
+      "inputType": "text",
+      "required": false,
+      "placeholder": "Ex: 12345 — requis si périmètre = Filiale spécifique"
+    }
+    The rewrittenPrompt must incorporate the chosen scope and sp_folder_id value when present.
     """
 
     prompt = dspy.InputField(desc="Original user query")
@@ -114,7 +163,9 @@ class ControllerDecisionSignature(dspy.Signature):
             "AUDIT_PATTERN: apparent contradiction that is a valid audit finding. "
             "POLYSEMOUS: key term with multiple incompatible accounting interpretations. "
             "INCOHERENT: logically contradictory request. "
-            "Empty string if the query is straightforward."
+            "PARAMETRIC: intent is clear but a required numeric threshold, date range, or "
+            "business rule parameter is missing — ALWAYS clarify with needsParams: true. "
+            "Empty string if the query is fully unambiguous and all parameters are present."
         )
     )
     decision_json = dspy.OutputField(desc="JSON object string containing the supervisor decision")

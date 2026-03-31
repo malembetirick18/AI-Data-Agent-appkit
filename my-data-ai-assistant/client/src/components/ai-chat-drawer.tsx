@@ -64,7 +64,7 @@ import { type Spec } from '@json-render/core'
 import { JSONUIProvider, Renderer, defineRegistry } from '@json-render/react'
 import { chatUiCatalog } from '../../../shared/genui-catalog'
 
-import { useGenieChat, GenieQueryVisualization, DataTable as AppKitDataTable } from '@databricks/appkit-ui/react'
+import { useGenieChat, DataTable as AppKitDataTable } from '@databricks/appkit-ui/react'
 import type { GenieAttachmentResponse, GenieStatementResponse } from '@databricks/appkit-ui/react'
 
 /* ------------------------------------------------------------------ */
@@ -238,323 +238,7 @@ const periodOptions = [
   { label: 'Exercice complet (01/10/2019 - 30/09/2020)', value: 'full' },
 ]
 
-/* ------------------------------------------------------------------ */
-/*  Mocked rich responses                                              */
-/* ------------------------------------------------------------------ */
 
-const lineChartData = [
-  { mois: 1, a: 52, b: 18, c: 45 },
-  { mois: 2, a: 38, b: 22, c: 62 },
-  { mois: 3, a: 42, b: 20, c: 80 },
-  { mois: 4, a: 35, b: 25, c: 75 },
-  { mois: 5, a: 30, b: 19, c: 68 },
-  { mois: 6, a: 28, b: 17, c: 55 },
-  { mois: 7, a: 10, b: 15, c: 8 },
-  { mois: 8, a: 5, b: 12, c: 2 },
-  { mois: 9, a: 8, b: 14, c: 0 },
-  { mois: 10, a: 20, b: 35, c: 10 },
-  { mois: 11, a: 38, b: 18, c: 25 },
-  { mois: 12, a: 45, b: 22, c: 35 },
-]
-
-const barChartData = [
-  { statut: 'Cohérents', count: 19465 },
-  { statut: 'Fortes var.', count: 2185 },
-  { statut: 'Hausses prix', count: 132 },
-  { statut: 'Baisses prix', count: 81 },
-]
-
-function _buildRichResponse(): ContentBlock[] {
-  return [
-    {
-      type: 'bold',
-      content:
-        'Les variations de dépenses par fournisseur présentent une cohérence globale avec les volumes d\'activité, mais 213 cas nécessitent une attention particulière.',
-    },
-    {
-      type: 'text',
-      content:
-        'L\'analyse révèle que 86% des fournisseurs (19 465 sur 22 858) présentent des variations cohérentes entre leurs dépenses et leurs volumes de transactions. Cependant, des incohérences significatives ont été identifiées pour 213 fournisseurs, principalement liées à des hausses de prix sans augmentation de volume.',
-    },
-    { type: 'heading', content: 'Cohérence globale avec les tendances historiques' },
-    {
-      type: 'text',
-      content:
-        'Les dépenses fournisseurs suivent des tendances mensuelles relativement stables pour la plupart des dossiers analysés. Le dossier 363-vw3sul04 montre une forte chute en avril-mai 2020 (de 28,7M\u20ac à 8,6M\u20ac), cohérente avec une baisse du volume de transactions de 73 208 à 13 708 entrées, reflétant probablement l\'impact de la pandémie COVID-19.',
-    },
-    {
-      type: 'lineChart',
-      title: 'Évolution des dépenses fournisseurs par mois',
-      data: lineChartData,
-      xKey: 'mois',
-      yLabel: 'Dépenses totales (M\u20ac)',
-      series: [
-        { yKey: 'a', yName: '363-vw3sul04', stroke: '#1c7ed6' },
-        { yKey: 'b', yName: '3kmctw701a4k', stroke: '#f08c00' },
-        { yKey: 'c', yName: 'cv0zqy89z9xo', stroke: '#2b8a3e' },
-      ],
-      source: 'Tendances mensuelles pour visualisation (3 dossiers principaux)',
-    },
-    { type: 'heading', content: 'Analyse de la cohérence dépenses-volumes' },
-    {
-      type: 'bold',
-      content:
-        'Fournisseurs cohérents (96%) : La majorité des fournisseurs (21 650 sur 22 858) présentent des variations alignées entre dépenses et volumes d\'activité :',
-    },
-    {
-      type: 'bullets',
-      items: [
-        '19 465 fournisseurs avec variations cohérentes (variance moyenne: 100%)',
-        '2 185 fournisseurs avec fortes variations cohérentes (dépenses +642%, volume +253%)',
-      ],
-    },
-    {
-      type: 'bold',
-      content: 'Incohérences détectées (1%) : 213 fournisseurs montrent des variations de dépenses non expliquées par les volumes :',
-    },
-    {
-      type: 'bullets',
-      items: [
-        '132 hausses de prix anormales (variance dépenses: +4 258% en moyenne, volume: +12% seulement)',
-        '81 baisses de prix (variance dépenses: -73%, volume: -34%)',
-      ],
-    },
-    {
-      type: 'barChart',
-      title: 'Répartition des fournisseurs par statut de cohérence',
-      data: barChartData,
-      yKey: 'count',
-      xKey: 'statut',
-      color: '#1c7ed6',
-    },
-  ]
-}
-
-function _buildTableResponse(): ContentBlock[] {
-  return [
-    {
-      type: 'bold',
-      content:
-        'Oui, plusieurs transactions d\'achats présentent des caractéristiques atypiques nécessitant une investigation approfondie.',
-    },
-    {
-      type: 'text',
-      content:
-        'L\'analyse a identifié 847 transactions suspectes parmi les 3,4M d\'écritures du dossier, réparties en trois catégories principales :',
-    },
-    {
-      type: 'heading',
-      content: 'Transactions atypiques identifiées',
-    },
-    {
-      type: 'table',
-      caption: 'Résumé des anomalies détectées',
-      headers: ['Type d\'anomalie', 'Nombre', 'Montant total', 'Risque'],
-      rows: [
-        ['Fractionnement de factures', '312', '4,2 M\u20ac', 'Élevé'],
-        ['Doublons potentiels', '189', '2,8 M\u20ac', 'Élevé'],
-        ['Achats fin de période', '215', '6,1 M\u20ac', 'Moyen'],
-        ['Montants ronds suspects', '131', '1,5 M\u20ac', 'Faible'],
-      ],
-    },
-    { type: 'heading', content: 'Détail : Fractionnement de factures' },
-    {
-      type: 'text',
-      content:
-        '312 séquences de factures fractionnées ont été détectées, principalement chez 45 fournisseurs récurrents. Le montant unitaire moyen est maintenu juste en-dessous du seuil de validation (4 999\u20ac pour un seuil de 5 000\u20ac).',
-    },
-    {
-      type: 'table',
-      caption: 'Top 5 fournisseurs – fractionnement',
-      headers: ['Fournisseur', 'Nb factures', 'Montant moyen', 'Période'],
-      rows: [
-        ['FOURNI-2847', '28', '4 987\u20ac', 'Jan-Sep 2020'],
-        ['FOURNI-1293', '22', '4 995\u20ac', 'Mar-Août 2020'],
-        ['FOURNI-0567', '19', '4 890\u20ac', 'Fév-Jul 2020'],
-        ['FOURNI-3421', '17', '4 950\u20ac', 'Jan-Jun 2020'],
-        ['FOURNI-0891', '15', '4 975\u20ac', 'Avr-Sep 2020'],
-      ],
-    },
-    {
-      type: 'bullets',
-      items: [
-        'Recommandation : Vérifier les autorisations d\'achat et les seuils de délégation',
-        'Priorité : 45 fournisseurs à investiguer en priorité',
-        'Action suggérée : Créer un contrôle de suivi mensuel automatisé',
-      ],
-    },
-  ]
-}
-
-function _buildInactiveResponse(): ContentBlock[] {
-  return [
-    {
-      type: 'bold',
-      content: 'Oui, 37 fournisseurs classés comme inactifs ont reçu des règlements durant la période analysée.',
-    },
-    {
-      type: 'text',
-      content:
-        'Sur les 39 000 tiers référencés, 4 215 sont marqués comme inactifs (dernière facture datant de plus de 12 mois). Parmi ceux-ci, 37 ont reçu au moins un paiement entre le 01/10/2019 et le 30/09/2020.',
-    },
-    {
-      type: 'table',
-      caption: 'Fournisseurs inactifs ayant reçu des règlements',
-      headers: ['Fournisseur', 'Dernière facture', 'Nb règlements', 'Montant total', 'Statut'],
-      rows: [
-        ['FOURNI-8834', '15/03/2018', '12', '156 200\u20ac', 'À investiguer'],
-        ['FOURNI-2190', '22/07/2017', '8', '89 400\u20ac', 'À investiguer'],
-        ['FOURNI-5567', '01/11/2018', '5', '42 100\u20ac', 'À investiguer'],
-        ['FOURNI-9012', '30/06/2018', '4', '38 750\u20ac', 'En cours'],
-        ['FOURNI-3345', '15/01/2019', '3', '27 300\u20ac', 'En cours'],
-      ],
-    },
-    {
-      type: 'bullets',
-      items: [
-        'Montant total des paiements aux fournisseurs inactifs : 892 450\u20ac',
-        'Risque principal : Paiements frauduleux ou erreurs de routage bancaire',
-        'Action recommandée : Vérification des coordonnées bancaires et rapprochement avec les bons de commande',
-      ],
-    },
-  ]
-}
-
-function _buildDualActivityResponse(): ContentBlock[] {
-  return [
-    {
-      type: 'bold',
-      content: '156 tiers présentent une double activité fournisseur et client sur la période.',
-    },
-    {
-      type: 'text',
-      content:
-        'L\'analyse croisée des comptes fournisseurs (401x) et clients (411x) identifie 156 tiers avec des flux dans les deux sens, totalisant 12,3M\u20ac en achats et 8,7M\u20ac en ventes.',
-    },
-    {
-      type: 'table',
-      caption: 'Top tiers à double activité par volume',
-      headers: ['Tiers', 'Achats', 'Ventes', 'Solde net', 'Nb opérations'],
-      rows: [
-        ['TIERS-4521', '2 450 000\u20ac', '1 890 000\u20ac', '560 000\u20ac', '342'],
-        ['TIERS-1287', '1 120 000\u20ac', '980 000\u20ac', '140 000\u20ac', '215'],
-        ['TIERS-7834', '890 000\u20ac', '1 250 000\u20ac', '-360 000\u20ac', '178'],
-        ['TIERS-0923', '670 000\u20ac', '540 000\u20ac', '130 000\u20ac', '124'],
-        ['TIERS-5561', '430 000\u20ac', '780 000\u20ac', '-350 000\u20ac', '96'],
-      ],
-    },
-    {
-      type: 'bullets',
-      items: [
-        '23 tiers présentent un solde net proche de zéro (< 5%) — potentiel circuit de compensation',
-        '8 tiers avec des opérations réciproques le même jour — risque d\'opérations fictives',
-        'Recommandation : Audit approfondi des 23 tiers à solde net proche de zéro',
-      ],
-    },
-  ]
-}
-
-const ecartsBarData = [
-  { categorie: 'Solde > 50k\u20ac', count: 18 },
-  { categorie: '10k-50k\u20ac', count: 47 },
-  { categorie: '5k-10k\u20ac', count: 63 },
-  { categorie: '1k-5k\u20ac', count: 129 },
-  { categorie: '< 1k\u20ac', count: 285 },
-]
-
-const ecartsLineData = [
-  { mois: 'Oct', ecart: 1.2, volume: 42 },
-  { mois: 'Nov', ecart: 0.9, volume: 38 },
-  { mois: 'Dec', ecart: 2.8, volume: 55 },
-  { mois: 'Jan', ecart: 1.5, volume: 40 },
-  { mois: 'Fev', ecart: 1.1, volume: 36 },
-  { mois: 'Mar', ecart: 0.7, volume: 31 },
-  { mois: 'Avr', ecart: 1.9, volume: 44 },
-  { mois: 'Mai', ecart: 3.4, volume: 61 },
-  { mois: 'Jun', ecart: 2.1, volume: 48 },
-  { mois: 'Jul', ecart: 1.6, volume: 35 },
-  { mois: 'Aou', ecart: 0.5, volume: 22 },
-  { mois: 'Sep', ecart: 4.2, volume: 72 },
-]
-
-function _buildEcartsResponse(): ContentBlock[] {
-  return [
-    {
-      type: 'bold',
-      content:
-        'Oui, des écarts significatifs ont été identifiés entre les soldes comptables fournisseurs et les balances auxiliaires pour 542 comptes sur 39 000 tiers analysés.',
-    },
-    {
-      type: 'text',
-      content:
-        'Le rapprochement systématique entre les comptes collectifs fournisseurs (401x) et les balances auxiliaires individuelles révèle un écart global net de 2,34 M\u20ac. Si la majorité des comptes (98,6%) présentent des soldes parfaitement réconciliés, 542 comptes affichent des différences nécessitant une investigation.',
-    },
-    { type: 'heading', content: 'Synthèse des écarts détectés' },
-    {
-      type: 'table',
-      caption: 'Répartition des écarts par nature',
-      headers: ['Nature de l\'écart', 'Nb comptes', 'Montant total', 'Impact'],
-      rows: [
-        ['Écritures non lettrées', '218', '1 120 000\u20ac', 'Élevé'],
-        ['Erreurs d\'imputation', '87', '456 000\u20ac', 'Élevé'],
-        ['Écarts de change', '63', '312 000\u20ac', 'Moyen'],
-        ['Avoirs non rapprochés', '112', '289 000\u20ac', 'Moyen'],
-        ['Arrondis & ajustements', '62', '163 000\u20ac', 'Faible'],
-      ],
-    },
-    { type: 'heading', content: 'Évolution des écarts sur la période' },
-    {
-      type: 'text',
-      content:
-        'Les écarts fluctuent au cours de l\'exercice, avec des pics notables en décembre (clôture semestrielle), mai (congés / retards de lettrage) et surtout en septembre (pré-clôture annuelle) où l\'écart atteint 4,2 M\u20ac avant régularisations.',
-    },
-    {
-      type: 'lineChart',
-      title: 'Évolution mensuelle des écarts (M\u20ac) et volume de comptes impactés',
-      data: ecartsLineData,
-      xKey: 'mois',
-      yLabel: 'Écart (M\u20ac)',
-      lines: [
-        { key: 'ecart', color: '#e8590c', name: 'Écart (M\u20ac)' },
-        { key: 'volume', color: '#1c7ed6', name: 'Nb comptes impactés' },
-      ],
-      source: 'Rapprochement collectif / auxiliaire — période 01/10/2019 au 30/09/2020',
-    },
-    { type: 'heading', content: 'Répartition des écarts par tranche de montant' },
-    {
-      type: 'barChart',
-      title: 'Nombre de comptes par tranche d\'écart',
-      data: ecartsBarData,
-      yKey: 'count',
-      xKey: 'categorie',
-      color: '#e8590c',
-    },
-    { type: 'heading', content: 'Top 5 comptes fournisseurs avec les écarts les plus élevés' },
-    {
-      type: 'table',
-      caption: 'Comptes à investiguer en priorité',
-      headers: ['Compte', 'Fournisseur', 'Solde comptable', 'Solde auxiliaire', 'Écart', 'Cause probable'],
-      rows: [
-        ['401-78234', 'FOURNI-2847', '892 000\u20ac', '745 000\u20ac', '147 000\u20ac', 'Écritures non lettrées'],
-        ['401-12098', 'FOURNI-5567', '1 230 000\u20ac', '1 098 000\u20ac', '132 000\u20ac', 'Erreur d\'imputation'],
-        ['401-45612', 'FOURNI-9012', '567 000\u20ac', '452 000\u20ac', '115 000\u20ac', 'Avoirs en attente'],
-        ['401-33890', 'FOURNI-1293', '345 000\u20ac', '248 000\u20ac', '97 000\u20ac', 'Écart de change'],
-        ['401-67421', 'FOURNI-0891', '789 000\u20ac', '701 000\u20ac', '88 000\u20ac', 'Double comptabilisation'],
-      ],
-    },
-    {
-      type: 'bullets',
-      items: [
-        'Action prioritaire : Lettrage des 218 comptes avec écritures en suspens (1,12 M\u20ac)',
-        'Recommandation : Mise en place d\'un contrôle mensuel automatisé de rapprochement collectif / auxiliaire',
-        'Alerte : 87 erreurs d\'imputation détectées — révision des processus de saisie recommandée',
-        'Délai suggéré : Régularisation avant clôture au 30/09/2020',
-      ],
-    },
-  ]
-}
-
-void [_buildRichResponse, _buildTableResponse, _buildInactiveResponse, _buildDualActivityResponse, _buildEcartsResponse]
 
 /* ------------------------------------------------------------------ */
 /*  json-render catalog + registry for generative UI                   */
@@ -578,7 +262,8 @@ const { registry: chatUiRegistry } = defineRegistry(chatUiCatalog, {
       </List>
     ),
     DataTable: ({ props }) => {
-      const columnDefs = props.headers.map((h: string) => ({
+      const VISIBLE_COLS = 4
+      const columnDefs = props.headers.map((h: string, i: number) => ({
         field: h,
         headerName: h,
         sortable: true,
@@ -586,10 +271,12 @@ const { registry: chatUiRegistry } = defineRegistry(chatUiCatalog, {
         resizable: true,
         flex: 1,
         minWidth: 80,
+        hide: i >= VISIBLE_COLS,
       }))
       const rowData = props.rows.map((row: string[]) =>
         Object.fromEntries(props.headers.map((h: string, i: number) => [h, row[i] ?? '']))
       )
+      const hasHiddenCols = props.headers.length > VISIBLE_COLS
       return (
         <Box mt="xs" mb="xs">
           {props.caption && <Text size="xs" c="dimmed" mb={4} fs="italic">{props.caption}</Text>}
@@ -602,6 +289,7 @@ const { registry: chatUiRegistry } = defineRegistry(chatUiCatalog, {
               suppressMovableColumns
               pagination={rowData.length > 10}
               paginationPageSize={10}
+              sideBar={hasHiddenCols ? { toolPanels: [{ id: 'columns', labelDefault: 'Colonnes', labelKey: 'columns', iconKey: 'columns', toolPanel: 'agColumnsToolPanel', toolPanelParams: { suppressRowGroups: true, suppressValues: true, suppressPivots: true, suppressPivotMode: true } }] } : undefined}
             />
           </div>
         </Box>
@@ -812,38 +500,11 @@ const { registry: chatUiRegistry } = defineRegistry(chatUiCatalog, {
   },
 })
 
-/**
- * Convert plain headers + rows (from catalog DataTable or legacy blocks)
- * into a GenieStatementResponse so GenieQueryVisualization can render
- * with auto chart inference + table tabs.
- */
-function toStatementResponseFromTable(
-  headers: string[],
-  rows: string[][],
-): GenieStatementResponse {
-  return {
-    manifest: {
-      schema: {
-        columns: headers.map((name) => ({
-          name,
-          type_name: 'STRING',
-          type_text: 'STRING',
-          position: 0,
-        })),
-      },
-    },
-    result: {
-      data_array: rows,
-    },
-  } as GenieStatementResponse
-}
-
 
 /* ------------------------------------------------------------------ */
 /*  Chart data transformation + rendering from GenieStatementResponse  */
 /* ------------------------------------------------------------------ */
 
-const CHART_COLORS = ['#228be6', '#40c057', '#fab005', '#fa5252', '#7950f2', '#15aabf', '#e64980', '#82c91e']
 
 interface ChartDataRow {
   [key: string]: string | number
@@ -910,6 +571,58 @@ function transformStatementToChartData(statement: GenieStatementResponse): {
   })
 
   return { columns, categoryColumn, numericColumns, data }
+}
+
+/**
+ * Build a GenericUiSpec from a GenieStatementResponse using catalog components.
+ * Auto-detects chart type from column metadata; always includes a DataTable.
+ */
+function buildSpecFromGenieStatement(
+  statement: GenieStatementResponse,
+  title?: string,
+): GenericUiSpec {
+  const { columns, categoryColumn, numericColumns, data } = transformStatementToChartData(statement)
+  const headers = columns.map((c) => c.name)
+  const rawRows = statement.result?.data_array ?? []
+
+  const elements: Record<string, { type: string; props: Record<string, unknown>; children: string[] }> = {}
+  const rootId = 'root'
+  elements[rootId] = { type: 'Stack', props: { gap: 6 }, children: [] }
+
+  if (title) {
+    elements['title'] = { type: 'TextContent', props: { content: title, size: 'sm', weight: 600 }, children: [] }
+    elements[rootId].children.push('title')
+  }
+
+  if (categoryColumn && numericColumns.length > 0) {
+    if (numericColumns.length === 1) {
+      elements['chart'] = {
+        type: 'BarChartViz',
+        props: { data, xKey: categoryColumn, yKey: numericColumns[0] },
+        children: [],
+      }
+    } else {
+      elements['chart'] = {
+        type: 'LineChartViz',
+        props: {
+          data,
+          xKey: categoryColumn,
+          series: numericColumns.map((col) => ({ yKey: col, yName: col })),
+        },
+        children: [],
+      }
+    }
+    elements[rootId].children.push('chart')
+  }
+
+  elements['table'] = {
+    type: 'DataTable',
+    props: { headers, rows: rawRows },
+    children: [],
+  }
+  elements[rootId].children.push('table')
+
+  return { root: rootId, elements } as GenericUiSpec
 }
 
 function buildGenerativeUiSpec(blocks: ContentBlock[]): GenericUiSpec | null {
@@ -1026,7 +739,6 @@ function buildGenieResultPayload(message: Message): unknown {
 async function generateUiSpecForMessage(params: {
   prompt: string
   genieResult: unknown
-  catalogPrompt: string
 }): Promise<GenericUiSpec | null> {
   try {
     const response = await fetch('/api/controllerAiAgent/spec', {
@@ -1035,7 +747,6 @@ async function generateUiSpecForMessage(params: {
       body: JSON.stringify({
         prompt: params.prompt,
         genieResult: params.genieResult,
-        catalogPrompt: params.catalogPrompt,
       }),
     })
 
@@ -1133,7 +844,7 @@ const MessageContent = memo(function MessageContent({
   if (generatedSpec) {
     return (
       <>
-        <JSONUIProvider registry={registry}>
+        <JSONUIProvider key={messageId} registry={registry}>
           <Renderer spec={generatedSpec} registry={registry} />
         </JSONUIProvider>
       </>
@@ -1151,7 +862,7 @@ const MessageContent = memo(function MessageContent({
       {msg.blocks && msg.blocks.length > 0 && (
         <Box>
           {fallbackSpec ? (
-            <JSONUIProvider registry={registry}>
+            <JSONUIProvider key={`fallback-${messageId}`} registry={registry}>
               <Renderer spec={fallbackSpec} registry={registry} />
             </JSONUIProvider>
           ) : (
@@ -1171,12 +882,12 @@ const MessageContent = memo(function MessageContent({
           const statement = toGenieStatementResponse(queryData)
           if (!statement) return null
 
+          const attachmentSpec = buildSpecFromGenieStatement(statement, attachment.query?.title)
           return (
             <Box key={attachmentId} mt="sm">
-              {attachment.query?.title && (
-                <Text size="xs" fw={600} mb="xs">{attachment.query.title}</Text>
-              )}
-              <GenieQueryVisualization data={statement} />
+              <JSONUIProvider key={`genie-${attachmentId}`} registry={registry}>
+                <Renderer spec={attachmentSpec} registry={registry} />
+              </JSONUIProvider>
             </Box>
           )
         })}
@@ -1253,13 +964,30 @@ function RenderBlock({ block }: { block: ContentBlock }) {
         </List>
       )
     case 'table': {
-      const stmtData = toStatementResponseFromTable(block.headers, block.rows)
+      const VISIBLE_COLS = 4
+      const columnDefs = block.headers.map((h, i) => ({
+        field: h, headerName: h, sortable: true, filter: true, resizable: true, flex: 1, minWidth: 80,
+        hide: i >= VISIBLE_COLS,
+      }))
+      const rowData = block.rows.map((row) =>
+        Object.fromEntries(block.headers.map((h, i) => [h, row[i] ?? '']))
+      )
+      const hasHiddenCols = block.headers.length > VISIBLE_COLS
       return (
         <Box mt="xs" mb="xs">
-          {block.caption && (
-            <Text size="xs" c="dimmed" mb={4} fs="italic">{block.caption}</Text>
-          )}
-          <GenieQueryVisualization data={stmtData} />
+          {block.caption && <Text size="xs" c="dimmed" mb={4} fs="italic">{block.caption}</Text>}
+          <div style={{ height: Math.min(300, 48 + rowData.length * 42), width: '100%' }}>
+            <AgGridReact
+              theme={themeQuartz}
+              columnDefs={columnDefs}
+              rowData={rowData}
+              domLayout="normal"
+              suppressMovableColumns
+              pagination={rowData.length > 10}
+              paginationPageSize={10}
+              sideBar={hasHiddenCols ? { toolPanels: [{ id: 'columns', labelDefault: 'Colonnes', labelKey: 'columns', iconKey: 'columns', toolPanel: 'agColumnsToolPanel', toolPanelParams: { suppressRowGroups: true, suppressValues: true, suppressPivots: true, suppressPivotMode: true } }] } : undefined}
+            />
+          </div>
         </Box>
       )
     }
@@ -1410,68 +1138,7 @@ interface TeamControl {
   results: string
 }
 
-const teamControls: TeamControl[] = [
-  {
-    id: 'tc-001',
-    name: 'Détection des doublons de factures fournisseurs',
-    rubriqueId: '05',
-    createdBy: 'S. Dupont',
-    createdAt: '28/02/2026',
-    status: 'validé',
-    description:
-      'Identification automatique des factures fournisseurs présentant des montants, dates et références identiques ou très proches, susceptibles de constituer des doublons de saisie ou de paiement.',
-    results:
-      '47 paires de factures potentiellement en doublon détectées sur 537 comptes fournisseurs. Montant total exposé : 1,23 M\u20ac. 12 doublons confirmés après analyse.',
-  },
-  {
-    id: 'tc-002',
-    name: 'Analyse des écritures de clôture hors cycle normal',
-    rubriqueId: '09',
-    createdBy: 'A. Bernard',
-    createdAt: '01/03/2026',
-    status: 'en revue',
-    description:
-      'Contrôle des écritures comptables passées en dehors des périodes habituelles de clôture (week-ends, jours fériés, après 20h), pouvant signaler des régularisations tardives ou des manipulations.',
-    results:
-      '89 écritures atypiques identifiées, dont 23 passées un dimanche et 14 après 22h. Montant cumulé : 3,4 M\u20ac. Principalement sur les comptes 6xx et 7xx.',
-  },
-  {
-    id: 'tc-003',
-    name: 'Vérification de la séquence de numérotation des factures de vente',
-    rubriqueId: '06',
-    createdBy: 'R. Martin',
-    createdAt: '02/03/2026',
-    status: 'validé',
-    description:
-      'Contrôle de la continuité et de la séquence des numéros de factures émises pour détecter des ruptures, des numéros manquants ou des anomalies dans la chaîne de facturation.',
-    results:
-      '15 ruptures de séquence détectées sur 12 847 factures analysées. 3 plages de numéros manquants identifiées (FA-2020-4521 à FA-2020-4525). Aucun impact sur la cohérence du CA déclaré.',
-  },
-  {
-    id: 'tc-004',
-    name: 'Contrôle de cohérence TVA collectée vs TVA déclarée',
-    rubriqueId: '07',
-    createdBy: 'M. Leroy',
-    createdAt: '03/03/2026',
-    status: 'brouillon',
-    description:
-      'Rapprochement entre la TVA collectée sur les ventes comptabilisées et les montants déclarés sur les CA3 mensuelles, pour identifier les écarts de déclaration ou les erreurs de taux.',
-    results:
-      'Écart global de 45 230\u20ac entre TVA collectée comptable (8,92 M\u20ac) et TVA déclarée (8,87 M\u20ac). 3 mois présentent des écarts > 10 000\u20ac. Cause principale : erreurs de taux sur 127 opérations intracommunautaires.',
-  },
-  {
-    id: 'tc-005',
-    name: 'Identification des provisions sans justificatif ni mouvement',
-    rubriqueId: '08',
-    createdBy: 'C. Moreau',
-    createdAt: '03/03/2026',
-    status: 'en revue',
-    description:
-      'Revue des comptes de provisions (15xx) pour identifier les dotations non reprises depuis plus de 12 mois, sans mouvement ni justificatif attaché, pouvant signaler des provisions obsolètes ou injustifiées.',
-    results:
-      '18 provisions identifiées sans mouvement depuis > 12 mois pour un total de 2,1 M\u20ac. 7 provisions datent de N-2 sans justificatif. Recommandation : revue avec le DAF pour reprise ou justification.',
-  },
-]
+const teamControls: TeamControl[] = []
 
 const statusColors: Record<string, string> = {
   'brouillon': 'gray',
@@ -1748,21 +1415,9 @@ function TeamControlsPanel({
 
 type UserRight = 'lecture' | 'modification' | 'aucun'
 
-const DOSSIER_USERS = [
-  { id: 'u1', name: 'R. Martin', email: 'r.martin@group.com', initials: 'RM', role: 'Directeur Audit' },
-  { id: 'u2', name: 'S. Dupont', email: 's.dupont@group.com', initials: 'SD', role: 'Auditeur Senior' },
-  { id: 'u3', name: 'A. Bernard', email: 'a.bernard@group.com', initials: 'AB', role: 'Auditeur' },
-  { id: 'u4', name: 'M. Leroy', email: 'm.leroy@group.com', initials: 'ML', role: 'Contrôleur Interne' },
-  { id: 'u5', name: 'C. Moreau', email: 'c.moreau@group.com', initials: 'CM', role: 'Responsable Comptable' },
-  { id: 'u6', name: 'P. Thomas', email: 'p.thomas@group.com', initials: 'PT', role: 'Consultant Externe' },
-] as const
+const DOSSIER_USERS: { id: string; name: string; email: string; initials: string; role: string }[] = []
 
-const INITIAL_USER_RIGHTS: Record<string, UserRight> = Object.fromEntries(
-  DOSSIER_USERS.map((u) => [
-    u.id,
-    u.role === 'Consultant Externe' ? 'aucun' : u.role === 'Auditeur' ? 'lecture' : 'modification',
-  ])
-)
+const INITIAL_USER_RIGHTS: Record<string, UserRight> = {}
 
 interface AiChatDrawerProps {
   opened: boolean
@@ -1861,6 +1516,8 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
 
   const inFlightSpecIdsRef = useRef<Set<string>>(new Set())
   const attemptedSpecIdsRef = useRef<Set<string>>(new Set())
+  /** True when Genie's last response was a text-only follow-up question (no data) */
+  const genieFollowUpRef = useRef(false)
   const sessionIdRef = useRef(typeof crypto !== 'undefined' ? crypto.randomUUID() : `session-${Date.now()}`)
   const conversationIdRef = useRef(typeof crypto !== 'undefined' ? crypto.randomUUID() : `conversation-${Date.now()}`)
   const [showTeamControls, setShowTeamControls] = useState(false)
@@ -2065,6 +1722,18 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
 
     if (!latestAssistantMessage) return
 
+    // Text-only Genie messages (no attachments, no blocks) are follow-up questions or error
+    // messages — show them as plain text and flag so the next user reply goes directly to Genie
+    const hasGenieData = Boolean(
+      (latestAssistantMessage.blocks && latestAssistantMessage.blocks.length > 0) ||
+      (latestAssistantMessage.attachments && latestAssistantMessage.attachments.length > 0)
+    )
+    if (!hasGenieData) {
+      genieFollowUpRef.current = true
+      return
+    }
+    genieFollowUpRef.current = false
+
     const messageId = String(latestAssistantMessage.id)
 
     if (attemptedSpecIdsRef.current.has(messageId)) return
@@ -2080,7 +1749,6 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
     void generateUiSpecForMessage({
       prompt: latestAssistantMessage.content || blocksToPlainText(latestAssistantMessage.blocks || []),
       genieResult: buildGenieResultPayload(latestAssistantMessage),
-      catalogPrompt: chatUiCatalog.prompt(),
     })
       .then((spec) => {
         setGeneratedSpecs((previous) => {
@@ -2105,8 +1773,28 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
     const msgText = text || input.trim()
     if (!msgText) return
 
+    if (genieFollowUpRef.current) {
+      // Genie asked a follow-up question — send the response directly without supervisor pre-flight
+      genieFollowUpRef.current = false
+      setInput('')
+      setShowSuggestions(false)
+      setSupervisorHint(null)
+      setPendingClarification(null)
+      setLocalUserMessages((prev) => [
+        ...prev,
+        {
+          id: `local-${Date.now()}`,
+          role: 'user' as const,
+          content: msgText,
+          timestamp: new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }),
+        },
+      ])
+      sendMessage(msgText)
+      return
+    }
+
     void submitPromptThroughSupervisor(msgText)
-  }, [input, submitPromptThroughSupervisor])
+  }, [input, sendMessage, submitPromptThroughSupervisor])
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -2123,6 +1811,7 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
     attemptedSpecIdsRef.current.clear()
     lastSpecCandidateIdRef.current = null
     enrichedToOriginalRef.current.clear()
+    genieFollowUpRef.current = false
     setShowSuggestions(true)
     setSupervisorLoading(false)
     setSupervisorHint(null)
@@ -2635,6 +2324,7 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
               </Group>
 
               {pendingClarification.questions.map((question) => (
+                question.id === 'sp_folder_id' && clarificationAnswers['scope_level'] !== 'filiale' ? null : (
                 <Box key={question.id} mb="sm">
                   <Text size="xs" fw={500} mb={4}>{question.label}</Text>
                   {question.inputType === 'select' && question.options && question.options.length > 0 ? (
@@ -2697,6 +2387,7 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
                     />
                   )}
                 </Box>
+                )
               ))}
 
               <Group justify="flex-end" mt="xs">

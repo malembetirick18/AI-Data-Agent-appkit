@@ -32,7 +32,6 @@ export type ControllerResponse = {
 export type SpecRequest = {
   prompt: string;
   genieResult?: unknown;
-  catalogPrompt?: string;
 };
 
 export type SpecResponse = {
@@ -66,7 +65,12 @@ function parseControllerDecisionFromSse(text: string): Record<string, unknown> |
   for (const line of lines) {
     if (line.startsWith('data:')) {
       try {
-        return JSON.parse(line.slice(5).trim()) as Record<string, unknown>;
+        const parsed = JSON.parse(line.slice(5).trim()) as Record<string, unknown>;
+        // Unwrap controller envelope: { role: 'controller', data: { ... } }
+        if (parsed.role === 'controller' && parsed.data != null && typeof parsed.data === 'object') {
+          return parsed.data as Record<string, unknown>;
+        }
+        return parsed;
       } catch {
         // continue
       }
@@ -211,16 +215,11 @@ class ControllerAiAgentPlugin extends Plugin<ControllerAiAgentConfig> {
       return;
     }
 
-    if (!body?.catalogPrompt) {
-      res.status(400).json({ error: 'catalogPrompt is required' });
-      return;
-    }
-
     try {
       const response = await fetch(`${this.apiUrl}/spec/generate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt, genie_result: body?.genieResult ?? null, catalog_prompt: body.catalogPrompt }),
+        body: JSON.stringify({ prompt, genie_result: body?.genieResult ?? null }),
         signal: AbortSignal.timeout(this.timeoutMs),
       });
 

@@ -3,6 +3,7 @@ import dspy
 from pydantic import BaseModel
 import mlflow
 import os
+import asyncio
 import json
 import re
 from typing import Any
@@ -40,17 +41,85 @@ class ControllerRequest(BaseModel):
 class SpecRequest(BaseModel):
     prompt: str
     genie_result: Any = None
-    catalog_prompt: str = ""
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def _extract_json(text: str) -> str:
-    """Strip markdown code fences if the LLM wraps JSON in ```json...```."""
-    match = re.search(r"```(?:json)?\s*([\s\S]*?)```", text.strip())
-    if match:
-        return match.group(1).strip()
-    return text.strip()
+def _apply_json_pointer_add(target: dict, path: str, value: Any) -> None:
+    """Apply a single RFC 6901 JSON Pointer add operation to *target* in-place."""
+    parts = [p for p in path.split("/") if p]
+    if not parts:
+        return
+    obj: Any = target
+    for i, part in enumerate(parts[:-1]):
+        next_key = parts[i + 1]
+        if isinstance(obj, list):
+            idx = int(part)
+            while len(obj) <= idx:
+                obj.append(None)
+            obj = obj[idx]
+        else:
+            if part not in obj or obj[part] is None:
+                try:
+                    int(next_key)
+                    obj[part] = []
+                except ValueError:
+                    obj[part] = {}
+            obj = obj[part]
+    last = parts[-1]
+    if isinstance(obj, list):
+        idx = int(last)
+        while len(obj) <= idx:
+            obj.append(None)
+        obj[idx] = value
+    else:
+        obj[last] = value
+
+
+def _assemble_spec_from_patches(text: str) -> dict:
+    """Convert LLM output into a {root, elements, state} spec dict.
+
+    Handles two formats:
+    - JSONL RFC 6902 patch lines (preferred, as instructed in the catalog prompt)
+    - A single JSON object (fallback, when the LLM ignores the JSONL instruction)
+    """
+    # Strip optional markdown code fences
+    fenced = re.search(r"```(?:json[lL]?)?\s*([\s\S]*?)```", text.strip())
+    if fenced:
+        text = fenced.group(1)
+
+    text = text.strip()
+    if not text:
+        return {}
+
+    # Try JSONL patch assembly first
+    spec: dict = {}
+    patch_found = False
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        try:
+            patch = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(patch, dict) or patch.get("op") != "add":
+            continue
+        patch_found = True
+        _apply_json_pointer_add(spec, patch.get("path", ""), patch.get("value"))
+
+    if patch_found and spec.get("root") and spec.get("elements"):
+        return spec
+
+    # Fallback: try to parse as a single JSON object
+    try:
+        candidate = json.loads(text)
+        if isinstance(candidate, dict) and candidate.get("root") and candidate.get("elements"):
+            return candidate
+    except json.JSONDecodeError:
+        pass
+
+    return spec
 
 
 # ── Bootstrap ─────────────────────────────────────────────────────────────────
@@ -63,6 +132,10 @@ catalog_path = os.path.join(os.path.dirname(__file__), "catalogs", "genie_knowle
 with open(catalog_path, "r", encoding="utf-8") as f:
     genie_knowledge_store = json.load(f)
 default_catalog_info = json.dumps(genie_knowledge_store)
+
+genui_catalog_prompt_path = os.path.join(os.path.dirname(__file__), "catalogs", "genui_catalog_prompt.txt")
+with open(genui_catalog_prompt_path, "r", encoding="utf-8") as f:
+    default_genui_catalog_prompt = f.read()
 
 log_traces = os.getenv("MLFLOW_LOG_TRACES", "true") == "true"
 silent = os.getenv("MLFLOW_SILENT", "true") == "true"
@@ -111,12 +184,15 @@ async def stream_chat(request: ControllerRequest) -> StreamingResponse:
         json.dumps(request.conversation_context) if request.conversation_context else ""
     )
 
-    with dspy.settings.context(lm=lm, adapter=dspy.JSONAdapter(), track_usage=True):
-        result: dspy.Prediction = controller_agent(
-            source_text=request.source_text,
-            catalog_info=catalog,
-            conversation_context=conversation_context,
-        )
+    def _run_controller() -> dspy.Prediction:
+        with dspy.settings.context(lm=lm, adapter=dspy.JSONAdapter(), track_usage=True):
+            return controller_agent(
+                source_text=request.source_text,
+                catalog_info=catalog,
+                conversation_context=conversation_context,
+            )
+
+    result: dspy.Prediction = await asyncio.to_thread(_run_controller)
 
     response = ControllerResponse(
         decision=result.get("decision", "error"),
@@ -133,7 +209,8 @@ async def stream_chat(request: ControllerRequest) -> StreamingResponse:
     )
 
     async def event_generator():
-        yield f"event: controller_decision\ndata: {response.model_dump_json()}\n\n"
+        payload = {"role": "controller", "data": response.model_dump()}
+        yield f"event: controller_decision\ndata: {json.dumps(payload)}\n\n"
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
@@ -142,15 +219,12 @@ async def stream_chat(request: ControllerRequest) -> StreamingResponse:
 async def generate_spec(request: SpecRequest) -> StreamingResponse:
     """Generate a json-render UI spec.
 
-    Expects ``catalog_prompt`` to be the output of ``catalog.prompt()`` from
-    the frontend json-render catalog.  This is passed directly as the LLM
-    system message so all component definitions, props and rules are
-    controlled by the catalog — not hardcoded here.
+    Uses ``catalogs/genui_catalog_prompt.txt`` as the LLM system message by
+    default (loaded once at startup).  An optional ``catalog_prompt`` field in
+    the request body overrides the file when provided.
     """
     if not request.prompt:
         raise HTTPException(status_code=400, detail="prompt is required")
-    if not request.catalog_prompt:
-        raise HTTPException(status_code=400, detail="catalog_prompt is required")
 
     user_content = request.prompt
     if request.genie_result:
@@ -162,12 +236,13 @@ async def generate_spec(request: SpecRequest) -> StreamingResponse:
         user_content += f"\n\nData:\n{genie_data}"
 
     messages = [
-        {"role": "system", "content": request.catalog_prompt},
+        {"role": "system", "content": default_genui_catalog_prompt},
         {"role": "user", "content": user_content},
     ]
 
-    response = lm(messages=messages)
-    spec_text = _extract_json(response[0] if response else "{}")
+    response = await asyncio.to_thread(lm, messages=messages)
+    spec = _assemble_spec_from_patches(response[0] if response else "")
+    spec_text = json.dumps(spec)
 
     async def event_generator():
         yield f"event: spec\ndata: {spec_text}\n\n"
