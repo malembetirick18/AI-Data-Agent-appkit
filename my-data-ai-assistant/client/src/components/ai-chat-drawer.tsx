@@ -22,6 +22,7 @@ import {
   Modal,
   Textarea,
   Select,
+  MultiSelect,
   NumberInput,
   Badge,
   Progress,
@@ -58,13 +59,14 @@ import {
 import { AgGridReact } from 'ag-grid-react'
 import { AgCharts } from 'ag-charts-react'
 import { AllEnterpriseModule, ModuleRegistry, themeQuartz } from 'ag-grid-enterprise'
+import 'ag-charts-enterprise'
 
 ModuleRegistry.registerModules([AllEnterpriseModule])
 import { type Spec } from '@json-render/core'
 import { JSONUIProvider, Renderer, defineRegistry } from '@json-render/react'
 import { chatUiCatalog } from '../../../shared/genui-catalog'
 
-import { useGenieChat, DataTable as AppKitDataTable } from '@databricks/appkit-ui/react'
+import { useGenieChat } from '@databricks/appkit-ui/react'
 import type { GenieAttachmentResponse, GenieStatementResponse } from '@databricks/appkit-ui/react'
 
 /* ------------------------------------------------------------------ */
@@ -130,47 +132,45 @@ type GenericUiSpec = Spec
 
 interface GenerateSpecApiResponse {
   spec: GenericUiSpec
-  traceId?: string
   model?: string
 }
 
-interface SupervisorQuestionOption {
+interface ControllerQuestionOption {
   value: string
   label: string
 }
 
-interface SupervisorQuestion {
+interface ControllerQuestion {
   id: string
   label: string
   inputType?: 'select' | 'text' | 'number' | 'toggle'
   required?: boolean
   placeholder?: string
-  options?: SupervisorQuestionOption[]
+  options?: ControllerQuestionOption[]
   min?: number
   max?: number
   step?: number
 }
 
-interface SupervisorApiResponse {
+interface ControllerApiResponse {
   decision: 'clarify' | 'guide' | 'proceed' | 'error'
   message: string
   rewrittenPrompt?: string
   enrichedPrompt?: string
   suggestedTables?: string[]
   suggestedFunctions?: string[]
-  questions?: SupervisorQuestion[]
+  questions?: ControllerQuestion[]
   confidence?: number
   requiredColumns?: string[]
   predictiveFunctions?: string[]
   queryClassification?: string
-  traceId?: string
   model?: string
   catalogSource?: 'payload' | 'env-json' | 'env-file' | 'empty'
   /** True when the agent needs runtime parameters (thresholds, amounts, filters) rather than disambiguation */
   needsParams?: boolean
 }
 
-interface SupervisorConversationContext {
+interface ControllerConversationContext {
   conversationId: string
   sessionId: string
   source: 'ai-chat-drawer'
@@ -183,17 +183,16 @@ interface PendingClarification {
   decision: 'clarify' | 'guide' | 'proceed' | 'error'
   rewrittenPrompt?: string
   enrichedPrompt?: string
-  questions: SupervisorQuestion[]
+  questions: ControllerQuestion[]
   suggestedTables: string[]
   suggestedFunctions: string[]
-  traceId?: string
-  /** When true, the supervisor already approved — user just needs to confirm before Genie */
+  /** When true, the Controller already approved — user just needs to confirm before Genie */
   canSendDirectly?: boolean
   /** When true, the agent is collecting runtime parameters (thresholds, amounts, filters) */
   needsParams?: boolean
 }
 
-function isSupervisorApproved(decision: SupervisorApiResponse['decision'], confidence?: number): boolean {
+function isControllerApproved(decision: ControllerApiResponse['decision'], confidence?: number): boolean {
   return decision === 'proceed' && typeof confidence === 'number' && confidence >= 0.90
 }
 
@@ -213,6 +212,8 @@ interface Message {
   /** Used to auto-fill save form */
   controlName?: string
   controlDescription?: string
+  /** Internal controller message — never shown in the chat UI */
+  type?: 'controller'
 }
 
 /* ------------------------------------------------------------------ */
@@ -241,6 +242,232 @@ const periodOptions = [
 
 
 /* ------------------------------------------------------------------ */
+/*  Shared chart helpers                                               */
+/* ------------------------------------------------------------------ */
+
+type ChartVizType = 'line' | 'bar' | 'area' | 'bubble' | 'radar' | 'pie' | 'donut'
+
+const RADIAL_TYPES = new Set<ChartVizType>(['pie', 'donut', 'radar'])
+const CHART_TYPE_LABELS: Record<ChartVizType, string> = {
+  line: 'Line', bar: 'Bar', area: 'Area', bubble: 'Bubble',
+  radar: 'Radar', pie: 'Pie', donut: 'Donut',
+}
+
+const formatColumnLabel = (col: string) =>
+  col.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
+
+const numberLabelFormatter = ({ value }: { value: number }) => {
+  const abs = Math.abs(value)
+  if (abs >= 1e9) return (value / 1e9).toFixed(1).replace(/\.0$/, '') + 'B'
+  if (abs >= 1e6) return (value / 1e6).toFixed(1).replace(/\.0$/, '') + 'M'
+  if (abs >= 1e3) return (value / 1e3).toFixed(1).replace(/\.0$/, '') + 'K'
+  return String(value)
+}
+
+function InteractiveChart({
+  data,
+  initialXKey,
+  initialYKeys,
+  initialType,
+  initialLabelKey,
+  initialValueKey,
+  initialSizeKey,
+  title,
+  yLabel,
+  source,
+}: {
+  data: Record<string, unknown>[]
+  initialXKey: string
+  initialYKeys: string[]
+  initialType: ChartVizType
+  initialLabelKey?: string
+  initialValueKey?: string
+  initialSizeKey?: string
+  title?: string
+  yLabel?: string
+  source?: string
+}) {
+  const allColumns = useMemo(() => data.length > 0 ? Object.keys(data[0]) : [], []) // eslint-disable-line react-hooks/exhaustive-deps
+
+  const numericColumns = useMemo(
+    () => allColumns.filter(col => {
+      const samples = data.slice(0, 10).map(row => row[col])
+      const nonEmpty = samples.filter(v => v !== null && v !== '' && v !== undefined)
+      return nonEmpty.length > 0 && nonEmpty.every(v => !isNaN(Number(v)))
+    }),
+    [allColumns] // eslint-disable-line react-hooks/exhaustive-deps
+  )
+  const stringColumns = useMemo(
+    () => allColumns.filter(c => !numericColumns.includes(c)),
+    [allColumns, numericColumns]
+  )
+
+  const [chartType, setChartType] = useState<ChartVizType>(initialType)
+  // Cartesian axes
+  const [xKey, setXKey] = useState(initialXKey)
+  const [yKeys, setYKeys] = useState<string[]>(() => initialYKeys.filter(k => k !== initialXKey))
+  const [sizeKey, setSizeKey] = useState(initialSizeKey ?? '')
+  // Radial axes (pie, donut, radar)
+  const [labelKey, setLabelKey] = useState(initialLabelKey ?? '')
+  const [valueKey, setValueKey] = useState(initialValueKey ?? '')
+
+  const isRadial = RADIAL_TYPES.has(chartType)
+  const isBubble = chartType === 'bubble'
+
+  // Ensure radial defaults are populated lazily from data
+  const activeLabelKey = labelKey || stringColumns[0] || allColumns[0] || ''
+  const activeValueKey = valueKey || numericColumns[0] || ''
+  const activeSizeKey = sizeKey || numericColumns.find(c => c !== xKey && !yKeys.includes(c)) || numericColumns[0] || ''
+
+  // Column option lists
+  const allColOptions = allColumns.map(col => ({ value: col, label: formatColumnLabel(col) }))
+  const numColOptions = numericColumns.map(col => ({ value: col, label: formatColumnLabel(col) }))
+  const yOptions = numericColumns.filter(col => col !== xKey).map(col => ({ value: col, label: formatColumnLabel(col) }))
+  const sizeOptions = numericColumns.filter(col => col !== xKey && !yKeys.includes(col)).map(col => ({ value: col, label: formatColumnLabel(col) }))
+  const maxYValues = chartType === 'bar' ? 1 : 5
+  const activeYKeys = yKeys.length > 0 ? yKeys : (yOptions[0] ? [yOptions[0].value] : [])
+
+  const handleTypeChange = (type: ChartVizType) => {
+    setChartType(type)
+    if (type === 'bar') setYKeys(prev => prev.slice(0, 1))
+    // Initialise radial keys on first switch if not yet set
+    if (RADIAL_TYPES.has(type)) {
+      if (!labelKey) setLabelKey(stringColumns[0] || allColumns[0] || '')
+      if (!valueKey) setValueKey(numericColumns[0] || '')
+    }
+    if (type === 'bubble' && !sizeKey) {
+      setSizeKey(numericColumns.find(c => c !== xKey && !yKeys.includes(c)) || numericColumns[0] || '')
+    }
+  }
+
+  // Sort for visual coherence
+  const sortedData = useMemo(() => {
+    if (data.length === 0) return data
+    if (isRadial) {
+      // Radial: descending by value so largest slice is first
+      return [...data].sort((a, b) => Number(b[activeValueKey] ?? 0) - Number(a[activeValueKey] ?? 0))
+    }
+    if (activeYKeys.length === 0) return data
+    if (chartType === 'bar') {
+      return [...data].sort((a, b) => Number(b[activeYKeys[0]] ?? 0) - Number(a[activeYKeys[0]] ?? 0))
+    }
+    // line / area / bubble — sort ascending by X
+    const xIsNumeric = !isNaN(Number(data[0][xKey]))
+    return [...data].sort((a, b) => {
+      const va = xIsNumeric ? Number(a[xKey]) : String(a[xKey] ?? '')
+      const vb = xIsNumeric ? Number(b[xKey]) : String(b[xKey] ?? '')
+      return typeof va === 'number' ? (va as number) - (vb as number) : (va as string).localeCompare(vb as string)
+    })
+  }, [data, chartType, xKey, activeYKeys, activeValueKey, isRadial])
+
+  const chartTitle = title ? { text: title, fontSize: 12, fontWeight: 'bold' as const } : undefined
+
+  // Build AG Charts options per type
+  let options: object
+  if (chartType === 'pie') {
+    options = {
+      data: sortedData,
+      title: chartTitle,
+      series: [{ type: 'pie' as const, angleKey: activeValueKey, legendItemKey: activeLabelKey }],
+      height: 220,
+      legend: { position: 'right' as const },
+    }
+  } else if (chartType === 'donut') {
+    options = {
+      data: sortedData,
+      title: chartTitle,
+      series: [{ type: 'donut' as const, angleKey: activeValueKey, legendItemKey: activeLabelKey, innerRadiusRatio: 0.6 }],
+      height: 220,
+      legend: { position: 'right' as const },
+    }
+  } else if (chartType === 'radar') {
+    options = {
+      data: sortedData,
+      title: chartTitle,
+      series: [{ type: 'radar-line' as const, angleKey: activeLabelKey, radiusKey: activeValueKey }],
+      axes: [
+        { type: 'angle-category' as const },
+        { type: 'radius-number' as const, label: { formatter: numberLabelFormatter } },
+      ],
+      height: 240,
+    }
+  } else if (chartType === 'bubble') {
+    options = {
+      data: sortedData,
+      title: chartTitle,
+      series: activeYKeys.map(yKey => ({
+        type: 'bubble' as const,
+        xKey,
+        yKey,
+        sizeKey: activeSizeKey,
+        yName: formatColumnLabel(yKey),
+      })),
+      axes: [
+        { type: 'number' as const, position: 'bottom' as const, label: { formatter: numberLabelFormatter } },
+        { type: 'number' as const, position: 'left' as const, title: yLabel ? { text: yLabel } : undefined, label: { formatter: numberLabelFormatter } },
+      ],
+      height: 220,
+      legend: { position: 'bottom' as const },
+      zoom: { enabled: true },
+    }
+  } else {
+    // line | bar | area
+    options = {
+      data: sortedData,
+      title: chartTitle,
+      series: activeYKeys.map(yKey => ({
+        type: chartType as 'line' | 'bar' | 'area',
+        xKey,
+        yKey,
+        yName: formatColumnLabel(yKey),
+        ...(chartType !== 'bar' ? { marker: { enabled: false } } : {}),
+      })),
+      axes: [
+        { type: 'category' as const, position: 'bottom' as const },
+        { type: 'number' as const, position: 'left' as const, title: yLabel ? { text: yLabel } : undefined, label: { formatter: numberLabelFormatter } },
+      ],
+      height: 200,
+      legend: { position: 'bottom' as const },
+      zoom: { enabled: true },
+    }
+  }
+
+  return (
+    <Box mt="md" mb="sm" style={{ width: '100%' }}>
+      <Paper p="xs" withBorder radius="sm" style={{ backgroundColor: '#fff' }}>
+        {/* Type toggle */}
+        <Group gap={2} mb={6} wrap="wrap">
+          {(Object.keys(CHART_TYPE_LABELS) as ChartVizType[]).map(type => (
+            <Button key={type} size="compact-xs" variant={chartType === type ? 'filled' : 'outline'} color="teal" onClick={() => handleTypeChange(type)}>
+              {CHART_TYPE_LABELS[type]}
+            </Button>
+          ))}
+        </Group>
+        {/* Axis selectors — adapt to type group */}
+        <Group gap={6} mb={8} wrap="wrap" align="center">
+          {isRadial ? (
+            <>
+              <Select size="xs" placeholder="Label" data={allColOptions} value={activeLabelKey} onChange={v => v && setLabelKey(v)} style={{ width: 130 }} comboboxProps={{ withinPortal: false, maxDropdownHeight: 200 }} />
+              <Select size="xs" placeholder="Valeur" data={numColOptions} value={activeValueKey} onChange={v => v && setValueKey(v)} style={{ width: 130 }} comboboxProps={{ withinPortal: false, maxDropdownHeight: 200 }} />
+            </>
+          ) : (
+            <>
+              <Select size="xs" placeholder="Axe X" data={allColOptions} value={xKey} onChange={v => { if (!v) return; setXKey(v); setYKeys(prev => prev.filter(k => k !== v)) }} style={{ width: 130 }} comboboxProps={{ withinPortal: false, maxDropdownHeight: 200 }} />
+              <MultiSelect size="xs" placeholder="Axes Y" data={yOptions} value={yKeys} onChange={setYKeys} style={{ width: 160 }} maxValues={maxYValues} comboboxProps={{ withinPortal: false, maxDropdownHeight: 200 }} clearable />
+              {isBubble && (
+                <Select size="xs" placeholder="Taille" data={sizeOptions} value={activeSizeKey} onChange={v => v && setSizeKey(v)} style={{ width: 120 }} comboboxProps={{ withinPortal: false, maxDropdownHeight: 200 }} />
+              )}
+            </>
+          )}
+        </Group>
+        <AgCharts options={options} />
+        {source && <Text size="xs" c="dimmed" ta="right" mt={4} fs="italic">{'Source : ' + source}</Text>}
+      </Paper>
+    </Box>
+  )
+}
+
+/* ------------------------------------------------------------------ */
 /*  json-render catalog + registry for generative UI                   */
 /* ------------------------------------------------------------------ */
 
@@ -263,106 +490,159 @@ const { registry: chatUiRegistry } = defineRegistry(chatUiCatalog, {
     ),
     DataTable: ({ props }) => {
       const VISIBLE_COLS = 4
-      const columnDefs = props.headers.map((h: string, i: number) => ({
+      const LARGE_TABLE_THRESHOLD = 200
+
+      const columnDefs = useMemo(() => props.headers.map((h: string, i: number) => ({
         field: h,
         headerName: h,
         sortable: true,
         filter: true,
         resizable: true,
         flex: 1,
-        minWidth: 80,
+        minWidth: 100,
         hide: i >= VISIBLE_COLS,
-      }))
-      const rowData = props.rows.map((row: string[]) =>
-        Object.fromEntries(props.headers.map((h: string, i: number) => [h, row[i] ?? '']))
+      })), [props.headers])
+
+      const rowData = useMemo(() =>
+        props.rows.map((row: string[]) =>
+          Object.fromEntries(props.headers.map((h: string, i: number) => [h, row[i] ?? '']))
+        ),
+        [props.headers, props.rows]
       )
+
+      const isLarge = rowData.length > LARGE_TABLE_THRESHOLD
+      const gridHeight = isLarge ? 500 : Math.min(300, 48 + rowData.length * 42)
       const hasHiddenCols = props.headers.length > VISIBLE_COLS
+
       return (
-        <Box mt="xs" mb="xs">
+        <Box mt="xs" mb="xs" style={{ width: '100%', overflow: 'hidden' }}>
           {props.caption && <Text size="xs" c="dimmed" mb={4} fs="italic">{props.caption}</Text>}
-          <div style={{ height: Math.min(300, 48 + rowData.length * 42), width: '100%' }}>
+          <div style={{ height: gridHeight, width: '100%' }}>
             <AgGridReact
               theme={themeQuartz}
               columnDefs={columnDefs}
               rowData={rowData}
               domLayout="normal"
               suppressMovableColumns
+              rowBuffer={20}
+              animateRows={!isLarge}
               pagination={rowData.length > 10}
-              paginationPageSize={10}
+              paginationPageSize={isLarge ? 50 : 10}
               sideBar={hasHiddenCols ? { toolPanels: [{ id: 'columns', labelDefault: 'Colonnes', labelKey: 'columns', iconKey: 'columns', toolPanel: 'agColumnsToolPanel', toolPanelParams: { suppressRowGroups: true, suppressValues: true, suppressPivots: true, suppressPivotMode: true } }] } : undefined}
             />
           </div>
         </Box>
       )
     },
-    LineChartViz: ({ props }) => {
-      const options = {
-        data: props.data,
-        title: { text: props.title, fontSize: 12, fontWeight: 'bold' as const },
-        series: props.series.map((s: { yKey: string; yName: string; stroke?: string }) => ({
-          type: 'line' as const,
-          xKey: props.xKey,
-          yKey: s.yKey,
-          yName: s.yName,
-          stroke: s.stroke,
-          marker: { enabled: false },
-        })),
-        axes: [
-          { type: 'category' as const, position: 'bottom' as const },
-          {
-            type: 'number' as const,
-            position: 'left' as const,
-            title: props.yLabel ? { text: props.yLabel } : undefined,
-          },
-        ],
-        height: 200,
-        legend: { position: 'bottom' as const },
-      }
-      return (
-        <Box mt="md" mb="sm">
-          <Paper p="xs" withBorder radius="sm" style={{ backgroundColor: '#fff' }}>
-            <AgCharts options={options} />
-            {props.source && (
-              <Text size="xs" c="dimmed" ta="right" mt={4} fs="italic">
-                {'Source : ' + props.source}
-              </Text>
-            )}
-          </Paper>
-        </Box>
-      )
-    },
-    BarChartViz: ({ props }) => {
-      const options = {
-        data: props.data,
-        title: { text: props.title, fontSize: 12, fontWeight: 'bold' as const },
-        series: [{ type: 'bar' as const, xKey: props.xKey, yKey: props.yKey, fill: props.color }],
-        axes: [
-          { type: 'category' as const, position: 'bottom' as const },
-          { type: 'number' as const, position: 'left' as const },
-        ],
-        height: 160,
-        legend: { enabled: false },
-      }
-      return (
-        <Box mt="md" mb="sm">
-          <Paper p="xs" withBorder radius="sm" style={{ backgroundColor: '#fff' }}>
-            <AgCharts options={options} />
-          </Paper>
-        </Box>
-      )
-    },
-    QueryDataTable: ({ props }) => (
-      <Box mt="xs" mb="xs">
-        {props.caption && <Text size="xs" c="dimmed" mb={4} fs="italic">{props.caption}</Text>}
-        <AppKitDataTable
-          queryKey={props.queryKey}
-          parameters={props.parameters ?? {}}
-          filterColumn={props.filterColumn}
-          filterPlaceholder={props.filterPlaceholder}
-          pageSize={props.pageSize ?? 10}
-        />
-      </Box>
+    LineChartViz: ({ props }) => (
+      <InteractiveChart
+        data={props.data as Record<string, unknown>[]}
+        initialXKey={props.xKey as string}
+        initialYKeys={(props.series as Array<{ yKey: string }>).map(s => s.yKey)}
+        initialType="line"
+        title={props.title && props.title !== 'Title' ? props.title as string : undefined}
+        yLabel={props.yLabel as string | undefined}
+        source={props.source as string | undefined}
+      />
     ),
+    BarChartViz: ({ props }) => (
+      <InteractiveChart
+        data={props.data as Record<string, unknown>[]}
+        initialXKey={props.xKey as string}
+        initialYKeys={[props.yKey as string]}
+        initialType="bar"
+        title={props.title && props.title !== 'Title' ? props.title as string : undefined}
+      />
+    ),
+    PieChartViz: ({ props }) => (
+      <InteractiveChart
+        data={props.data as Record<string, unknown>[]}
+        initialXKey=""
+        initialYKeys={[]}
+        initialType="pie"
+        initialLabelKey={props.labelKey as string}
+        initialValueKey={props.angleKey as string}
+        title={props.title && props.title !== 'Title' ? props.title as string : undefined}
+      />
+    ),
+    DonutChartViz: ({ props }) => (
+      <InteractiveChart
+        data={props.data as Record<string, unknown>[]}
+        initialXKey=""
+        initialYKeys={[]}
+        initialType="donut"
+        initialLabelKey={props.labelKey as string}
+        initialValueKey={props.angleKey as string}
+        title={props.title && props.title !== 'Title' ? props.title as string : undefined}
+      />
+    ),
+    RadarChartViz: ({ props }) => (
+      <InteractiveChart
+        data={props.data as Record<string, unknown>[]}
+        initialXKey=""
+        initialYKeys={[]}
+        initialType="radar"
+        initialLabelKey={props.angleKey as string}
+        initialValueKey={props.radiusKey as string}
+        title={props.title && props.title !== 'Title' ? props.title as string : undefined}
+      />
+    ),
+    BubbleChartViz: ({ props }) => (
+      <InteractiveChart
+        data={props.data as Record<string, unknown>[]}
+        initialXKey={props.xKey as string}
+        initialYKeys={[props.yKey as string]}
+        initialType="bubble"
+        initialSizeKey={props.sizeKey as string}
+        title={props.title && props.title !== 'Title' ? props.title as string : undefined}
+      />
+    ),
+    QueryDataTable: ({ props }) => {
+      const [spec, setSpec] = useState<GenericUiSpec | null>(null)
+      const [loading, setLoading] = useState(true)
+      const [error, setError] = useState<string | null>(null)
+      const paramsKey = JSON.stringify(props.parameters ?? {})
+
+      useEffect(() => {
+        setLoading(true)
+        setError(null)
+        fetch('/api/spec', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ prompt: props.queryKey, genieResult: props.parameters ?? {} }),
+        })
+          .then((res) => {
+            if (!res.ok) throw new Error(`HTTP ${res.status}`)
+            return res.json() as Promise<GenerateSpecApiResponse>
+          })
+          .then(({ spec: fetchedSpec }) => {
+            setSpec(fetchedSpec)
+            setLoading(false)
+          })
+          .catch((err: Error) => {
+            setError(err.message)
+            setLoading(false)
+          })
+      }, [props.queryKey, paramsKey]) // eslint-disable-line react-hooks/exhaustive-deps
+
+      return (
+        <Box mt="xs" mb="xs">
+          {props.caption && <Text size="xs" c="dimmed" mb={4} fs="italic">{props.caption}</Text>}
+          {loading && (
+            <Group gap="xs">
+              <Loader size="xs" color="teal" type="dots" />
+              <Text size="xs" c="dimmed">Chargement...</Text>
+            </Group>
+          )}
+          {error && <Text size="xs" c="red">{error}</Text>}
+          {spec && (
+            <JSONUIProvider registry={chatUiRegistry}>
+              <Renderer spec={spec} registry={chatUiRegistry} />
+            </JSONUIProvider>
+          )}
+        </Box>
+      )
+    },
     FormPanel: ({ props, children }) => (
       <Paper p="sm" withBorder radius="md" style={{ backgroundColor: '#ffffff' }}>
         {(props.title || props.description) && (
@@ -583,7 +863,10 @@ function buildSpecFromGenieStatement(
 ): GenericUiSpec {
   const { columns, categoryColumn, numericColumns, data } = transformStatementToChartData(statement)
   const headers = columns.map((c) => c.name)
-  const rawRows = statement.result?.data_array ?? []
+  const MAX_SPEC_ROWS = 2000
+  const allRows = statement.result?.data_array ?? []
+  const rawRows = allRows.slice(0, MAX_SPEC_ROWS)
+  const isTruncated = allRows.length > MAX_SPEC_ROWS
 
   const elements: Record<string, { type: string; props: Record<string, unknown>; children: string[] }> = {}
   const rootId = 'root'
@@ -607,7 +890,10 @@ function buildSpecFromGenieStatement(
         props: {
           data,
           xKey: categoryColumn,
-          series: numericColumns.map((col) => ({ yKey: col, yName: col })),
+          series: numericColumns.map((col) => ({
+            yKey: col,
+            yName: col.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()),
+          })),
         },
         children: [],
       }
@@ -617,7 +903,13 @@ function buildSpecFromGenieStatement(
 
   elements['table'] = {
     type: 'DataTable',
-    props: { headers, rows: rawRows },
+    props: {
+      headers,
+      rows: rawRows,
+      caption: isTruncated
+        ? `${rawRows.length.toLocaleString('fr-FR')} premières lignes sur ${allRows.length.toLocaleString('fr-FR')} au total`
+        : undefined,
+    },
     children: [],
   }
   elements[rootId].children.push('table')
@@ -741,7 +1033,7 @@ async function generateUiSpecForMessage(params: {
   genieResult: unknown
 }): Promise<GenericUiSpec | null> {
   try {
-    const response = await fetch('/api/controllerAiAgent/spec', {
+    const response = await fetch('/api/spec', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -759,12 +1051,12 @@ async function generateUiSpecForMessage(params: {
   }
 }
 
-async function runSupervisorPreflight(params: {
+async function runControllerPreflight(params: {
   prompt: string
-  conversationContext: SupervisorConversationContext
-}): Promise<SupervisorApiResponse | null> {
+  conversationContext: ControllerConversationContext
+}): Promise<ControllerApiResponse | null> {
   try {
-    const response = await fetch('/api/controllerAiAgent/controller', {
+    const response = await fetch('/api/controller', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -775,14 +1067,14 @@ async function runSupervisorPreflight(params: {
 
     if (!response.ok) {
       // Try to parse the error body — the server may return a valid
-      // SupervisorApiResponse even on 502 (e.g. decision:'error').
+      // ControllerApiResponse even on 502 (e.g. decision:'error').
       try {
-        const errorBody = (await response.json()) as SupervisorApiResponse
+        const errorBody = (await response.json()) as ControllerApiResponse
         if (errorBody && errorBody.decision) return errorBody
       } catch { /* body not parseable — fall through */ }
       return null
     }
-    return (await response.json()) as SupervisorApiResponse
+    return (await response.json()) as ControllerApiResponse
   } catch {
     return null
   }
@@ -820,6 +1112,36 @@ function blocksToPlainText(blocks: ContentBlock[]): string {
 }
 
 /* ------------------------------------------------------------------ */
+/*  Label sanitisation + Q/R answer formatting                        */
+/* ------------------------------------------------------------------ */
+
+/** Strip trailing parenthetical technical IDs from a question label.
+ *  e.g. "Identifiant de la filiale (sp_folder_id)" → "Identifiant de la filiale" */
+function sanitizeLabel(label: string): string {
+  return label.replace(/\s*\([^)]*\)\s*$/, '').trim()
+}
+
+/** Format answered questions as a Q/R block for display in the chat. */
+function formatQRAnswers(
+  questions: ControllerQuestion[],
+  answers: Record<string, string>
+): string {
+  return questions
+    .map((q) => {
+      const raw = answers[q.id]?.trim()
+      if (!raw) return null
+      const label = sanitizeLabel(q.label)
+      const display =
+        q.inputType === 'select' && q.options
+          ? (q.options.find((o) => o.value === raw)?.label ?? raw)
+          : raw
+      return `Q : ${label}<br>R : ${display}`
+    })
+    .filter(Boolean)
+    .join('<br><br>')
+}
+
+/* ------------------------------------------------------------------ */
 /*  Memoised message content (avoids re-running fallback spec on       */
 /*  every parent render)                                               */
 /* ------------------------------------------------------------------ */
@@ -829,11 +1151,13 @@ const MessageContent = memo(function MessageContent({
   messageId,
   generatedSpec,
   registry,
+  hideText,
 }: {
   msg: Message
   messageId: string
   generatedSpec: GenericUiSpec | undefined
   registry: typeof chatUiRegistry
+  hideText?: boolean
 }) {
   const fallbackSpec = useMemo(
     () => (msg.blocks && msg.blocks.length > 0 ? buildGenerativeUiSpec(msg.blocks) : null),
@@ -854,7 +1178,7 @@ const MessageContent = memo(function MessageContent({
   /* Fallback: legacy block-based + Genie query table rendering */
   return (
     <>
-      {msg.content && (
+      {!hideText && msg.content && (
         <Text size="sm" style={{ lineHeight: 1.55 }}>
           {msg.content}
         </Text>
@@ -965,26 +1289,31 @@ function RenderBlock({ block }: { block: ContentBlock }) {
       )
     case 'table': {
       const VISIBLE_COLS = 4
+      const LARGE_TABLE_THRESHOLD = 200
       const columnDefs = block.headers.map((h, i) => ({
-        field: h, headerName: h, sortable: true, filter: true, resizable: true, flex: 1, minWidth: 80,
+        field: h, headerName: h, sortable: true, filter: true, resizable: true, flex: 1, minWidth: 100,
         hide: i >= VISIBLE_COLS,
       }))
       const rowData = block.rows.map((row) =>
         Object.fromEntries(block.headers.map((h, i) => [h, row[i] ?? '']))
       )
+      const isLarge = rowData.length > LARGE_TABLE_THRESHOLD
+      const gridHeight = isLarge ? 500 : Math.min(300, 48 + rowData.length * 42)
       const hasHiddenCols = block.headers.length > VISIBLE_COLS
       return (
-        <Box mt="xs" mb="xs">
+        <Box mt="xs" mb="xs" style={{ width: '100%', overflow: 'hidden' }}>
           {block.caption && <Text size="xs" c="dimmed" mb={4} fs="italic">{block.caption}</Text>}
-          <div style={{ height: Math.min(300, 48 + rowData.length * 42), width: '100%' }}>
+          <div style={{ height: gridHeight, width: '100%' }}>
             <AgGridReact
               theme={themeQuartz}
               columnDefs={columnDefs}
               rowData={rowData}
               domLayout="normal"
               suppressMovableColumns
+              rowBuffer={20}
+              animateRows={!isLarge}
               pagination={rowData.length > 10}
-              paginationPageSize={10}
+              paginationPageSize={isLarge ? 50 : 10}
               sideBar={hasHiddenCols ? { toolPanels: [{ id: 'columns', labelDefault: 'Colonnes', labelKey: 'columns', iconKey: 'columns', toolPanel: 'agColumnsToolPanel', toolPanelParams: { suppressRowGroups: true, suppressValues: true, suppressPivots: true, suppressPivotMode: true } }] } : undefined}
             />
           </div>
@@ -1013,9 +1342,10 @@ function RenderBlock({ block }: { block: ContentBlock }) {
         ],
         height: 200,
         legend: { position: 'bottom' as const },
+        zoom: { enabled: true },
       }
       return (
-        <Box mt="md" mb="sm">
+        <Box mt="md" mb="sm" style={{ width: '100%' }}>
           <Paper p="xs" withBorder radius="sm" style={{ backgroundColor: '#fff' }}>
             <AgCharts options={lineOptions} />
             {block.source && (
@@ -1038,9 +1368,10 @@ function RenderBlock({ block }: { block: ContentBlock }) {
         ],
         height: 160,
         legend: { enabled: false },
+        zoom: { enabled: true },
       }
       return (
-        <Box mt="md" mb="sm">
+        <Box mt="md" mb="sm" style={{ width: '100%' }}>
           <Paper p="xs" withBorder radius="sm" style={{ backgroundColor: '#fff' }}>
             <AgCharts options={barOptions} />
           </Paper>
@@ -1428,7 +1759,7 @@ interface AiChatDrawerProps {
 export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerProps) {
   const { messages: genieMessages, status: chatStatus, error: genieError, sendMessage, reset } = useGenieChat({
     alias: "demo",
-    basePath: '/api/supervised-genie',
+    basePath: '/api/chat-controller',
   })
   const [localUserMessages, setLocalUserMessages] = useState<Message[]>([])
 
@@ -1471,12 +1802,41 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
     }
   }, [genieMessages])
 
+  // Inject a loading placeholder while Genie is streaming (before first assistant message arrives)
+  useEffect(() => {
+    if (chatStatus === 'idle') {
+      setLocalUserMessages(prev => prev.filter(m => m.id !== 'genie-streaming'))
+      return
+    }
+    const hasGenieResponse = genieMessages.some(m => m.role === 'assistant')
+    if (!hasGenieResponse) {
+      setLocalUserMessages(prev => {
+        if (prev.some(m => m.id === 'genie-streaming')) return prev
+        return [...prev, {
+          id: 'genie-streaming',
+          role: 'assistant' as const,
+          content: '',
+          loading: true,
+          timestamp: new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }),
+        }]
+      })
+    } else {
+      setLocalUserMessages(prev => prev.filter(m => m.id !== 'genie-streaming'))
+    }
+  }, [chatStatus, genieMessages])
+
   // Simple mirror: Genie messages + any local messages not yet picked up by Genie
   // Filter out internal/empty messages that should not be shown to users
   // Sort by timestamp ascending (oldest first, newest at bottom)
   const messages: Message[] = useMemo(() => {
     const ts = genieTimestampsRef.current
     const eMap = enrichedToOriginalRef.current
+    // Mark the last complete Genie assistant message for the thinking accordion
+    const lastGenieAssistantId = chatStatus === 'idle'
+      ? [...genieMessages].reverse().find(m =>
+          m.role === 'assistant' && Boolean((m as Message).content?.trim() || (m as Message).attachments?.length)
+        )?.id ?? null
+      : null
     const merged: Message[] = [...genieMessages.map((gm) => {
       // Replace enriched/rewritten content with the original user prompt so
       // technical details (tables, functions, columns) are never shown in the UI
@@ -1485,9 +1845,12 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
         ...gm,
         content: originalContent ?? gm.content,
         timestamp: (gm as Message).timestamp ?? ts.get(String(gm.id)),
+        thinking: gm.id === lastGenieAssistantId,
       }
     }), ...localUserMessages]
     const filtered = merged.filter((msg) => {
+      // Never show internal controller messages
+      if (msg.type === 'controller') return false
       // Always show user messages
       if (msg.role === 'user') return true
       // Show assistant messages that have visible content, blocks, or attachments
@@ -1498,16 +1861,20 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
       const isPeriodPrompt = Boolean('periodPrompt' in msg && msg.periodPrompt)
       return hasContent || hasBlocks || hasAttachments || isLoading || isPeriodPrompt
     })
-    // Sort by timestamp ascending so newest messages appear at the bottom
+    // Sort by timestamp ascending (HH:MM string), then by epoch extracted from id
+    // as a tiebreaker to preserve insertion order within the same minute.
     filtered.sort((a, b) => {
       const ta = a.timestamp ?? ''
       const tb = b.timestamp ?? ''
       if (ta < tb) return -1
       if (ta > tb) return 1
-      return 0
+      // Same minute — use numeric suffix of id (epoch ms for local messages)
+      const ea = typeof a.id === 'number' ? a.id : parseInt(/(\d+)$/.exec(String(a.id))?.[1] ?? '0', 10)
+      const eb = typeof b.id === 'number' ? b.id : parseInt(/(\d+)$/.exec(String(b.id))?.[1] ?? '0', 10)
+      return ea - eb
     })
     return filtered
-  }, [genieMessages, localUserMessages])
+  }, [genieMessages, localUserMessages, chatStatus])
 
   const [input, setInput] = useState('')
   const [showSuggestions, setShowSuggestions] = useState(true)
@@ -1521,8 +1888,8 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
   const sessionIdRef = useRef(typeof crypto !== 'undefined' ? crypto.randomUUID() : `session-${Date.now()}`)
   const conversationIdRef = useRef(typeof crypto !== 'undefined' ? crypto.randomUUID() : `conversation-${Date.now()}`)
   const [showTeamControls, setShowTeamControls] = useState(false)
-  const [supervisorLoading, setSupervisorLoading] = useState(false)
-  const [supervisorHint, setSupervisorHint] = useState<SupervisorApiResponse | null>(null)
+  const [ControllerLoading, setControllerLoading] = useState(false)
+  const [ControllerHint, setControllerHint] = useState<ControllerApiResponse | null>(null)
   const [pendingClarification, setPendingClarification] = useState<PendingClarification | null>(null)
   const [clarificationAnswers, setClarificationAnswers] = useState<Record<string, string>>({})
   const [clarificationRetryCount, setClarificationRetryCount] = useState(0)
@@ -1577,91 +1944,97 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
   const messagesRef = useRef(messages)
   messagesRef.current = messages
 
-  const buildConversationContext = useCallback(() => {
+  const buildConversationContext = useCallback((currentUserMessage?: string) => {
+    const pastMessages = messagesRef.current
+      .filter((message) => Boolean(message.content?.trim()))
+      .slice(-6)
+      .map((message) => ({
+        role: message.role as 'user' | 'assistant',
+        content: message.content,
+      }))
+    const messages = currentUserMessage
+      ? [...pastMessages, { role: 'user' as const, content: currentUserMessage }]
+      : pastMessages
     return {
       conversationId: conversationIdRef.current,
       sessionId: sessionIdRef.current,
       source: 'ai-chat-drawer' as const,
-      messages: messagesRef.current
-        .filter((message) => Boolean(message.content?.trim()))
-        .slice(-6)
-        .map((message) => ({
-          role: message.role,
-          content: message.content,
-        })),
+      messages,
     }
   }, [])
 
-  const submitPromptThroughSupervisor = useCallback(async (rawPrompt: string) => {
+  const submitPromptThroughController = useCallback(async (rawPrompt: string, options?: { suppressControllerBubble?: boolean }) => {
     const trimmedPrompt = rawPrompt.trim()
     if (!trimmedPrompt) return
 
     setShowSuggestions(false)
-    setSupervisorLoading(true)
-    setSupervisorHint(null)
+    setControllerLoading(true)
+    setControllerHint(null)
     setInput('')
 
-    // Immediately show the user message in the chat
-    setLocalUserMessages((prev) => [
-      ...prev,
-      {
-        id: `local-${Date.now()}`,
-        role: 'user' as const,
-        content: trimmedPrompt,
-        timestamp: new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }),
-      },
-    ])
+    // Only add a user bubble if no Q/R bubble was already inserted for this prompt
+    // (handleClarificationSubmit pre-maps clarifiedPrompt → originalPrompt)
+    if (!enrichedToOriginalRef.current.has(trimmedPrompt)) {
+      setLocalUserMessages((prev) => [
+        ...prev,
+        {
+          id: `local-${Date.now()}`,
+          role: 'user' as const,
+          content: trimmedPrompt,
+          timestamp: new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }),
+        },
+      ])
+    }
 
     try {
-      const supervisorResponse = await runSupervisorPreflight({
+      const ControllerResponse = await runControllerPreflight({
         prompt: trimmedPrompt,
-        conversationContext: buildConversationContext(),
+        conversationContext: buildConversationContext(trimmedPrompt),
       })
 
-      if (!supervisorResponse) {
+      if (!ControllerResponse) {
         setPendingClarification(null)
         setClarificationAnswers({})
-        setSupervisorHint({
+        setControllerHint({
           decision: 'error',
-          message: 'L\'agent IA n’a pas répondu. L’envoi à Genie est bloqué tant que la requête n’est pas validée.',
+          message: "L'agent IA n'a pas répondu. La demande est bloquée tant qu'elle n'a pas été validée.",
         })
         return
       }
 
-      setSupervisorHint(supervisorResponse)
+      setControllerHint(ControllerResponse)
 
-      if (supervisorResponse.decision === 'error') {
+      if (ControllerResponse.decision === 'error') {
         setPendingClarification(null)
         return
       }
 
-      if (supervisorResponse.decision === 'clarify') {
+      if (ControllerResponse.decision === 'clarify') {
         const newRetryCount = clarificationRetryCount + 1
         setClarificationRetryCount(newRetryCount)
 
         if (newRetryCount >= 3) {
           setPendingClarification(null)
           setClarificationAnswers({})
-          setSupervisorHint({
+          setControllerHint({
             decision: 'error',
             message: 'Après plusieurs tentatives de clarification, je ne suis pas en mesure de traiter cette demande. Veuillez contacter l\'équipe support pour obtenir de l\'aide.',
           })
           return
         }
 
-        const questions = supervisorResponse.questions ?? []
+        const questions = ControllerResponse.questions ?? []
         setPendingClarification({
           originalPrompt: trimmedPrompt,
-          message: supervisorResponse.message,
-          decision: supervisorResponse.decision,
-          rewrittenPrompt: supervisorResponse.rewrittenPrompt,
-          enrichedPrompt: supervisorResponse.enrichedPrompt,
+          message: ControllerResponse.message,
+          decision: ControllerResponse.decision,
+          rewrittenPrompt: ControllerResponse.rewrittenPrompt,
+          enrichedPrompt: ControllerResponse.enrichedPrompt,
           questions,
-          suggestedTables: supervisorResponse.suggestedTables ?? [],
-          suggestedFunctions: supervisorResponse.suggestedFunctions ?? [],
-          traceId: supervisorResponse.traceId,
+          suggestedTables: ControllerResponse.suggestedTables ?? [],
+          suggestedFunctions: ControllerResponse.suggestedFunctions ?? [],
           canSendDirectly: false,
-          needsParams: supervisorResponse.needsParams ?? false,
+          needsParams: ControllerResponse.needsParams ?? false,
         })
         setClarificationAnswers(
           Object.fromEntries(questions.map((question) => [question.id, ''])) as Record<string, string>
@@ -1670,38 +2043,51 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
       }
 
       // 'proceed' with high confidence → send enriched prompt to Genie
-      if (isSupervisorApproved(supervisorResponse.decision, supervisorResponse.confidence)) {
+      if (isControllerApproved(ControllerResponse.decision, ControllerResponse.confidence)) {
         setPendingClarification(null)
         setClarificationAnswers({})
         setClarificationRetryCount(0)
-        const promptToSend = supervisorResponse.enrichedPrompt || supervisorResponse.rewrittenPrompt?.trim() || trimmedPrompt
+        const promptToSend = ControllerResponse.enrichedPrompt || ControllerResponse.rewrittenPrompt?.trim() || trimmedPrompt
         if (promptToSend !== trimmedPrompt) {
-          enrichedToOriginalRef.current.set(promptToSend.trim(), trimmedPrompt)
+          // Resolve chain: if trimmedPrompt is itself a remapped prompt, point to the ultimate original
+          const ultimate = enrichedToOriginalRef.current.get(trimmedPrompt) ?? trimmedPrompt
+          enrichedToOriginalRef.current.set(promptToSend.trim(), ultimate)
+        }
+        if (!options?.suppressControllerBubble && ControllerResponse.message?.trim()) {
+          setLocalUserMessages((prev) => [
+            ...prev,
+            {
+              id: `ctrl-${Date.now()}`,
+              role: 'assistant' as const,
+              content: ControllerResponse.message,
+              timestamp: new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }),
+              type: 'controller' as const,
+            },
+          ])
         }
         sendMessage(promptToSend)
         return
       }
 
       // 'proceed' with low confidence or 'guide' → show confirmation with
-      // option to send directly to Genie (supervisor already approved via cookie)
-      const questions = supervisorResponse.questions ?? []
+      // option to send directly to Genie (Controller already approved via cookie)
+      const questions = ControllerResponse.questions ?? []
       setPendingClarification({
         originalPrompt: trimmedPrompt,
-        message: supervisorResponse.message || 'L\'agent IA recommande de vérifier la reformulation avant envoi à Genie.',
-        decision: supervisorResponse.decision,
-        rewrittenPrompt: supervisorResponse.rewrittenPrompt,
-        enrichedPrompt: supervisorResponse.enrichedPrompt,
+        message: ControllerResponse.message || "L'agent IA recommande de vérifier la reformulation avant envoi à l'agent IA.",
+        decision: ControllerResponse.decision,
+        rewrittenPrompt: ControllerResponse.rewrittenPrompt,
+        enrichedPrompt: ControllerResponse.enrichedPrompt,
         questions,
-        suggestedTables: supervisorResponse.suggestedTables ?? [],
-        suggestedFunctions: supervisorResponse.suggestedFunctions ?? [],
-        traceId: supervisorResponse.traceId,
+        suggestedTables: ControllerResponse.suggestedTables ?? [],
+        suggestedFunctions: ControllerResponse.suggestedFunctions ?? [],
         canSendDirectly: true,
       })
       setClarificationAnswers(
         Object.fromEntries(questions.map((question) => [question.id, ''])) as Record<string, string>
       )
     } finally {
-      setSupervisorLoading(false)
+      setControllerLoading(false)
     }
   }, [buildConversationContext, clarificationRetryCount, sendMessage])
 
@@ -1712,6 +2098,9 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
     // Wait until Genie finishes streaming (including all query_result events)
     // so the queryResults Map is fully populated before calling DSPy.
     if (chatStatus !== 'idle') return
+
+    // Dismiss the controller hint once Genie has responded; keep error hints visible
+    setControllerHint((prev) => (prev?.decision !== 'error' ? null : prev))
 
     const latestAssistantMessage = [...messages].reverse().find((message) =>
       message.role === 'assistant' &&
@@ -1766,19 +2155,19 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
   const handlePeriodConfirm = useCallback((periodValue: string) => {
     const periodLabel = periodOptions.find((p) => p.value === periodValue)?.label ?? periodValue
 
-    void submitPromptThroughSupervisor(`Période confirmée : ${periodLabel}`)
-  }, [submitPromptThroughSupervisor])
+    void submitPromptThroughController(`Période confirmée : ${periodLabel}`)
+  }, [submitPromptThroughController])
 
   const handleSend = useCallback((text?: string) => {
     const msgText = text || input.trim()
     if (!msgText) return
 
     if (genieFollowUpRef.current) {
-      // Genie asked a follow-up question — send the response directly without supervisor pre-flight
+      // Genie asked a follow-up question — send the response directly without Controller pre-flight
       genieFollowUpRef.current = false
       setInput('')
       setShowSuggestions(false)
-      setSupervisorHint(null)
+      setControllerHint(null)
       setPendingClarification(null)
       setLocalUserMessages((prev) => [
         ...prev,
@@ -1793,8 +2182,8 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
       return
     }
 
-    void submitPromptThroughSupervisor(msgText)
-  }, [input, sendMessage, submitPromptThroughSupervisor])
+    void submitPromptThroughController(msgText)
+  }, [input, sendMessage, submitPromptThroughController])
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -1813,8 +2202,8 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
     enrichedToOriginalRef.current.clear()
     genieFollowUpRef.current = false
     setShowSuggestions(true)
-    setSupervisorLoading(false)
-    setSupervisorHint(null)
+    setControllerLoading(false)
+    setControllerHint(null)
     setPendingClarification(null)
     setClarificationAnswers({})
     setClarificationRetryCount(0)
@@ -1836,21 +2225,47 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
       ? `${basePrompt}\nClarifications:\n${questionLines.join('\n')}`
       : basePrompt
 
+    // Build the Q/R summary shown to the user in the chat bubble
+    const qrSummary = formatQRAnswers(pendingClarification.questions, clarificationAnswers)
+
     setPendingClarification(null)
 
     if (pendingClarification.canSendDirectly) {
-      // Supervisor already approved — send directly to Genie
       const promptToSend = pendingClarification.enrichedPrompt || clarifiedPrompt
-      if (promptToSend !== pendingClarification.originalPrompt) {
-        enrichedToOriginalRef.current.set(promptToSend.trim(), pendingClarification.originalPrompt)
+      // Map technical prompts → original so they never appear in the UI
+      enrichedToOriginalRef.current.set(promptToSend.trim(), pendingClarification.originalPrompt)
+      enrichedToOriginalRef.current.set(clarifiedPrompt.trim(), pendingClarification.originalPrompt)
+      if (qrSummary) {
+        setLocalUserMessages((prev) => [
+          ...prev,
+          {
+            id: `qr-${Date.now()}`,
+            role: 'user' as const,
+            content: qrSummary,
+            timestamp: new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }),
+          },
+        ])
+        enrichedToOriginalRef.current.set(qrSummary.trim(), pendingClarification.originalPrompt)
       }
       sendMessage(promptToSend)
     } else {
-      // True clarification (decision was 'clarify') — re-submit through supervisor
-      // with the enriched prompt so it gets a fresh approval cookie
-      void submitPromptThroughSupervisor(clarifiedPrompt)
+      // Map the clarified prompt so submitPromptThroughController skips the duplicate bubble
+      enrichedToOriginalRef.current.set(clarifiedPrompt.trim(), pendingClarification.originalPrompt)
+      if (qrSummary) {
+        setLocalUserMessages((prev) => [
+          ...prev,
+          {
+            id: `qr-${Date.now()}`,
+            role: 'user' as const,
+            content: qrSummary,
+            timestamp: new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }),
+          },
+        ])
+        enrichedToOriginalRef.current.set(qrSummary.trim(), pendingClarification.originalPrompt)
+      }
+      void submitPromptThroughController(clarifiedPrompt, { suppressControllerBubble: true })
     }
-  }, [clarificationAnswers, pendingClarification, sendMessage, submitPromptThroughSupervisor])
+  }, [clarificationAnswers, pendingClarification, sendMessage, submitPromptThroughController])
 
   const handleOpenSave = (msg: Message) => {
     const plainResults = msg.content + (msg.blocks ? '\n' + blocksToPlainText(msg.blocks) : '')
@@ -2093,9 +2508,13 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
                         color: '#fff',
                       }}
                     >
-                      <Text size="sm" c="white" style={{ lineHeight: 1.55 }}>
-                        {msg.content}
-                      </Text>
+                      {msg.content.includes('<br>') ? (
+                        <span style={{ fontSize: 14, color: 'white', lineHeight: 1.55, display: 'block' }} dangerouslySetInnerHTML={{ __html: msg.content }} />
+                      ) : (
+                        <Text size="sm" c="white" style={{ lineHeight: 1.55 }}>
+                          {msg.content}
+                        </Text>
+                      )}
                     </Paper>
                     <Text size="xs" c="dimmed" mt={4} ta="right" mr={4}>
                       {msg.timestamp}
@@ -2200,11 +2619,11 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
                             <Accordion.Control
                               chevron={<IconChevronDown size={12} />}
                             >
-                              Thinking complete
+                              Analyse Genie terminée
                             </Accordion.Control>
                             <Accordion.Panel>
-                              <Text size="xs" c="dimmed" fs="italic">
-                                Analyse des données du dossier 100M en cours...
+                              <Text size="xs" c="dimmed" fs="italic" style={{ lineHeight: 1.55 }}>
+                                {msg.content || 'Analyse des données terminée.'}
                               </Text>
                             </Accordion.Panel>
                           </Accordion.Item>
@@ -2223,6 +2642,7 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
                             messageId={String(msg.id)}
                             generatedSpec={generatedSpecs[String(msg.id)]}
                             registry={chatUiRegistry}
+                            hideText={Boolean(msg.thinking)}
                           />
                         </Paper>
                       )}
@@ -2262,8 +2682,8 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
             ))}
           </Stack>
 
-          {/* Supervisor loading / result / clarification — always at bottom after messages */}
-          {supervisorLoading && (
+          {/* Controller loading / result / clarification — always at bottom after messages */}
+          {ControllerLoading && (
             <Paper
               p="sm"
               radius="md"
@@ -2273,12 +2693,12 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
             >
               <Group gap="xs">
                 <Loader size="xs" color="teal" type="dots" />
-                <Text size="sm" c="dimmed">L'agent IA analyse l&apos;intention et les métadonnées Genie...</Text>
+                <Text size="sm" c="dimmed">L'agent IA analyse votre demande...</Text>
               </Group>
             </Paper>
           )}
 
-          {genieError && !supervisorLoading && (
+          {genieError && !ControllerLoading && (
             <Alert
               variant="light"
               color="red"
@@ -2287,14 +2707,14 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
               mb="md"
               icon={<IconAlertTriangle size={16} />}
             >
-              <Text size="sm" fw={600}>Appel Genie refusé</Text>
+              <Text size="sm" fw={600}>Requête refusée par l'agent IA</Text>
               <Text size="xs" mt={4} style={{ lineHeight: 1.55 }}>
                 {typeof genieError === 'string' ? genieError : String(genieError)}
               </Text>
             </Alert>
           )}
 
-          {pendingClarification && !supervisorLoading && (
+          {pendingClarification && !ControllerLoading && (
             <Paper
               p="sm"
               radius="md"
@@ -2314,7 +2734,7 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
                   <Text size="sm" fw={600}>
                     {pendingClarification.needsParams
                       ? 'Paramètres requis pour affiner la requête'
-                      : 'Clarification requise avant l\u2019envoi à Genie'
+                      : 'Précision requise avant l\u2019envoi à l\u2019agent IA'
                     }
                   </Text>
                   <Text size="xs" c="dimmed" mt={2} style={{ lineHeight: 1.55 }}>
@@ -2326,7 +2746,7 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
               {pendingClarification.questions.map((question) => (
                 question.id === 'sp_folder_id' && clarificationAnswers['scope_level'] !== 'filiale' ? null : (
                 <Box key={question.id} mb="sm">
-                  <Text size="xs" fw={500} mb={4}>{question.label}</Text>
+                  <Text size="xs" fw={500} mb={4}>{sanitizeLabel(question.label)}</Text>
                   {question.inputType === 'select' && question.options && question.options.length > 0 ? (
                     <Select
                       data={question.options}
@@ -2355,6 +2775,9 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
                       min={question.min}
                       max={question.max}
                       step={question.step}
+                      clampBehavior="strict"
+                      allowDecimal={false}
+                      allowNegative={question.min == null || question.min >= 0 ? false : true}
                       size="sm"
                       radius="sm"
                     />
@@ -2398,7 +2821,7 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
             </Paper>
           )}
 
-          {supervisorHint && !pendingClarification && !supervisorLoading && (
+          {ControllerHint && !pendingClarification && !ControllerLoading && (
             <Paper
               p="sm"
               radius="md"
@@ -2411,33 +2834,33 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
                 <Box style={{ flex: 1 }}>
                   <Text size="xs" fw={600}>Pré-analyse par un agent IA</Text>
                   <Text size="xs" c="dimmed" style={{ lineHeight: 1.55 }}>
-                    {supervisorHint.message}
+                    {ControllerHint.message}
                   </Text>
                   <Group gap={6} mt={6}>
                     <Badge size="xs" variant="light" color={
-                      supervisorHint.decision === 'error'
+                      ControllerHint.decision === 'error'
                         ? 'red'
-                        : supervisorHint.decision === 'clarify'
+                        : ControllerHint.decision === 'clarify'
                           ? 'orange'
-                          : supervisorHint.decision === 'guide'
+                          : ControllerHint.decision === 'guide'
                             ? 'blue'
                             : 'teal'
                     }>
-                      {supervisorHint.decision}
+                      {({ clarify: 'Précision requise', guide: 'À affiner', proceed: 'Approuvé', error: 'Erreur' } as Record<string, string>)[ControllerHint.decision] ?? ControllerHint.decision}
                     </Badge>
-                    {typeof supervisorHint.confidence === 'number' && (
+                    {typeof ControllerHint.confidence === 'number' && (
                       <Badge size="xs" variant="outline" color="gray">
-                        {`Confiance ${Math.round(supervisorHint.confidence * 100)}%`}
+                        {`Confiance ${Math.round(ControllerHint.confidence * 100)}%`}
                       </Badge>
                     )}
                   </Group>
-                  {supervisorHint.decision === 'error' && (
+                  {ControllerHint.decision === 'error' && (
                     <Button
                       size="xs"
                       variant="light"
                       color="red"
                       mt="xs"
-                      onClick={() => setSupervisorHint(null)}
+                      onClick={() => setControllerHint(null)}
                     >
                       Fermer et réessayer
                     </Button>
@@ -2448,7 +2871,7 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
           )}
 
           {/* Streaming indicator when Genie is actively responding */}
-          {chatStatus === 'streaming' && !supervisorLoading && (
+          {chatStatus === 'streaming' && !ControllerLoading && (
             <Box mt="md" px={4}>
               <Group align="flex-start" gap="xs" wrap="nowrap">
                 <ThemeIcon
@@ -2507,14 +2930,14 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
             size="lg"
             radius="md"
             onClick={() => handleSend()}
-            disabled={!input.trim() || chatStatus === 'streaming' || supervisorLoading}
+            disabled={!input.trim() || chatStatus === 'streaming' || ControllerLoading}
             aria-label="Envoyer"
             style={{
-              background: input.trim() && chatStatus !== 'streaming' && !supervisorLoading
+              background: input.trim() && chatStatus !== 'streaming' && !ControllerLoading
                 ? 'linear-gradient(105deg, #0c8599 0%, #15aabf 100%)'
                 : '#e9ecef',
               border: 'none',
-              color: input.trim() && chatStatus !== 'streaming' && !supervisorLoading ? '#fff' : '#adb5bd',
+              color: input.trim() && chatStatus !== 'streaming' && !ControllerLoading ? '#fff' : '#adb5bd',
             }}
           >
             <IconSend size={16} />

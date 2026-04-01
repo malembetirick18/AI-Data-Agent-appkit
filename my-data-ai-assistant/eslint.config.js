@@ -12,6 +12,7 @@ export default tseslint.config(
       '**/dist/**',
       '**/build/**',
       '**/node_modules/**',
+      '**/.venv/**',
       '**/.next/**',
       '**/coverage/**',
       'client/dist/**',

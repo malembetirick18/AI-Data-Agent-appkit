@@ -1,6 +1,6 @@
 import { createApp, genie, server } from '@databricks/appkit';
 import type { Application, Request, Response } from 'express';
-import { controllerAiAgent } from '../plugins/controller-ai-agent';
+import { controllerAiAgent, handleControllerRequest, handleSpecRequest } from '../plugins/controller-ai-agent';
 import {
   CONTROLLER_APPROVAL_COOKIE_NAME,
   clearControllerApprovalCookie,
@@ -10,13 +10,42 @@ import {
 
 const genieSpaceId = process.env.DATABRICKS_GENIE_SPACE_ID;
 
+// Maximum rows forwarded per query_result SSE event. Keeps SSE payloads small
+// enough to avoid Databricks App HTTP buffer limits.
+const MAX_SSE_ROWS = 2000;
+
 type GuardedGenieMessageBody = {
   content?: unknown;
   conversationId?: unknown;
 };
 
+type GenieStreamEvent = {
+  type: string;
+  [key: string]: unknown;
+};
+
+function truncateQueryResultEvent(event: GenieStreamEvent): GenieStreamEvent {
+  if (event.type !== 'query_result') return event;
+  const data = event.data as { result?: { data_array?: unknown[] } } | undefined;
+  const rows = data?.result?.data_array;
+  if (!Array.isArray(rows) || rows.length <= MAX_SSE_ROWS) return event;
+  return {
+    ...event,
+    data: {
+      ...(data as object),
+      result: {
+        ...(data!.result as object),
+        data_array: rows.slice(0, MAX_SSE_ROWS),
+      },
+    },
+  };
+}
+
 function writeSseEvent(res: Response, payload: unknown): void {
-  res.write(`data: ${JSON.stringify(payload)}\n\n`);
+  const safe = payload && typeof payload === 'object' && 'type' in payload
+    ? truncateQueryResultEvent(payload as GenieStreamEvent)
+    : payload;
+  res.write(`data: ${JSON.stringify(safe)}\n\n`);
 }
 
 function openSseStream(res: Response): void {
@@ -43,7 +72,10 @@ createApp({
   ],
 }).then(async (appKit) => {
   appKit.server.extend((app: Application) => {
-    app.post('/api/supervised-genie/:alias/messages', async (req: Request, res: Response) => {
+    app.post('/api/controller', handleControllerRequest);
+    app.post('/api/spec', handleSpecRequest);
+
+    app.post('/api/chat-controller/:alias/messages', async (req: Request, res: Response) => {
       const alias = Array.isArray(req.params.alias) ? req.params.alias[0] : req.params.alias;
       const body = req.body as GuardedGenieMessageBody | undefined;
       const content = typeof body?.content === 'string' ? body.content.trim() : '';
@@ -102,7 +134,7 @@ createApp({
       }
     });
 
-    app.get('/api/supervised-genie/:alias/conversations/:conversationId', async (req: Request, res: Response) => {
+    app.get('/api/chat-controller/:alias/conversations/:conversationId', async (req: Request, res: Response) => {
       const alias = Array.isArray(req.params.alias) ? req.params.alias[0] : req.params.alias;
       const conversationId = Array.isArray(req.params.conversationId)
         ? req.params.conversationId[0]

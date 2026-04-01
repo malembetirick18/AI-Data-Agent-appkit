@@ -241,7 +241,10 @@ async def generate_spec(request: SpecRequest) -> StreamingResponse:
     ]
 
     response = await asyncio.to_thread(lm, messages=messages)
-    spec = _assemble_spec_from_patches(response[0] if response else "")
+    raw = response[0] if response else ""
+    if isinstance(raw, dict):
+        raw = raw.get("text") or raw.get("content") or ""
+    spec = _assemble_spec_from_patches(str(raw) if raw else "")
     spec_text = json.dumps(spec)
 
     async def event_generator():

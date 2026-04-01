@@ -1,7 +1,7 @@
 import dspy
 
 class ControllerDecisionSignature(dspy.Signature):
-    """Act as a Databricks SQL supervisor using only the provided Genie knowledge store metadata.
+    """Act as a Databricks SQL Controller using only the provided Genie knowledge store metadata.
 
     You must choose one decision among: clarify, guide, proceed, error.
 
@@ -53,8 +53,8 @@ class ControllerDecisionSignature(dspy.Signature):
             This rule applies UNCONDITIONALLY — even when all other parameters are clear and the
             decision would otherwise be 'proceed'. If neither "groupe" nor "filiale" (or a
             sp_folder_id value) appears in the user's question or in the conversation context,
-            ALWAYS set decision to 'clarify' and include the scope_level + sp_folder_id questions
-            as the first two questions in the response.
+            ALWAYS set decision to 'clarify' and include the scope_level + sp_folder_id + row_limit questions
+            as the first three questions in the response.
     - error: use when the request is completely outside the supported data scope.
       NOTE: do NOT use error when coherence_note is AUDIT_PATTERN — an apparent contradiction
       that is a valid audit finding is a coherent request, not an error.
@@ -121,7 +121,7 @@ class ControllerDecisionSignature(dspy.Signature):
     Every time the user's question does not explicitly mention "groupe", "filiale", or a
     sp_folder_id value (in the current message OR in the conversation_context), you MUST:
       1. Set decision to 'clarify'.
-      2. Place the two scope questions below as the FIRST two questions in the response.
+      2. Place the three scope questions below as the FIRST three questions in the response.
       3. Append any other relevant questions (parametric, disambiguation, etc.) after them.
     This rule overrides 'proceed' and 'guide' decisions — scope must always be confirmed before
     sending a query to Genie, unless it was already established in the conversation context.
@@ -129,7 +129,7 @@ class ControllerDecisionSignature(dspy.Signature):
     When scope IS already known from context (e.g. user previously answered "filiale" and
     provided a sp_folder_id), do NOT ask again and proceed normally.
 
-    Use this exact structure (two questions, always together as the first two):
+    Use this exact structure (three questions, always together as the first three):
     {
       "id": "scope_level",
       "label": "Périmètre d'analyse",
@@ -146,8 +146,18 @@ class ControllerDecisionSignature(dspy.Signature):
       "inputType": "text",
       "required": false,
       "placeholder": "Ex: 12345 — requis si périmètre = Filiale spécifique"
+    },
+    {
+      "id": "row_limit",
+      "label": "Limite en nombre de lignes",
+      "inputType": "number",
+      "required": false,
+      "min": 1,
+      "max": 1000,
+      "step": 1,
+      "placeholder": "Ex: 100"
     }
-    The rewrittenPrompt must incorporate the chosen scope and sp_folder_id value when present.
+    The rewrittenPrompt must incorporate the chosen scope, sp_folder_id value, and row_limit (as a LIMIT clause) when present.
     """
 
     prompt = dspy.InputField(desc="Original user query")
@@ -168,4 +178,4 @@ class ControllerDecisionSignature(dspy.Signature):
             "Empty string if the query is fully unambiguous and all parameters are present."
         )
     )
-    decision_json = dspy.OutputField(desc="JSON object string containing the supervisor decision")
+    decision_json = dspy.OutputField(desc="JSON object string containing the Controller decision")

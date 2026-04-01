@@ -46,16 +46,20 @@ For lists where users can add/remove items (todos, carts, etc.), use pushState a
 
 IMPORTANT: State paths use RFC 6901 JSON Pointer syntax (e.g. "/todos/0/title"). Do NOT use JavaScript-style dot notation (e.g. "/todos.length" is WRONG). To generate unique IDs for new items, use "$id" instead of trying to read array length.
 
-AVAILABLE COMPONENTS (13):
+AVAILABLE COMPONENTS (17):
 
 - Stack: { gap?: number } - Vertical layout container for assistant blocks. [accepts children]
 - TextContent: { content: string, weight?: number, size?: string } - Plain text or emphasized text content.
 - BulletList: { items: Array<string> } - Bulleted list content.
 - DataTable: { caption?: string, headers: Array<string>, rows: Array<Array<string>> } - Tabular content with headers and rows.
-- LineChartViz: { title: string, data: Array<unknown>, xKey: string, series: Array<{ yKey: string, yName: string, stroke?: string }>, yLabel?: string, source?: string } - Line chart using AgCharts. series is an array of {yKey, yName, stroke?}.
-- BarChartViz: { title: string, data: Array<unknown>, xKey: string, yKey: string, color?: string } - Bar chart using AgCharts.
+- LineChartViz: { title: string, data: Array<unknown>, xKey: string, series: Array<{ yKey: string, yName: string, stroke?: string }>, yLabel?: string, source?: string } - Line chart using AgCharts. series is an array of {yKey, yName, stroke?}. Use for time series or continuous numeric X axis with one or more numeric Y series.
+- BarChartViz: { title: string, data: Array<unknown>, xKey: string, yKey: string, color?: string } - Bar chart using AgCharts. Use for categorical comparisons with a single numeric metric.
+- PieChartViz: { title: string, data: Array<unknown>, angleKey: string, labelKey: string } - Pie chart using AgCharts. angleKey must be a numeric column (the measured value), labelKey must be a string/category column (the slice label). Use when showing part-to-whole distribution across a small number of categories (≤10).
+- DonutChartViz: { title: string, data: Array<unknown>, angleKey: string, labelKey: string } - Donut chart using AgCharts. Same props as PieChartViz. Prefer over pie when a central KPI label or summary value needs to be shown in the hole.
+- BubbleChartViz: { title: string, data: Array<unknown>, xKey: string, yKey: string, sizeKey: string } - Bubble chart using AgCharts. xKey and yKey are numeric axes; sizeKey is a numeric column whose value controls bubble radius. Use to show three-dimensional numeric relationships.
+- RadarChartViz: { title: string, data: Array<unknown>, angleKey: string, radiusKey: string } - Radar/spider chart using AgCharts. angleKey is a categorical column (the spoke labels), radiusKey is a numeric column (the spoke values). Use for multivariate comparison across categories on a single entity.
 - QueryDataTable: { queryKey: string, parameters?: unknown, filterColumn?: string, filterPlaceholder?: string, pageSize?: number, caption?: string } - Query-driven data table powered by Databricks Analytics plugin.
-- FormPanel: { title?: string, description?: string } - Form container used to group interactive supervisor inputs. [accepts children]
+- FormPanel: { title?: string, description?: string } - Form container used to group interactive Controller inputs. [accepts children]
 - SelectInputField: { label: string, placeholder?: string, value?: string, required?: boolean, disabled?: boolean, options: Array<{ value: string, label: string }> } - Mantine select input for categorical choices.
 - TextInputField: { label: string, placeholder?: string, value?: string, required?: boolean, disabled?: boolean } - Mantine text input for free-form user clarification.
 - NumberInputField: { label: string, placeholder?: string, value?: number, min?: number, max?: number, step?: number, required?: boolean, disabled?: boolean } - Mantine numeric input for thresholds and tolerances.

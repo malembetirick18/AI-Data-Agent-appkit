@@ -59,6 +59,47 @@ export const chatUiCatalog = defineCatalog(jsonRenderSchema, {
       slots: [],
       description: 'Bar chart using AgCharts.',
     },
+    PieChartViz: {
+      props: z.object({
+        title: z.string(),
+        data: z.array(z.record(z.string(), z.union([z.string(), z.number()]))),
+        angleKey: z.string(),
+        labelKey: z.string(),
+      }),
+      slots: [],
+      description: 'Pie chart using AgCharts. angleKey is the numeric value column; labelKey is the category label column.',
+    },
+    DonutChartViz: {
+      props: z.object({
+        title: z.string(),
+        data: z.array(z.record(z.string(), z.union([z.string(), z.number()]))),
+        angleKey: z.string(),
+        labelKey: z.string(),
+      }),
+      slots: [],
+      description: 'Donut chart using AgCharts. Same props as PieChartViz.',
+    },
+    BubbleChartViz: {
+      props: z.object({
+        title: z.string(),
+        data: z.array(z.record(z.string(), z.union([z.string(), z.number()]))),
+        xKey: z.string(),
+        yKey: z.string(),
+        sizeKey: z.string(),
+      }),
+      slots: [],
+      description: 'Bubble chart using AgCharts. xKey and yKey are numeric axes; sizeKey controls bubble radius.',
+    },
+    RadarChartViz: {
+      props: z.object({
+        title: z.string(),
+        data: z.array(z.record(z.string(), z.union([z.string(), z.number()]))),
+        angleKey: z.string(),
+        radiusKey: z.string(),
+      }),
+      slots: [],
+      description: 'Radar/spider chart using AgCharts. angleKey is the category spoke label; radiusKey is the numeric value.',
+    },
     QueryDataTable: {
       props: z.object({
         queryKey: z.string(),

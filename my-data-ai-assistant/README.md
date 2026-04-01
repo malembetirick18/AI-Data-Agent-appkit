@@ -120,7 +120,7 @@ npm run format:fix
 
 ## DSPy + MLflow GenUI Plugin Setup
 
-This app includes a custom AppKit plugin endpoint at `POST /api/genui/spec` that runs a local Python DSPy script and traces each generation with MLflow.
+This app includes a custom AppKit plugin endpoint at `POST /api/spec` that runs a local Python DSPy script and traces each generation with MLflow.
 
 ### Install Python dependencies
 
@@ -173,7 +173,7 @@ npm run generate:knowledge-store
 ### Example request
 
 ```bash
-curl -X POST http://localhost:8000/api/genui/spec \
+curl -X POST http://localhost:8000/api/spec \
   -H "Content-Type: application/json" \
   -d '{"prompt":"Summarize this as a chart and table","genieResult":{"rows":[]}}'
 ```
