@@ -19,6 +19,47 @@ _VALID_CLASSIFICATIONS = {"Normal SQL", "SQL Function", "Predictive SQL", "Gener
 # Clear Normal SQL queries are sent as-is.
 _REPHRASE_CLASSIFICATIONS = {"SQL Function", "Predictive SQL", "General Information"}
 
+# ── Scope guardrail ───────────────────────────────────────────────────────────
+# These keywords indicate the user has already specified the analysis scope.
+# Checked case-insensitively in both the prompt and the conversation context.
+_SCOPE_KEYWORDS = {"groupe", "filiale", "sp_folder_id", "group", "subsidiary"}
+
+_SCOPE_QUESTIONS: list[dict] = [
+    {
+        "id": "scope_level",
+        "label": "Périmètre d'analyse",
+        "inputType": "select",
+        "required": True,
+        "options": [
+            {"value": "group", "label": "Groupe (toutes les filiales)"},
+            {"value": "filiale", "label": "Filiale spécifique"},
+        ],
+    },
+    {
+        "id": "sp_folder_id",
+        "label": "Identifiant de la filiale (sp_folder_id)",
+        "inputType": "text",
+        "required": False,
+        "placeholder": "Ex: 12345 — requis si périmètre = Filiale spécifique",
+    },
+    {
+        "id": "row_limit",
+        "label": "Limite en nombre de lignes",
+        "inputType": "number",
+        "required": False,
+        "min": 1,
+        "max": 1000,
+        "step": 1,
+        "placeholder": "Ex: 100",
+    },
+]
+
+
+def _scope_established(source_text: str, conversation_context: str) -> bool:
+    """Return True if analysis scope is already known from the prompt or conversation."""
+    combined = (source_text + " " + conversation_context).lower()
+    return any(kw in combined for kw in _SCOPE_KEYWORDS)
+
 
 # ── Controller agent ──────────────────────────────────────────────────────────
 
@@ -90,6 +131,20 @@ class ControllerDecision(dspy.Module):
         decision["requiredColumns"] = json.loads(required_columns_json)
         decision["predictiveFunctions"] = json.loads(sql_functions_json)
         decision.setdefault("coherenceNote", coherence_note)
+
+        # ── Scope guardrail ──────────────────────────────────────────────────
+        # If scope (groupe/filiale) is not established in the prompt or context,
+        # inject the three scope questions at the top of the clarification list.
+        # This is a programmatic check — the LLM rule alone is not reliable enough.
+        if not _scope_established(source_text, conversation_context):
+            existing_questions: list[dict] = decision.get("questions", [])
+            has_scope = any(q.get("id") == "scope_level" for q in existing_questions)
+            if not has_scope:
+                decision["decision"] = "clarify"
+                decision["questions"] = _SCOPE_QUESTIONS + existing_questions
+                if not decision.get("message"):
+                    decision["message"] = "Veuillez préciser le périmètre d'analyse avant de continuer."
+                decision["confidence"] = min(float(decision.get("confidence", 0.0)), 0.35)
 
         # Return dspy.Prediction to enable MLflow LM usage tracking.
         # Prediction.get() is dict-compatible — callers need no changes.

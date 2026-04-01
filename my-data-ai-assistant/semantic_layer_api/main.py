@@ -12,6 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from starlette.responses import StreamingResponse
 from src.logger import Logger
 from src.controller_decision import ControllerDecision
+from src.chart_recommender import ChartRecommender
 
 from dotenv import load_dotenv
 
@@ -41,6 +42,22 @@ class ControllerRequest(BaseModel):
 class SpecRequest(BaseModel):
     prompt: str
     genie_result: Any = None
+
+
+class ChartRecommendRequest(BaseModel):
+    columns: list[dict]
+    sample_data: list[list] = []
+    query_prompt: str
+    required_columns: list[str] = []
+
+
+class ChartRecommendResponse(BaseModel):
+    chart_type: str
+    x_key: str
+    y_key: str
+    label_key: str
+    value_key: str
+    description: str
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -157,6 +174,7 @@ lm = dspy.LM(
 # Instantiate agents once at startup — DSPy modules are stateless per-call
 with dspy.settings.context(lm=lm, adapter=dspy.JSONAdapter(), track_usage=True):
     controller_agent = ControllerDecision()
+    chart_recommender = ChartRecommender()
 
 
 # ── App ───────────────────────────────────────────────────────────────────────
@@ -251,5 +269,50 @@ async def generate_spec(request: SpecRequest) -> StreamingResponse:
         yield f"event: spec\ndata: {spec_text}\n\n"
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+
+@app.post("/chart/recommend")
+async def recommend_chart(request: ChartRecommendRequest) -> ChartRecommendResponse:
+    numeric_types = {"INT", "INTEGER", "BIGINT", "FLOAT", "DOUBLE", "DECIMAL", "NUMERIC", "NUMBER", "LONG"}
+    temporal_types = {"DATE", "TIMESTAMP"}
+
+    enriched = []
+    for i, col in enumerate(request.columns):
+        type_upper = (col.get("type_name") or "STRING").upper()
+        enriched.append({
+            "name": col["name"],
+            "type_name": type_upper,
+            "is_numeric": type_upper in numeric_types or type_upper.startswith("DECIMAL"),
+            "is_temporal": type_upper in temporal_types,
+            "sample_values": [row[i] for row in request.sample_data[:5] if i < len(row)],
+        })
+
+    def _run() -> dspy.Prediction:
+        with dspy.settings.context(lm=lm, adapter=dspy.JSONAdapter(), track_usage=True):
+            return chart_recommender(
+                column_metadata=json.dumps(enriched),
+                query_prompt=request.query_prompt,
+                required_columns=json.dumps(request.required_columns),
+            )
+
+    result = await asyncio.to_thread(_run)
+
+    col_names = {c["name"] for c in request.columns}
+    first_col = request.columns[0]["name"] if request.columns else ""
+
+    def safe(key: str) -> str:
+        return key if key in col_names else first_col
+
+    x = safe(result.x_key or "")
+    y = safe(result.y_key or "")
+
+    return ChartRecommendResponse(
+        chart_type=result.chart_type or "table",
+        x_key=x,
+        y_key=y,
+        label_key=safe(result.label_key or x),
+        value_key=safe(result.value_key or y),
+        description=result.description or "",
+    )
 
 

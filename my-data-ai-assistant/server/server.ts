@@ -1,6 +1,7 @@
 import { createApp, genie, server } from '@databricks/appkit';
 import type { Application, Request, Response } from 'express';
 import { controllerAiAgent, handleControllerRequest, handleSpecRequest } from '../plugins/controller-ai-agent';
+import { handleChartRecommendRequest } from '../plugins/controller-ai-agent/chart-recommender.js';
 import {
   CONTROLLER_APPROVAL_COOKIE_NAME,
   clearControllerApprovalCookie,
@@ -74,6 +75,7 @@ createApp({
   appKit.server.extend((app: Application) => {
     app.post('/api/controller', handleControllerRequest);
     app.post('/api/spec', handleSpecRequest);
+    app.post('/api/chart-recommend', handleChartRecommendRequest);
 
     app.post('/api/chat-controller/:alias/messages', async (req: Request, res: Response) => {
       const alias = Array.isArray(req.params.alias) ? req.params.alias[0] : req.params.alias;
