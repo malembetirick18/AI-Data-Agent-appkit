@@ -1,6 +1,6 @@
 {
   "$schema": "https://databricks.github.io/appkit/schemas/plugin-manifest.schema.json",
-  "name": "controllerAiAgent",
+  "name": "controller-ai-agent",
   "displayName": "Controller AI Agent",
   "description": "Routes user intent through the semantic layer API for controller decisions and UI spec generation.",
   "version": "0.1.0",

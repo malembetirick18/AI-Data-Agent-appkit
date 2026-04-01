@@ -4,6 +4,7 @@ bundle:
 variables:
   DATABRICKS_GENIE_SPACE_ID:
     description: "Databricks Genie Space ID"
+    default: "01f1222b08a513ec94de27be8a9112b7"
 
 resources:
   apps:

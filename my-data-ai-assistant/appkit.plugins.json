@@ -150,6 +150,16 @@
         "optional": []
       },
       "requiredByTemplate": true
+    },
+    "controller-ai-agent": {
+      "name": "controller-ai-agent",
+      "displayName": "Controller AI Agent",
+      "description": "Routes user intent through the semantic layer API for controller decisions and UI spec generation.",
+      "package": "./plugins\\controller-ai-agent",
+      "resources": {
+        "required": [],
+        "optional": []
+      }
     }
   }
 }

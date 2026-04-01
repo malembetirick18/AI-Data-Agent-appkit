@@ -370,7 +370,7 @@ function InteractiveChart({
       data: sortedData,
       title: chartTitle,
       series: [{ type: 'pie' as const, angleKey: activeValueKey, legendItemKey: activeLabelKey }],
-      height: 220,
+      autoSize: true,
       legend: { position: 'right' as const },
     }
   } else if (chartType === 'donut') {
@@ -378,7 +378,7 @@ function InteractiveChart({
       data: sortedData,
       title: chartTitle,
       series: [{ type: 'donut' as const, angleKey: activeValueKey, legendItemKey: activeLabelKey, innerRadiusRatio: 0.6 }],
-      height: 220,
+      autoSize: true,
       legend: { position: 'right' as const },
     }
   } else if (chartType === 'radar') {
@@ -390,7 +390,7 @@ function InteractiveChart({
         { type: 'angle-category' as const },
         { type: 'radius-number' as const, label: { formatter: numberLabelFormatter } },
       ],
-      height: 240,
+      autoSize: true,
     }
   } else if (chartType === 'bubble') {
     options = {
@@ -407,7 +407,7 @@ function InteractiveChart({
         { type: 'number' as const, position: 'bottom' as const, label: { formatter: numberLabelFormatter } },
         { type: 'number' as const, position: 'left' as const, title: yLabel ? { text: yLabel } : undefined, label: { formatter: numberLabelFormatter } },
       ],
-      height: 220,
+      autoSize: true,
       legend: { position: 'bottom' as const },
       zoom: { enabled: true },
     }
@@ -427,7 +427,7 @@ function InteractiveChart({
         { type: 'category' as const, position: 'bottom' as const },
         { type: 'number' as const, position: 'left' as const, title: yLabel ? { text: yLabel } : undefined, label: { formatter: numberLabelFormatter } },
       ],
-      height: 200,
+      autoSize: true,
       legend: { position: 'bottom' as const },
       zoom: { enabled: true },
     }
@@ -448,20 +448,22 @@ function InteractiveChart({
         <Group gap={6} mb={8} wrap="wrap" align="center">
           {isRadial ? (
             <>
-              <Select size="xs" placeholder="Label" data={allColOptions} value={activeLabelKey} onChange={v => v && setLabelKey(v)} style={{ width: 130 }} comboboxProps={{ withinPortal: false, maxDropdownHeight: 200 }} />
-              <Select size="xs" placeholder="Valeur" data={numColOptions} value={activeValueKey} onChange={v => v && setValueKey(v)} style={{ width: 130 }} comboboxProps={{ withinPortal: false, maxDropdownHeight: 200 }} />
+              <Select size="xs" placeholder="Label" data={allColOptions} value={activeLabelKey} onChange={v => v && setLabelKey(v)} style={{ width: 130 }} maxDropdownHeight={200} comboboxProps={{ withinPortal: false }} />
+              <Select size="xs" placeholder="Valeur" data={numColOptions} value={activeValueKey} onChange={v => v && setValueKey(v)} style={{ width: 130 }} maxDropdownHeight={200} comboboxProps={{ withinPortal: false }} />
             </>
           ) : (
             <>
-              <Select size="xs" placeholder="Axe X" data={allColOptions} value={xKey} onChange={v => { if (!v) return; setXKey(v); setYKeys(prev => prev.filter(k => k !== v)) }} style={{ width: 130 }} comboboxProps={{ withinPortal: false, maxDropdownHeight: 200 }} />
-              <MultiSelect size="xs" placeholder="Axes Y" data={yOptions} value={yKeys} onChange={setYKeys} style={{ width: 160 }} maxValues={maxYValues} comboboxProps={{ withinPortal: false, maxDropdownHeight: 200 }} clearable />
+              <Select size="xs" placeholder="Axe X" data={allColOptions} value={xKey} onChange={v => { if (!v) return; setXKey(v); setYKeys(prev => prev.filter(k => k !== v)) }} style={{ width: 130 }} maxDropdownHeight={200} comboboxProps={{ withinPortal: false }} />
+              <MultiSelect size="xs" placeholder="Axes Y" data={yOptions} value={yKeys} onChange={setYKeys} style={{ width: 160 }} maxValues={maxYValues} maxDropdownHeight={200} comboboxProps={{ withinPortal: false }} clearable />
               {isBubble && (
-                <Select size="xs" placeholder="Taille" data={sizeOptions} value={activeSizeKey} onChange={v => v && setSizeKey(v)} style={{ width: 120 }} comboboxProps={{ withinPortal: false, maxDropdownHeight: 200 }} />
+                <Select size="xs" placeholder="Taille" data={sizeOptions} value={activeSizeKey} onChange={v => v && setSizeKey(v)} style={{ width: 120 }} maxDropdownHeight={200} comboboxProps={{ withinPortal: false }} />
               )}
             </>
           )}
         </Group>
-        <AgCharts options={options} />
+        <div style={{ height: 'clamp(280px, 40vh, 420px)', width: '100%' }}>
+          <AgCharts options={options} />
+        </div>
         {source && <Text size="xs" c="dimmed" ta="right" mt={4} fs="italic">{'Source : ' + source}</Text>}
       </Paper>
     </Box>
@@ -515,26 +517,30 @@ const { registry: chatUiRegistry } = defineRegistry(chatUiCatalog, {
       )
 
       const isLarge = rowData.length > LARGE_TABLE_THRESHOLD
-      const gridHeight = isLarge ? 500 : Math.min(300, 48 + rowData.length * 42)
+      const gridHeight = isLarge ? 640 : Math.min(440, 56 + rowData.length * 42)
       const hasHiddenCols = headers.length > VISIBLE_COLS
 
       return (
         <Box mt="xs" mb="xs" style={{ width: '100%', overflow: 'hidden' }}>
           {props.caption && <Text size="xs" c="dimmed" mb={4} fs="italic">{props.caption}</Text>}
-          <div style={{ height: gridHeight, width: '100%' }}>
-            <AgGridReact
-              theme={themeQuartz}
-              columnDefs={columnDefs}
-              rowData={rowData}
-              domLayout="normal"
-              suppressMovableColumns
-              rowBuffer={20}
-              animateRows={!isLarge}
-              pagination={rowData.length > 10}
-              paginationPageSize={isLarge ? 50 : 10}
-              sideBar={hasHiddenCols ? { toolPanels: [{ id: 'columns', labelDefault: 'Colonnes', labelKey: 'columns', iconKey: 'columns', toolPanel: 'agColumnsToolPanel', toolPanelParams: { suppressRowGroups: true, suppressValues: true, suppressPivots: true, suppressPivotMode: true } }] } : undefined}
-            />
-          </div>
+          {rowData.length === 0 || headers.length === 0 ? (
+            <Text size="sm" c="dimmed" ta="center" py="md">Aucune donnée à afficher</Text>
+          ) : (
+            <div style={{ height: gridHeight, width: '100%' }}>
+              <AgGridReact
+                theme={themeQuartz}
+                columnDefs={columnDefs}
+                rowData={rowData}
+                domLayout="normal"
+                suppressMovableColumns
+                rowBuffer={20}
+                animateRows={!isLarge}
+                pagination={rowData.length > 10}
+                paginationPageSize={isLarge ? 50 : 10}
+                sideBar={hasHiddenCols ? { toolPanels: [{ id: 'columns', labelDefault: 'Colonnes', labelKey: 'columns', iconKey: 'columns', toolPanel: 'agColumnsToolPanel', toolPanelParams: { suppressRowGroups: true, suppressValues: true, suppressPivots: true, suppressPivotMode: true } }] } : undefined}
+              />
+            </div>
+          )}
         </Box>
       )
     },
@@ -938,10 +944,13 @@ function buildGenerativeUiSpec(blocks: ContentBlock[]): GenericUiSpec | null {
     let element: { type: string; props: Record<string, unknown>; children: string[] } | null = null
 
     if (block.type === 'text') {
+      if (!block.content?.trim()) return
       element = { type: 'TextContent', props: { content: block.content, size: 'sm' }, children: [] }
     } else if (block.type === 'bold') {
+      if (!block.content?.trim()) return
       element = { type: 'TextContent', props: { content: block.content, size: 'sm', weight: 700 }, children: [] }
     } else if (block.type === 'heading') {
+      if (!block.content?.trim()) return
       element = { type: 'TextContent', props: { content: block.content, size: 'sm', weight: 700 }, children: [] }
     } else if (block.type === 'bullets') {
       element = { type: 'BulletList', props: { items: block.items }, children: [] }
@@ -1200,7 +1209,7 @@ const MessageContent = memo(function MessageContent({
           )}
         </Box>
       )}
-      {msg.attachments
+      {!msg.blocks?.some((b) => b.type === 'table') && msg.attachments
         ?.filter((attachment) => Boolean(attachment.attachmentId))
         .map((attachment) => {
           const attachmentId = attachment.attachmentId
@@ -1302,25 +1311,29 @@ function RenderBlock({ block }: { block: ContentBlock }) {
         Object.fromEntries(block.headers.map((h, i) => [h, row[i] ?? '']))
       )
       const isLarge = rowData.length > LARGE_TABLE_THRESHOLD
-      const gridHeight = isLarge ? 500 : Math.min(300, 48 + rowData.length * 42)
+      const gridHeight = isLarge ? 640 : Math.min(440, 56 + rowData.length * 42)
       const hasHiddenCols = block.headers.length > VISIBLE_COLS
       return (
         <Box mt="xs" mb="xs" style={{ width: '100%', overflow: 'hidden' }}>
           {block.caption && <Text size="xs" c="dimmed" mb={4} fs="italic">{block.caption}</Text>}
-          <div style={{ height: gridHeight, width: '100%' }}>
-            <AgGridReact
-              theme={themeQuartz}
-              columnDefs={columnDefs}
-              rowData={rowData}
-              domLayout="normal"
-              suppressMovableColumns
-              rowBuffer={20}
-              animateRows={!isLarge}
-              pagination={rowData.length > 10}
-              paginationPageSize={isLarge ? 50 : 10}
-              sideBar={hasHiddenCols ? { toolPanels: [{ id: 'columns', labelDefault: 'Colonnes', labelKey: 'columns', iconKey: 'columns', toolPanel: 'agColumnsToolPanel', toolPanelParams: { suppressRowGroups: true, suppressValues: true, suppressPivots: true, suppressPivotMode: true } }] } : undefined}
-            />
-          </div>
+          {rowData.length === 0 || block.headers.length === 0 ? (
+            <Text size="sm" c="dimmed" ta="center" py="md">Aucune donnée à afficher</Text>
+          ) : (
+            <div style={{ height: gridHeight, width: '100%' }}>
+              <AgGridReact
+                theme={themeQuartz}
+                columnDefs={columnDefs}
+                rowData={rowData}
+                domLayout="normal"
+                suppressMovableColumns
+                rowBuffer={20}
+                animateRows={!isLarge}
+                pagination={rowData.length > 10}
+                paginationPageSize={isLarge ? 50 : 10}
+                sideBar={hasHiddenCols ? { toolPanels: [{ id: 'columns', labelDefault: 'Colonnes', labelKey: 'columns', iconKey: 'columns', toolPanel: 'agColumnsToolPanel', toolPanelParams: { suppressRowGroups: true, suppressValues: true, suppressPivots: true, suppressPivotMode: true } }] } : undefined}
+              />
+            </div>
+          )}
         </Box>
       )
     }
@@ -1344,14 +1357,16 @@ function RenderBlock({ block }: { block: ContentBlock }) {
             title: block.yLabel ? { text: block.yLabel } : undefined,
           },
         ],
-        height: 200,
+        autoSize: true,
         legend: { position: 'bottom' as const },
         zoom: { enabled: true },
       }
       return (
         <Box mt="md" mb="sm" style={{ width: '100%' }}>
           <Paper p="xs" withBorder radius="sm" style={{ backgroundColor: '#fff' }}>
-            <AgCharts options={lineOptions} />
+            <div style={{ height: 'clamp(260px, 35vh, 380px)', width: '100%' }}>
+              <AgCharts options={lineOptions} />
+            </div>
             {block.source && (
               <Text size="xs" c="dimmed" ta="right" mt={4} fs="italic">
                 {'Source : ' + block.source}
@@ -1370,14 +1385,16 @@ function RenderBlock({ block }: { block: ContentBlock }) {
           { type: 'category' as const, position: 'bottom' as const },
           { type: 'number' as const, position: 'left' as const },
         ],
-        height: 160,
+        autoSize: true,
         legend: { enabled: false },
         zoom: { enabled: true },
       }
       return (
         <Box mt="md" mb="sm" style={{ width: '100%' }}>
           <Paper p="xs" withBorder radius="sm" style={{ backgroundColor: '#fff' }}>
-            <AgCharts options={barOptions} />
+            <div style={{ height: 'clamp(240px, 30vh, 340px)', width: '100%' }}>
+              <AgCharts options={barOptions} />
+            </div>
           </Paper>
         </Box>
       )

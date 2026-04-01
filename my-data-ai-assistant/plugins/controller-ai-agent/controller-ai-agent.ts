@@ -96,7 +96,7 @@ const REQUEST_TIMEOUT_MS = 45_000;
 
 class ControllerAiAgentPlugin extends Plugin {
   static manifest = {
-    name: 'controllerAiAgent',
+    name: 'controller-ai-agent',
     displayName: 'Controller AI Agent',
     description: 'Routes user intent through the semantic layer API for controller decisions and UI spec generation.',
     version: '0.1.0',
@@ -104,7 +104,7 @@ class ControllerAiAgentPlugin extends Plugin {
       required: [],
       optional: [],
     },
-  } satisfies PluginManifest<'controllerAiAgent'>;
+  } satisfies PluginManifest<'controller-ai-agent'>;
 
   injectRoutes(): void {
     // All routes are registered directly in server.ts

@@ -1,8 +1,24 @@
-command: ['npm', 'run', 'start']
+command: ['bash', 'start.sh']
 env:
   - name: DATABRICKS_GENIE_SPACE_ID
-    valueFrom: genie-space
+    value: 01f1222b08a513ec94de27be8a9112b7
   - name: GENIE_KNOWLEDGE_STORE_PATH
     value: catalog_schemas_description/genie_knowledge_store.json
   - name: AGGRID_LICENSE_KEY
     valueFrom: aggrid-license-key
+  - name: AZURE_API_BASE
+    valueFrom:  azure-api-base
+  - name: AZURE_API_KEY
+    valueFrom:  azure-api-key
+  - name: SEMANTIC_LAYER_API_URL
+    value: http://localhost:8001/api
+  - name: MLFLOW_SEMANTIC_LAYER_TRACING_EXPERIMENT
+    value: /semantic-layer-experiment
+  - name: MLFLOW_TRACKING_URI
+    value: databricks
+  - name: MLFLOW_SILENT
+    value: true
+  - name: MLFLOW_LOG_TRACES
+    value: true
+  - name: DSPY_BATCH_NUM_THREADS
+    value: 8
