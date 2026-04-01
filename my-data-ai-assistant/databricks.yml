@@ -5,6 +5,9 @@ variables:
   DATABRICKS_GENIE_SPACE_ID:
     description: "Databricks Genie Space ID"
     default: "01f1222b08a513ec94de27be8a9112b7"
+  SECRET_SCOPE:
+    description: "Databricks secret scope name"
+    default: "my-data-ai-assistant"
 
 resources:
   apps:
@@ -21,6 +24,24 @@ resources:
             name: "genie-space"
             space_id: ${var.DATABRICKS_GENIE_SPACE_ID}
             permission: "CAN_RUN"
+        - name: "aggrid-license-key"
+          description: "AG Grid license key secret"
+          secret:
+            scope: ${var.SECRET_SCOPE}
+            key: aggrid-license-key
+            permission: "READ"
+        - name: "azure-api-base"
+          description: "Azure OpenAI API base URL"
+          secret:
+            scope: ${var.SECRET_SCOPE}
+            key: azure-api-base
+            permission: "READ"
+        - name: "azure-api-key"
+          description: "Azure OpenAI API key"
+          secret:
+            scope: ${var.SECRET_SCOPE}
+            key: azure-api-key
+            permission: "READ"
 
 targets:
   default:
