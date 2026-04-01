@@ -12,10 +12,10 @@ import { ControlsList } from '@/components/controls-list'
 import { AiChatDrawer } from '@/components/ai-chat-drawer'
 import type { SavedControl } from '@/components/ai-chat-drawer'
 import type { SavedControlItem } from '@/components/controls-list'
+import { AGGRID_LICENSE_KEY } from '@/config';
 
-declare const __AGGRID_LICENSE_KEY__: string;
-LicenseManagerAgCharts.setLicenseKey(__AGGRID_LICENSE_KEY__);
-LicenseManagerAgGrid.setLicenseKey(__AGGRID_LICENSE_KEY__);
+LicenseManagerAgCharts.setLicenseKey(AGGRID_LICENSE_KEY);
+LicenseManagerAgGrid.setLicenseKey(AGGRID_LICENSE_KEY);
 
 export default function App() {
   return <HomePage />;

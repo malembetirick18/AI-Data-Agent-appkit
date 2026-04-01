@@ -73,7 +73,7 @@ function parseControllerDecisionFromSse(text: string): Record<string, unknown> |
   return null;
 }
 
-function parseSpecFromSse(text: string): unknown | null {
+function parseSpecFromSse(text: string): unknown {
   const lines = text.split('\n');
   for (const line of lines) {
     if (line.startsWith('data:')) {

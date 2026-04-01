@@ -287,9 +287,10 @@ function InteractiveChart({
   yLabel?: string
   source?: string
 }) {
-  const allColumns = useMemo(() => data.length > 0 ? Object.keys(data[0]) : [], []) // eslint-disable-line react-hooks/exhaustive-deps
+  const allColumns = useMemo(() => data.length > 0 ? Object.keys(data[0]) : [], []) // eslint-disable-line react-hooks/exhaustive-deps, react-hooks/preserve-manual-memoization
 
   const numericColumns = useMemo(
+    // eslint-disable-next-line react-hooks/preserve-manual-memoization
     () => allColumns.filter(col => {
       const samples = data.slice(0, 10).map(row => row[col])
       const nonEmpty = samples.filter(v => v !== null && v !== '' && v !== undefined)
@@ -325,7 +326,7 @@ function InteractiveChart({
   const yOptions = numericColumns.filter(col => col !== xKey).map(col => ({ value: col, label: formatColumnLabel(col) }))
   const sizeOptions = numericColumns.filter(col => col !== xKey && !yKeys.includes(col)).map(col => ({ value: col, label: formatColumnLabel(col) }))
   const maxYValues = chartType === 'bar' ? 1 : 5
-  const activeYKeys = yKeys.length > 0 ? yKeys : (yOptions[0] ? [yOptions[0].value] : [])
+  const activeYKeys = yKeys.length > 0 ? yKeys : (yOptions[0] ? [yOptions[0].value] : []) // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleTypeChange = (type: ChartVizType) => {
     setChartType(type)
@@ -354,9 +355,9 @@ function InteractiveChart({
     // line / area / bubble — sort ascending by X
     const xIsNumeric = !isNaN(Number(data[0][xKey]))
     return [...data].sort((a, b) => {
-      const va = xIsNumeric ? Number(a[xKey]) : String(a[xKey] ?? '')
-      const vb = xIsNumeric ? Number(b[xKey]) : String(b[xKey] ?? '')
-      return typeof va === 'number' ? (va as number) - (vb as number) : (va as string).localeCompare(vb as string)
+      const va = xIsNumeric ? Number(a[xKey]) : String((a[xKey] ?? '') as string | number | boolean)  
+      const vb = xIsNumeric ? Number(b[xKey]) : String((b[xKey] ?? '') as string | number | boolean)  
+      return typeof va === 'number' ? (va) - (vb as number) : (va).localeCompare(vb as string)
     })
   }, [data, chartType, xKey, activeYKeys, activeValueKey, isRadial])
 
@@ -416,7 +417,7 @@ function InteractiveChart({
       data: sortedData,
       title: chartTitle,
       series: activeYKeys.map(yKey => ({
-        type: chartType as 'line' | 'bar' | 'area',
+        type: chartType,
         xKey,
         yKey,
         yName: formatColumnLabel(yKey),
@@ -492,7 +493,10 @@ const { registry: chatUiRegistry } = defineRegistry(chatUiCatalog, {
       const VISIBLE_COLS = 4
       const LARGE_TABLE_THRESHOLD = 200
 
-      const columnDefs = useMemo(() => props.headers.map((h: string, i: number) => ({
+      const headers: string[] = Array.isArray(props.headers) ? props.headers : [] // eslint-disable-line react-hooks/exhaustive-deps
+      const rows: string[][] = Array.isArray(props.rows) ? props.rows : [] // eslint-disable-line react-hooks/exhaustive-deps
+
+      const columnDefs = useMemo(() => headers.map((h: string, i: number) => ({
         field: h,
         headerName: h,
         sortable: true,
@@ -501,18 +505,18 @@ const { registry: chatUiRegistry } = defineRegistry(chatUiCatalog, {
         flex: 1,
         minWidth: 100,
         hide: i >= VISIBLE_COLS,
-      })), [props.headers])
+      })), [headers])
 
       const rowData = useMemo(() =>
-        props.rows.map((row: string[]) =>
-          Object.fromEntries(props.headers.map((h: string, i: number) => [h, row[i] ?? '']))
+        rows.map((row: string[]) =>
+          Object.fromEntries(headers.map((h: string, i: number) => [h, row[i] ?? '']))
         ),
-        [props.headers, props.rows]
+        [headers, rows]
       )
 
       const isLarge = rowData.length > LARGE_TABLE_THRESHOLD
       const gridHeight = isLarge ? 500 : Math.min(300, 48 + rowData.length * 42)
-      const hasHiddenCols = props.headers.length > VISIBLE_COLS
+      const hasHiddenCols = headers.length > VISIBLE_COLS
 
       return (
         <Box mt="xs" mb="xs" style={{ width: '100%', overflow: 'hidden' }}>
@@ -537,21 +541,21 @@ const { registry: chatUiRegistry } = defineRegistry(chatUiCatalog, {
     LineChartViz: ({ props }) => (
       <InteractiveChart
         data={props.data as Record<string, unknown>[]}
-        initialXKey={props.xKey as string}
+        initialXKey={props.xKey}
         initialYKeys={(props.series as Array<{ yKey: string }>).map(s => s.yKey)}
         initialType="line"
-        title={props.title && props.title !== 'Title' ? props.title as string : undefined}
-        yLabel={props.yLabel as string | undefined}
-        source={props.source as string | undefined}
+        title={props.title && props.title !== 'Title' ? props.title : undefined}
+        yLabel={props.yLabel}
+        source={props.source}
       />
     ),
     BarChartViz: ({ props }) => (
       <InteractiveChart
         data={props.data as Record<string, unknown>[]}
-        initialXKey={props.xKey as string}
-        initialYKeys={[props.yKey as string]}
+        initialXKey={props.xKey}
+        initialYKeys={[props.yKey]}
         initialType="bar"
-        title={props.title && props.title !== 'Title' ? props.title as string : undefined}
+        title={props.title && props.title !== 'Title' ? props.title : undefined}
       />
     ),
     PieChartViz: ({ props }) => (
@@ -560,9 +564,9 @@ const { registry: chatUiRegistry } = defineRegistry(chatUiCatalog, {
         initialXKey=""
         initialYKeys={[]}
         initialType="pie"
-        initialLabelKey={props.labelKey as string}
-        initialValueKey={props.angleKey as string}
-        title={props.title && props.title !== 'Title' ? props.title as string : undefined}
+        initialLabelKey={props.labelKey}
+        initialValueKey={props.angleKey}
+        title={props.title && props.title !== 'Title' ? props.title : undefined}
       />
     ),
     DonutChartViz: ({ props }) => (
@@ -571,9 +575,9 @@ const { registry: chatUiRegistry } = defineRegistry(chatUiCatalog, {
         initialXKey=""
         initialYKeys={[]}
         initialType="donut"
-        initialLabelKey={props.labelKey as string}
-        initialValueKey={props.angleKey as string}
-        title={props.title && props.title !== 'Title' ? props.title as string : undefined}
+        initialLabelKey={props.labelKey}
+        initialValueKey={props.angleKey}
+        title={props.title && props.title !== 'Title' ? props.title : undefined}
       />
     ),
     RadarChartViz: ({ props }) => (
@@ -582,19 +586,19 @@ const { registry: chatUiRegistry } = defineRegistry(chatUiCatalog, {
         initialXKey=""
         initialYKeys={[]}
         initialType="radar"
-        initialLabelKey={props.angleKey as string}
-        initialValueKey={props.radiusKey as string}
-        title={props.title && props.title !== 'Title' ? props.title as string : undefined}
+        initialLabelKey={props.angleKey}
+        initialValueKey={props.radiusKey}
+        title={props.title && props.title !== 'Title' ? props.title : undefined}
       />
     ),
     BubbleChartViz: ({ props }) => (
       <InteractiveChart
         data={props.data as Record<string, unknown>[]}
-        initialXKey={props.xKey as string}
-        initialYKeys={[props.yKey as string]}
+        initialXKey={props.xKey}
+        initialYKeys={[props.yKey]}
         initialType="bubble"
-        initialSizeKey={props.sizeKey as string}
-        title={props.title && props.title !== 'Title' ? props.title as string : undefined}
+        initialSizeKey={props.sizeKey}
+        title={props.title && props.title !== 'Title' ? props.title : undefined}
       />
     ),
     QueryDataTable: ({ props }) => {
@@ -1949,7 +1953,7 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
       .filter((message) => Boolean(message.content?.trim()))
       .slice(-6)
       .map((message) => ({
-        role: message.role as 'user' | 'assistant',
+        role: message.role,
         content: message.content,
       }))
     const messages = currentUserMessage
@@ -2693,7 +2697,7 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
             >
               <Group gap="xs">
                 <Loader size="xs" color="teal" type="dots" />
-                <Text size="sm" c="dimmed">L'agent IA analyse votre demande...</Text>
+                <Text size="sm" c="dimmed">{"L'agent IA analyse votre demande..."}</Text>
               </Group>
             </Paper>
           )}
@@ -2707,7 +2711,7 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
               mb="md"
               icon={<IconAlertTriangle size={16} />}
             >
-              <Text size="sm" fw={600}>Requête refusée par l'agent IA</Text>
+              <Text size="sm" fw={600}>{"Requête refusée par l'agent IA"}</Text>
               <Text size="xs" mt={4} style={{ lineHeight: 1.55 }}>
                 {typeof genieError === 'string' ? genieError : String(genieError)}
               </Text>

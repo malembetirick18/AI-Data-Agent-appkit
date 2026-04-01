@@ -1,0 +1,1 @@
+export const AGGRID_LICENSE_KEY=__AGGRID_LICENSE_KEY__;
