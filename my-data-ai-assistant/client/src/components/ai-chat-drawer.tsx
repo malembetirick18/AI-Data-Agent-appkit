@@ -1268,6 +1268,17 @@ const MessageContent = memo(function MessageContent({
   }
 
   /* Fallback: blocks rendered directly + Genie attachment rendering */
+  const hasContent = !hideText && Boolean(msg.content?.trim())
+  const hasBlocks = Boolean(msg.blocks && msg.blocks.length > 0)
+  const hasAttachments = Boolean(msg.attachments?.some((a) => Boolean(a.attachmentId)))
+  if (!hasContent && !hasBlocks && !hasAttachments && !generatedSpec) {
+    return (
+      <Group gap="xs">
+        <Loader size="xs" color="teal" type="dots" />
+      </Group>
+    )
+  }
+
   return (
     <>
       {!hideText && msg.content && (
