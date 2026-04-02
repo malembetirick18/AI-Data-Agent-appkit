@@ -62,14 +62,12 @@ class ControllerDecisionSignature(dspy.Signature):
     Confidence scoring rules (CRITICAL — follow strictly):
     - confidence is a float between 0.0 and 1.0
     - When decision is 'proceed' and the user intent clearly maps to one or more tables in catalog_info,
-      set confidence >= 0.90. Most 'proceed' decisions should have confidence between 0.90 and 0.98.
+      set confidence >= 0.90. Most 'proceed' decisions should have confidence between 0.90 and 0.99.
     - When decision is 'proceed' but the mapping is less obvious (e.g. requires assumptions),
-      set confidence between 0.70 and 0.89.
-    - When decision is 'guide', set confidence between 0.60 and 0.69.
-    - When decision is 'clarify', set confidence between 0.0 and 0.59.
+      set confidence between 0.50 and 0.75.
+    - When decision is 'guide', set confidence between 0.75 and 0.89.
+    - When decision is 'clarify', set confidence between 0.1 and 0.74.
     - When decision is 'error', set confidence to 0.0.
-    - Do NOT default to low confidence values like 0.5 or 0.7 for clear 'proceed' cases.
-      If the intent is clear and tables exist, confidence MUST be >= 0.90.
 
     Constraints:
     - Never invent tables, columns, functions, or business rules
