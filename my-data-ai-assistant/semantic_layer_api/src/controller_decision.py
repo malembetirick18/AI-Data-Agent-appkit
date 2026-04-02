@@ -2,16 +2,94 @@
 controller_decision.py — DSPy agent pipeline for the semantic layer API.
 
 Exports:
-  - ControllerDecision: multi-step controller agent (analyse → rephrase → decide)
+  - ControllerDecision: multi-step controller agent implementing the Reflexion pattern
+    (Actor → Evaluator → Self-Reflection → Corrector)
 """
 import json
+import os
 from typing import Any
 
 import dspy
 
+from src.logger import Logger
 from src.signatures.controller_decision_signature import ControllerDecisionSignature
 from src.signatures.rephrase_query_signature import RephraseQuerySignature
 from src.signatures.query_analysis_signature import QueryAnalysisSignature
+
+# Reflexion signatures — imported unconditionally so type checkers can resolve them;
+# the DSPy modules are only instantiated when _REFLECTION_ENABLED is True.
+from src.signatures.controller_self_reflection_signature import ControllerSelfReflectionSignature
+from src.signatures.controller_correction_signature import ControllerCorrectionSignature
+
+# Child of the root "semantic-layer-api" logger — propagates to its handler, no double output.
+_logger = Logger("semantic-layer-api").child("controller")
+
+# Self-reflection + correction passes are gated behind an env flag.
+# In dev they add two extra LLM calls per request; keeping them off avoids latency overhead.
+# Pattern: Programmatic Evaluator (3b) → Self-Reflection LLM (3c) → Corrector LLM (4).
+_REFLECTION_ENABLED = os.getenv("ENABLE_CONTROLLER_REFLECTION", "false").lower() == "true"
+
+
+# ── Catalog validation helpers ────────────────────────────────────────────────
+
+def _build_catalog_index(catalog_info: str) -> dict:
+    """Parse the catalog JSON string and return sets of valid names for O(1) lookup."""
+    try:
+        catalog = json.loads(catalog_info)
+    except Exception:
+        return {}
+    return {
+        "tables":    {t["name"] for t in catalog.get("tables", [])},
+        "columns":   {c["name"] for t in catalog.get("tables", []) for c in t.get("columns", [])},
+        "functions": {f["name"] for f in catalog.get("functions", [])},
+    }
+
+
+def _validate_against_catalog(decision: dict, index: dict) -> tuple[dict, dict]:
+    """Strip names not present in the catalog index.
+
+    Returns (cleaned_decision, removed_by_field) where removed_by_field maps
+    field name → list of hallucinated values that were stripped.
+    """
+    removed: dict[str, list] = {}
+    for key, valid_set in [
+        ("suggestedTables",     index.get("tables",    set())),
+        ("requiredColumns",     index.get("columns",   set())),
+        ("predictiveFunctions", index.get("functions", set())),
+        ("suggestedFunctions",  index.get("functions", set())),
+    ]:
+        if not valid_set:
+            continue
+        original = decision.get(key, [])
+        if not isinstance(original, list):
+            continue
+        cleaned = [v for v in original if v in valid_set]
+        if len(cleaned) != len(original):
+            removed[key] = [v for v in original if v not in valid_set]
+            decision[key] = cleaned
+    # Downgrade confidence when hallucinations were found in a 'proceed' decision
+    if removed and decision.get("decision") == "proceed":
+        decision["confidence"] = min(float(decision.get("confidence", 0.0)), 0.75)
+    return decision, removed
+
+
+def _build_validation_feedback(removed: dict, decision: dict) -> str:
+    """Convert the programmatic validation diff into a verbal feedback string.
+
+    This is the evaluator's output (Reflexion 'semantic gradient signal') that is
+    passed explicitly to the self-reflection LLM so it does not have to re-discover
+    problems from scratch.
+    """
+    if not removed:
+        return "No hallucinations detected. Decision is structurally consistent with the catalog."
+    parts = []
+    for field, names in removed.items():
+        parts.append(f"  - {field}: {names} do not exist in the catalog and were removed.")
+    if decision.get("decision") == "proceed" and not decision.get("suggestedTables"):
+        parts.append(
+            "  - After removal, suggestedTables is now empty — 'proceed' may need downgrade to 'guide'."
+        )
+    return "Programmatic catalog validation found the following issues:\n" + "\n".join(parts)
 
 _VALID_CLASSIFICATIONS = {"Normal SQL", "SQL Function", "Predictive SQL", "General Information"}
 # Only rephrase when the query needs enrichment — SQL Function and Predictive SQL
@@ -65,20 +143,29 @@ def _scope_established(source_text: str, conversation_context: str) -> bool:
 
 class ControllerDecision(dspy.Module):
     """
-    Multi-step controller agent:
-    1. Phase 1: combined analysis (classify + columns + functions) — 1 LLM call
-    2. Phase 2: rephrase query — only for SQL Function / Predictive SQL / General Information
-    3. Phase 3: controller decision (proceed / guide / clarify / error)
+    Multi-step controller agent implementing the full Reflexion pattern (Shinn et al., 2023):
 
-    DSPy's LM num_retries handles API-level retries.
-    JSONAdapter guarantees structured JSON output.
+    1. Phase 1:   combined analysis (classify + columns + functions) — 1 LLM call  [Actor]
+    2. Phase 2:   rephrase query — only for SQL Function / Predictive SQL / General Info  [Actor]
+    3. Phase 3:   controller decision (proceed / guide / clarify / error)  [Actor]
+    3b. Eval:    programmatic catalog validation — strips hallucinations, builds feedback  [Evaluator]
+    3c. Reflect: self-reflection LLM — diagnoses WHY the decision failed (verbal)  [Self-Reflection]
+    4. Phase 4:  correction LLM — applies self_reflection_text to produce corrected JSON  [Actor retry]
+                 Gated behind ENABLE_CONTROLLER_REFLECTION (off in dev, on in production)
+
+    Reflexion roles: Actor (Phases 1–3) → Evaluator (3b) → Self-Reflection (3c) → Actor retry (4).
+    Single-pass (no memory accumulation) — one correction cycle per request.
+    DSPy's LM num_retries handles API-level retries. JSONAdapter guarantees structured JSON output.
     """
 
     def __init__(self):
         super().__init__()
-        self.analyse_query = dspy.ChainOfThought(QueryAnalysisSignature)
+        self.analyze_query = dspy.ChainOfThought(QueryAnalysisSignature)
         self.rephrase_query = dspy.ChainOfThought(RephraseQuerySignature)
         self.controller_decision = dspy.ChainOfThought(ControllerDecisionSignature)
+        if _REFLECTION_ENABLED:
+            self.self_reflect = dspy.ChainOfThought(ControllerSelfReflectionSignature)
+            self.correct_decision = dspy.ChainOfThought(ControllerCorrectionSignature)
 
     def forward(
         self,
@@ -87,7 +174,7 @@ class ControllerDecision(dspy.Module):
         conversation_context: str = "",
     ) -> dspy.Prediction:
         # Phase 1: single combined analysis — replaces 3 sequential calls
-        analysis = self.analyse_query(prompt=source_text, catalog_info=catalog_info)
+        analysis = self.analyze_query(prompt=source_text, catalog_info=catalog_info)
 
         raw_class = analysis.classification.strip()
         query_classification = raw_class if raw_class in _VALID_CLASSIFICATIONS else "Normal SQL"
@@ -96,8 +183,16 @@ class ControllerDecision(dspy.Module):
         sql_functions_json: str = analysis.sql_functions_json or "[]"
         coherence_note: str = analysis.coherence_note or ""
 
+        _logger.info("Phase-1 classification=%r columns=%s functions=%s",
+                     query_classification,
+                     required_columns_json[:80],
+                     sql_functions_json[:80])
+        if coherence_note:
+            _logger.info("Phase-1 coherence note: %s", coherence_note[:120])
+
         # Phase 2: conditional rephrase — skip for clear Normal SQL queries
         if query_classification in _REPHRASE_CLASSIFICATIONS:
+            _logger.info("Phase-2 rephrasing prompt for classification=%r", query_classification)
             rewritten = self.rephrase_query(
                 prompt=source_text, query_classification=query_classification
             )
@@ -132,6 +227,76 @@ class ControllerDecision(dspy.Module):
         decision["predictiveFunctions"] = json.loads(sql_functions_json)
         decision.setdefault("coherenceNote", coherence_note)
 
+        _logger.info("Phase-3 decision=%r confidence=%.2f tables=%s needsParams=%s",
+                     decision.get("decision"),
+                     float(decision.get("confidence", 0.0)),
+                     decision.get("suggestedTables", []),
+                     decision.get("needsParams", False))
+
+        # ── Phase 3b — Programmatic evaluator (always runs, zero cost) ─────────────────────────
+        # Strips hallucinated table/column/function names against the catalog index and builds
+        # a verbal feedback string. This output is passed explicitly to the LLM corrector in
+        # Phase 4 so it does not have to re-derive what went wrong from scratch.
+        catalog_index = _build_catalog_index(catalog_info)
+        validation_feedback = ""
+        if catalog_index:
+            decision, removed = _validate_against_catalog(decision, catalog_index)
+            validation_feedback = _build_validation_feedback(removed, decision)
+            if removed:
+                _logger.info("Phase-3b stripped %d hallucinated names from fields: %s",
+                             sum(len(v) for v in removed.values()), list(removed.keys()))
+            else:
+                _logger.debug("Phase-3b catalog validation clean")
+
+        # ── Phases 3c + 4 — Full Reflexion cycle (production only) ──────────────────────────
+        # Reflexion pattern (Shinn et al., 2023):
+        #   Phase 3c — Self-Reflection LLM: reads evaluator feedback and produces a verbal
+        #              diagnosis of WHY the decision was wrong (not just WHAT is wrong).
+        #   Phase 4  — Correction LLM: uses both the evaluator feedback (3b) and the verbal
+        #              diagnosis (3c) to produce a corrected, structurally consistent JSON.
+        # Only fires for proceed/guide — clarify/error are already conservative.
+        # Single reflection+correction cycle per request (synchronous latency constraint).
+        # A second programmatic validation after correction closes the evaluation loop.
+        if _REFLECTION_ENABLED and decision.get("decision") in {"proceed", "guide"}:
+            try:
+                # Phase 3c — Self-Reflection: verbal diagnosis of the decision's flaws
+                _logger.info("Phase-3c self-reflection triggered for decision=%r", decision.get("decision"))
+                raw_reflection = self.self_reflect(
+                    prompt=source_text,
+                    coherence_note=coherence_note,
+                    original_decision_json=json.dumps(decision),
+                    validation_feedback=validation_feedback,
+                )
+                self_reflection_text: str = raw_reflection.self_reflection_text or ""
+                _logger.info("Phase-3c self-reflection: %s", self_reflection_text)
+
+                # Phase 4 — Correction: apply evaluator feedback + verbal diagnosis
+                raw_correction = self.correct_decision(
+                    prompt=source_text,
+                    catalog_info=catalog_info,
+                    coherence_note=coherence_note,
+                    original_decision_json=json.dumps(decision),
+                    validation_feedback=validation_feedback,
+                    self_reflection_text=self_reflection_text,
+                )
+                corrected: dict[str, Any] = json.loads(raw_correction.corrected_decision_json)
+                # Preserve pipeline-injected fields — the corrector must not override these
+                corrected["rewrittenPrompt"]     = decision.get("rewrittenPrompt", rewritten_prompt)
+                corrected["queryClassification"] = decision.get("queryClassification", query_classification)
+                corrected["coherenceNote"]       = coherence_note
+                # Second evaluation cycle: re-run programmatic validator on corrected output
+                if catalog_index:
+                    corrected, _ = _validate_against_catalog(corrected, catalog_index)
+                _logger.info("Phase-4 corrected decision=%r confidence=%.2f",
+                             corrected.get("decision"), float(corrected.get("confidence", 0.0)))
+                decision = corrected
+            except Exception as exc:
+                _logger.warning(
+                    "Reflexion cycle (3c+4) failed (non-fatal) — keeping Phase 3b decision. Error: %s",
+                    exc,
+                    exc_info=True,
+                )
+
         # ── Scope guardrail ──────────────────────────────────────────────────
         # If scope (groupe/filiale) is not established in the prompt or context,
         # inject the three scope questions at the top of the clarification list.
@@ -140,6 +305,8 @@ class ControllerDecision(dspy.Module):
             existing_questions: list[dict] = decision.get("questions", [])
             has_scope = any(q.get("id") == "scope_level" for q in existing_questions)
             if not has_scope:
+                _logger.info("Scope guardrail fired — overriding to 'clarify', injecting %d scope questions",
+                             len(_SCOPE_QUESTIONS))
                 decision["decision"] = "clarify"
                 decision["questions"] = _SCOPE_QUESTIONS + existing_questions
                 if not decision.get("message"):

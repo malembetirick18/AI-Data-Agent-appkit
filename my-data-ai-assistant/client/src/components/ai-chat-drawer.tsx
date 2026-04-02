@@ -22,6 +22,7 @@ import {
   Modal,
   Textarea,
   Select,
+  MultiSelect,
   NumberInput,
   Badge,
   Progress,
@@ -99,33 +100,12 @@ interface TableBlock {
   rows: string[][]
 }
 
-interface LineChartBlock {
-  type: 'lineChart'
-  title: string
-  data: Record<string, string | number>[]
-  xKey: string
-  series: { yKey: string; yName: string; stroke?: string }[]
-  yLabel?: string
-  source?: string
-}
-
-interface BarChartBlock {
-  type: 'barChart'
-  title: string
-  data: Record<string, string | number>[]
-  yKey: string
-  xKey: string
-  color: string
-}
-
 type ContentBlock =
   | TextBlock
   | BoldBlock
   | HeadingBlock
   | BulletBlock
   | TableBlock
-  | LineChartBlock
-  | BarChartBlock
 
 type GenericUiSpec = Spec
 
@@ -257,33 +237,13 @@ const CHART_TYPE_LABELS: Record<ChartVizType, string> = {
 const formatColumnLabel = (col: string) =>
   col.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
 
-interface ChartRecommendation {
-  chartType: 'line' | 'bar' | 'area' | 'pie' | 'donut' | 'radar' | 'bubble' | 'table'
-  xKey: string
-  yKey: string
-  labelKey: string
-  valueKey: string
-  description: string
-}
+// Categorical color palette — one color per X value for bar/bubble single-series charts
+const CHART_PALETTE = [
+  '#4C78A8', '#F28E2B', '#E15759', '#76B7B2', '#59A14F',
+  '#EDC948', '#B07AA1', '#FF9DA7', '#9C755F', '#BAB0AC',
+]
+const categoryColor = (index: number) => CHART_PALETTE[index % CHART_PALETTE.length]
 
-async function fetchChartRecommendation(
-  columns: Array<{ name: string; type_name: string }>,
-  sampleData: Array<Array<string | null>>,
-  prompt: string,
-  requiredColumns: string[],
-): Promise<ChartRecommendation | null> {
-  try {
-    const res = await fetch('/api/chart-recommend', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ columns, sampleData, queryPrompt: prompt, requiredColumns }),
-    })
-    if (!res.ok) return null
-    return await res.json() as ChartRecommendation
-  } catch {
-    return null
-  }
-}
 
 const numberLabelFormatter = ({ value }: { value: number }) => {
   const abs = Math.abs(value)
@@ -291,6 +251,25 @@ const numberLabelFormatter = ({ value }: { value: number }) => {
   if (abs >= 1e6) return (value / 1e6).toFixed(1).replace(/\.0$/, '') + 'M'
   if (abs >= 1e3) return (value / 1e3).toFixed(1).replace(/\.0$/, '') + 'K'
   return String(value)
+}
+
+const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}(T|$)/
+
+const isIsoDateColumn = (data: Record<string, unknown>[], key: string): boolean => {
+  const samples = data.slice(0, 5).map(r => r[key])
+  return samples.length > 0 && samples.every(v => typeof v === 'string' && ISO_DATE_RE.test(v as string))
+}
+
+const frDateFormatter = ({ value }: { value: string }) =>
+  new Date(value).toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric' })
+
+// MultiSelect filter: always keeps the full option list in `data` so every column is
+// searchable, but renders only the first 8 entries when the search field is empty.
+// Once the user types, all matching options across the full list are shown.
+const msFilter = ({ options, search }: { options: { label?: string; [k: string]: unknown }[]; search: string }) => {
+  const q = search.toLowerCase().trim()
+  if (!q) return options.slice(0, 8)
+  return options.filter(o => o.label?.toLowerCase().includes(q) ?? false)
 }
 
 function InteractiveChart({
@@ -338,11 +317,12 @@ function InteractiveChart({
     if (initialXKey && allColumns.includes(initialXKey)) return initialXKey
     return stringColumns[0] || allColumns[0] || ''
   })
-  const [yKey, setYKey] = useState<string>(() => {
+  const [yKeys, setYKeys] = useState<string[]>(() => {
     const defaultX = (initialXKey && allColumns.includes(initialXKey)) ? initialXKey : (stringColumns[0] || allColumns[0] || '')
-    const fromInitial = initialYKeys.filter(k => k !== defaultX && allColumns.includes(k))[0]
+    const fromInitial = initialYKeys.filter(k => k !== defaultX && allColumns.includes(k))
     const avail = numericColumns.filter(c => c !== defaultX)
-    return fromInitial ?? avail[0] ?? ''
+    // Cap at 2 pre-selected series — the user can add more via the multi-select
+    return fromInitial.length > 0 ? fromInitial.slice(0, 2) : (avail[0] ? [avail[0]] : [])
   })
   const [sizeKey, setSizeKey] = useState(initialSizeKey ?? '')
   // Radial axes (pie, donut, radar)
@@ -363,19 +343,19 @@ function InteractiveChart({
   // Ensure radial defaults are populated lazily from data
   const activeLabelKey = labelKey || stringColumns[0] || allColumns[0] || ''
   const activeValueKey = valueKey || numericColumns.find(c => c !== activeLabelKey) || numericColumns[0] || ''
-  const activeSizeKey = sizeKey || numericColumns.find(c => c !== xKey && c !== yKey) || numericColumns[0] || ''
+  const activeSizeKey = sizeKey || numericColumns.find(c => c !== xKey && !yKeys.includes(c)) || numericColumns[0] || ''
 
   // Column option lists
   const allColOptions = allColumns.map(col => ({ value: col, label: formatColumnLabel(col) }))
   const numColOptions = numericColumns.map(col => ({ value: col, label: formatColumnLabel(col) }))
   const yOptions = numericColumns.filter(col => col !== xKey).map(col => ({ value: col, label: formatColumnLabel(col) }))
-  const sizeOptions = numericColumns.filter(col => col !== xKey && col !== yKey).map(col => ({ value: col, label: formatColumnLabel(col) }))
-  const activeYKeys = yKey ? [yKey] : (yOptions[0] ? [yOptions[0].value] : []) // eslint-disable-line react-hooks/exhaustive-deps
+  const sizeOptions = numericColumns.filter(col => col !== xKey && !yKeys.includes(col)).map(col => ({ value: col, label: formatColumnLabel(col) }))
+  const activeYKeys = yKeys.length > 0 ? yKeys : (yOptions[0] ? [yOptions[0].value] : []) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Auto-generated one-line description that reflects the current axis state
   const chartDescription = useMemo(() => {
     const f = formatColumnLabel
-    const yk = activeYKeys[0] ? f(activeYKeys[0]) : '–'
+    const yk = activeYKeys.length > 0 ? activeYKeys.map(f).join(', ') : '–'
     const n = data.length
     switch (chartType) {
       case 'line': return `Évolution de ${yk} selon ${f(xKey)} — ${n} enregistrements`
@@ -383,7 +363,7 @@ function InteractiveChart({
       case 'bar':  return `Comparaison de ${yk} par ${f(xKey)}`
       case 'pie':  return `Répartition de ${f(activeValueKey)} par ${f(activeLabelKey)}`
       case 'donut':return `Distribution de ${f(activeValueKey)} par ${f(activeLabelKey)}`
-      case 'radar':return `Vue radar de ${f(activeValueKey)} par ${f(activeLabelKey)}`
+      case 'radar':return `Vue radar de ${yk} par ${f(activeLabelKey)}`
       case 'bubble':return `Corrélation ${f(xKey)} / ${yk} — taille : ${f(activeSizeKey)}`
       default: return ''
     }
@@ -396,7 +376,7 @@ function InteractiveChart({
       if (!valueKey) setValueKey(numericColumns[0] || '')
     }
     if (type === 'bubble' && !sizeKey) {
-      setSizeKey(numericColumns.find(c => c !== xKey && c !== yKey) || numericColumns[0] || '')
+      setSizeKey(numericColumns.find(c => c !== xKey && !yKeys.includes(c)) || numericColumns[0] || '')
     }
   }
 
@@ -422,6 +402,10 @@ function InteractiveChart({
 
   const chartTitle = title ? { text: title, fontSize: 12, fontWeight: 'bold' as const } : undefined
 
+  // Per-datum numeric index map — itemStyler in AG Charts v12 provides itemId as string|undefined,
+  // not a numeric index, so we resolve colors via datum object reference instead.
+  const datumColorIndex = new Map(sortedData.map((d, i) => [d, i]))
+
   // Build AG Charts options per type
   let options: object
   if (chartType === 'pie') {
@@ -441,55 +425,144 @@ function InteractiveChart({
       legend: { position: 'right' as const },
     }
   } else if (chartType === 'radar') {
+    const radarKeys = activeYKeys.length > 0 ? activeYKeys : [activeValueKey]
     options = {
-      data: sortedData,
+      data: sortedData.slice(0, 10),
       title: chartTitle,
-      series: [{ type: 'radar-line' as const, angleKey: activeLabelKey, radiusKey: activeValueKey }],
+      series: radarKeys.map((rk, i) => {
+        const colorIdx = numericColumns.indexOf(rk) >= 0 ? numericColumns.indexOf(rk) : i
+        return {
+          type: 'radar-area' as const,
+          angleKey: activeLabelKey,
+          radiusKey: rk,
+          radiusName: formatColumnLabel(rk),
+          stroke: categoryColor(colorIdx),
+          fill: categoryColor(colorIdx),
+          fillOpacity: 0.3,
+          marker: { enabled: false },
+        }
+      }),
       axes: [
-        { type: 'angle-category' as const },
+        {
+          type: 'angle-category' as const,
+          label: {
+            formatter: ({ value }: { value: string }) => {
+              const s = String(value)
+              return s.length > 8 ? s.substring(0, 8) + '\u2026' : s
+            },
+          },
+        },
         { type: 'radius-number' as const, label: { formatter: numberLabelFormatter } },
       ],
       autoSize: true,
+      legend: { enabled: true, position: 'bottom' as const },
     }
   } else if (chartType === 'bubble') {
+    const isSingleBubbleSeries = activeYKeys.length === 1
+    // When xKey is categorical (string), map each row to a numeric index so the number
+    // axis can render it. The axis label formatter then shows the original category name.
+    const bubbleXIsNumeric = numericColumns.includes(xKey)
+    const effectiveBubbleXKey = bubbleXIsNumeric ? xKey : '_xIdx'
+    const bubbleData = bubbleXIsNumeric
+      ? sortedData
+      : sortedData.map((d, i) => ({ ...d, _xIdx: i }))
+    const bubbleDatumColorIndex = new Map(bubbleData.map((d, i) => [d, i]))
     options = {
-      data: sortedData,
+      data: bubbleData,
       title: chartTitle,
       series: activeYKeys.map(yKey => ({
         type: 'bubble' as const,
-        xKey,
+        xKey: effectiveBubbleXKey,
         yKey,
         sizeKey: activeSizeKey,
         yName: formatColumnLabel(yKey),
+        ...(isSingleBubbleSeries ? {
+          itemStyler: (params: any) => {
+            const idx = bubbleDatumColorIndex.get(params.datum) ?? 0
+            return { fill: categoryColor(idx), stroke: categoryColor(idx) }
+          },
+        } : {}),
       })),
       axes: [
-        { type: 'number' as const, position: 'bottom' as const, label: { formatter: numberLabelFormatter } },
+        {
+          type: 'number' as const,
+          position: 'bottom' as const,
+          label: {
+            formatter: bubbleXIsNumeric
+              ? numberLabelFormatter
+              : ({ value }: { value: number }) => {
+                  const label = String(sortedData[Math.round(value)]?.[xKey] ?? '')
+                  return label.length > 8 ? label.substring(0, 8) + '\u2026' : label
+                },
+          },
+        },
         { type: 'number' as const, position: 'left' as const, title: yLabel ? { text: yLabel } : undefined, label: { formatter: numberLabelFormatter } },
       ],
       autoSize: true,
-      legend: { position: 'bottom' as const },
+      legend: { enabled: !isSingleBubbleSeries, position: 'bottom' as const },
       zoom: { enabled: true },
     }
   } else {
     // line | bar | area
+    const isSingleBarSeries = chartType === 'bar' && activeYKeys.length === 1
+    const xIsDate = (chartType === 'line' || chartType === 'area') && isIsoDateColumn(sortedData, xKey)
     options = {
       data: sortedData,
       title: chartTitle,
-      series: activeYKeys.map(yKey => ({
+      series: activeYKeys.map((yKey, i) => ({
         type: chartType,
         xKey,
         yKey,
         yName: formatColumnLabel(yKey),
-        ...(chartType !== 'bar' ? { marker: { enabled: false } } : {}),
+        // bar: color each item (category) individually when single series
+        ...(isSingleBarSeries ? {
+          itemStyler: (params: any) => {
+            const idx = datumColorIndex.get(params.datum) ?? 0
+            return { fill: categoryColor(idx), stroke: categoryColor(idx) }
+          },
+        } : {}),
+        // line/area: color by column position in numericColumns so each series has a distinct color
+        ...(chartType !== 'bar' ? {
+          stroke: categoryColor(numericColumns.indexOf(yKey) >= 0 ? numericColumns.indexOf(yKey) : i),
+          fill:   categoryColor(numericColumns.indexOf(yKey) >= 0 ? numericColumns.indexOf(yKey) : i),
+          marker: { enabled: false },
+          ...(chartType === 'area' ? { fillOpacity: 0.3 } : {}),
+        } : {}),
       })),
       axes: [
-        { type: 'category' as const, position: 'bottom' as const },
+        {
+          type: 'category' as const,
+          position: 'bottom' as const,
+          label: {
+            rotation: -45,
+            formatter: xIsDate
+              ? frDateFormatter
+              : ({ value }: { value: string }) => {
+                  const s = String(value)
+                  return s.length > 12 ? s.substring(0, 12) + '\u2026' : s
+                },
+          },
+        },
         { type: 'number' as const, position: 'left' as const, title: yLabel ? { text: yLabel } : undefined, label: { formatter: numberLabelFormatter } },
       ],
       autoSize: true,
-      legend: { position: 'bottom' as const },
+      legend: { enabled: chartType !== 'bar' ? true : !isSingleBarSeries, position: 'bottom' as const },
       zoom: { enabled: true },
     }
+  }
+
+  // Guard: no data or missing required keys — skip AG Charts entirely
+  const isReadyToRender = data.length > 0 && (
+    isRadial ? Boolean(activeValueKey) : activeYKeys.length > 0 && Boolean(xKey)
+  )
+  if (!isReadyToRender) {
+    return (
+      <Box mt="md" mb="sm" style={{ width: '100%' }}>
+        <Paper p="xs" withBorder radius="sm" style={{ backgroundColor: '#fff' }}>
+          <Text size="sm" c="dimmed" ta="center" py="md">Aucune donnée à afficher</Text>
+        </Paper>
+      </Box>
+    )
   }
 
   return (
@@ -508,25 +581,37 @@ function InteractiveChart({
           {isRadial ? (
             <>
               <Select size="xs" placeholder="Label" data={allColOptions} value={activeLabelKey} onChange={v => v && setLabelKey(v)} style={{ width: 130 }} maxDropdownHeight={200} comboboxProps={{ withinPortal: false }} searchable />
-              <Select size="xs" placeholder="Valeur" data={numColOptions} value={activeValueKey} onChange={v => v && setValueKey(v)} style={{ width: 130 }} maxDropdownHeight={200} comboboxProps={{ withinPortal: false }} searchable />
+              {chartType === 'radar' ? (
+                <MultiSelect size="xs" placeholder="Valeurs (rechercher…)" data={numColOptions} filter={msFilter as any} value={activeYKeys.length > 0 ? activeYKeys : [activeValueKey]} onChange={vals => setYKeys(vals.length > 0 ? vals : activeYKeys)} style={{ minWidth: 130, maxWidth: 220 }} maxDropdownHeight={200} comboboxProps={{ withinPortal: false }} searchable maxValues={5} hidePickedOptions />
+              ) : (
+                <Select size="xs" placeholder="Valeur" data={numColOptions} value={activeValueKey} onChange={v => v && setValueKey(v)} style={{ width: 130 }} maxDropdownHeight={200} comboboxProps={{ withinPortal: false }} searchable />
+              )}
             </>
           ) : (
             <>
-              <Select size="xs" placeholder="Axe X" data={allColOptions} value={xKey} onChange={v => { if (!v) return; setXKey(v); setYKey(prev => prev === v ? '' : prev) }} style={{ width: 130 }} maxDropdownHeight={200} comboboxProps={{ withinPortal: false }} searchable />
-              <Select size="xs" placeholder="Axe Y" data={yOptions} value={yKey || activeYKeys[0] || null} onChange={v => v && setYKey(v)} style={{ width: 130 }} maxDropdownHeight={200} comboboxProps={{ withinPortal: false }} searchable />
+              <Select size="xs" placeholder="Axe X" data={allColOptions} value={xKey} onChange={v => { if (!v) return; setXKey(v); setYKeys(prev => prev.filter(k => k !== v)) }} style={{ width: 130 }} maxDropdownHeight={200} comboboxProps={{ withinPortal: false }} searchable />
+              {(chartType === 'line' || chartType === 'area') ? (
+                <MultiSelect size="xs" placeholder="Axes Y (rechercher…)" data={yOptions} filter={msFilter as any} value={activeYKeys} onChange={vals => setYKeys(vals.length > 0 ? vals : activeYKeys)} style={{ minWidth: 130, maxWidth: 220 }} maxDropdownHeight={200} comboboxProps={{ withinPortal: false }} searchable maxValues={5} hidePickedOptions />
+              ) : (
+                <Select size="xs" placeholder="Axe Y" data={yOptions} value={activeYKeys[0] || null} onChange={v => v && setYKeys([v])} style={{ width: 130 }} maxDropdownHeight={200} comboboxProps={{ withinPortal: false }} searchable />
+              )}
               {isBubble && (
                 <Select size="xs" placeholder="Taille" data={sizeOptions} value={activeSizeKey} onChange={v => v && setSizeKey(v)} style={{ width: 120 }} maxDropdownHeight={200} comboboxProps={{ withinPortal: false }} searchable />
               )}
             </>
           )}
         </Group>
-        {chartDescription && (
-          <Text size="xs" c="dimmed" mb={6} fs="italic" style={{ lineHeight: 1.4 }}>
-            {chartDescription}
-          </Text>
-        )}
-        <div style={{ height: 'clamp(280px, 40vh, 420px)', width: '100%' }}>
-          <AgCharts options={options} />
+        <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start' }}>
+          <div style={{ flex: 1, minWidth: 0, height: 'clamp(280px, 40vh, 420px)' }}>
+            <AgCharts options={options} />
+          </div>
+          {chartDescription && (
+            <Box style={{ width: 160, flexShrink: 0, paddingLeft: 6, paddingTop: 4, borderLeft: '1px solid #e9ecef' }}>
+              <Text size="xs" c="dimmed" fs="italic" style={{ lineHeight: 1.5 }}>
+                {chartDescription}
+              </Text>
+            </Box>
+          )}
         </div>
         {source && <Text size="xs" c="dimmed" ta="right" mt={4} fs="italic">{'Source : ' + source}</Text>}
       </Paper>
@@ -610,9 +695,9 @@ const { registry: chatUiRegistry } = defineRegistry(chatUiCatalog, {
     },
     LineChartViz: ({ props }) => (
       <InteractiveChart
-        data={props.data as Record<string, unknown>[]}
-        initialXKey={props.xKey}
-        initialYKeys={(props.series as Array<{ yKey: string }>).map(s => s.yKey)}
+        data={Array.isArray(props.data) ? props.data as Record<string, unknown>[] : []}
+        initialXKey={props.xKey ?? ''}
+        initialYKeys={Array.isArray(props.series) ? (props.series as Array<{ yKey: string }>).map(s => s.yKey) : []}
         initialType="line"
         title={props.title && props.title !== 'Title' ? props.title : undefined}
         yLabel={props.yLabel}
@@ -621,18 +706,18 @@ const { registry: chatUiRegistry } = defineRegistry(chatUiCatalog, {
     ),
     BarChartViz: ({ props }) => (
       <InteractiveChart
-        data={props.data as Record<string, unknown>[]}
-        initialXKey={props.xKey}
-        initialYKeys={[props.yKey]}
+        data={Array.isArray(props.data) ? props.data as Record<string, unknown>[] : []}
+        initialXKey={props.xKey ?? ''}
+        initialYKeys={props.yKey ? [props.yKey] : []}
         initialType="bar"
         title={props.title && props.title !== 'Title' ? props.title : undefined}
       />
     ),
     AreaChartViz: ({ props }) => (
       <InteractiveChart
-        data={props.data as Record<string, unknown>[]}
-        initialXKey={props.xKey}
-        initialYKeys={(props.series as Array<{ yKey: string }>).map(s => s.yKey)}
+        data={Array.isArray(props.data) ? props.data as Record<string, unknown>[] : []}
+        initialXKey={props.xKey ?? ''}
+        initialYKeys={Array.isArray(props.series) ? (props.series as Array<{ yKey: string }>).map(s => s.yKey) : []}
         initialType="area"
         title={props.title && props.title !== 'Title' ? props.title : undefined}
         yLabel={props.yLabel}
@@ -641,44 +726,44 @@ const { registry: chatUiRegistry } = defineRegistry(chatUiCatalog, {
     ),
     PieChartViz: ({ props }) => (
       <InteractiveChart
-        data={props.data as Record<string, unknown>[]}
+        data={Array.isArray(props.data) ? props.data as Record<string, unknown>[] : []}
         initialXKey=""
         initialYKeys={[]}
         initialType="pie"
-        initialLabelKey={props.labelKey}
-        initialValueKey={props.angleKey}
+        initialLabelKey={props.labelKey ?? ''}
+        initialValueKey={props.angleKey ?? ''}
         title={props.title && props.title !== 'Title' ? props.title : undefined}
       />
     ),
     DonutChartViz: ({ props }) => (
       <InteractiveChart
-        data={props.data as Record<string, unknown>[]}
+        data={Array.isArray(props.data) ? props.data as Record<string, unknown>[] : []}
         initialXKey=""
         initialYKeys={[]}
         initialType="donut"
-        initialLabelKey={props.labelKey}
-        initialValueKey={props.angleKey}
+        initialLabelKey={props.labelKey ?? ''}
+        initialValueKey={props.angleKey ?? ''}
         title={props.title && props.title !== 'Title' ? props.title : undefined}
       />
     ),
     RadarChartViz: ({ props }) => (
       <InteractiveChart
-        data={props.data as Record<string, unknown>[]}
+        data={Array.isArray(props.data) ? props.data as Record<string, unknown>[] : []}
         initialXKey=""
         initialYKeys={[]}
         initialType="radar"
-        initialLabelKey={props.angleKey}
-        initialValueKey={props.radiusKey}
+        initialLabelKey={props.angleKey ?? ''}
+        initialValueKey={props.radiusKey ?? ''}
         title={props.title && props.title !== 'Title' ? props.title : undefined}
       />
     ),
     BubbleChartViz: ({ props }) => (
       <InteractiveChart
-        data={props.data as Record<string, unknown>[]}
-        initialXKey={props.xKey}
-        initialYKeys={[props.yKey]}
+        data={Array.isArray(props.data) ? props.data as Record<string, unknown>[] : []}
+        initialXKey={props.xKey ?? ''}
+        initialYKeys={props.yKey ? [props.yKey] : []}
         initialType="bubble"
-        initialSizeKey={props.sizeKey}
+        initialSizeKey={props.sizeKey ?? ''}
         title={props.title && props.title !== 'Title' ? props.title : undefined}
       />
     ),
@@ -945,7 +1030,6 @@ function transformStatementToChartData(statement: GenieStatementResponse): {
 function buildSpecFromGenieStatement(
   statement: GenieStatementResponse,
   title?: string,
-  recommendation?: ChartRecommendation | null,
 ): GenericUiSpec {
   const { columns, categoryColumn, numericColumns, data } = transformStatementToChartData(statement)
   const headers = columns.map((c) => c.name)
@@ -963,94 +1047,38 @@ function buildSpecFromGenieStatement(
     elements[rootId].children.push('title')
   }
 
-  const allColNames = columns.map((c) => c.name)
-  const recType = recommendation?.chartType
-  const recXKey = recommendation?.xKey && allColNames.includes(recommendation.xKey) ? recommendation.xKey : null
-  const recYKey = recommendation?.yKey && allColNames.includes(recommendation.yKey) ? recommendation.yKey : null
-  const recLabelKey = recommendation?.labelKey && allColNames.includes(recommendation.labelKey) ? recommendation.labelKey : null
-  const recValueKey = recommendation?.valueKey && allColNames.includes(recommendation.valueKey) ? recommendation.valueKey : null
-
-  if (recommendation?.description) {
-    elements['desc'] = { type: 'TextContent', props: { content: recommendation.description, size: 'xs', c: 'dimmed' }, children: [] }
-    elements[rootId].children.push('desc')
-  }
-
-  const xKey = recXKey ?? categoryColumn
-  const yKey = recYKey ?? (numericColumns[0] ?? '')
-
-  if (xKey && numericColumns.length > 0) {
-    const chartTypeMap: Record<string, string> = {
-      line: 'LineChartViz',
-      bar: 'BarChartViz',
-      area: 'AreaChartViz',
-      pie: 'PieChartViz',
-      donut: 'DonutChartViz',
-      radar: 'RadarChartViz',
-      bubble: 'BubbleChartViz',
-    }
-    const resolvedType = recType && recType !== 'table' ? chartTypeMap[recType] : undefined
-
-    if (resolvedType === 'PieChartViz' || resolvedType === 'DonutChartViz') {
+  if (categoryColumn && numericColumns.length > 0) {
+    if (numericColumns.length === 1) {
       elements['chart'] = {
-        type: resolvedType,
-        props: {
-          data,
-          labelKey: recLabelKey ?? xKey,
-          angleKey: recValueKey ?? yKey,
-        },
-        children: [],
-      }
-    } else if (resolvedType === 'RadarChartViz') {
-      elements['chart'] = {
-        type: 'RadarChartViz',
-        props: {
-          data,
-          angleKey: recLabelKey ?? xKey,
-          radiusKey: recValueKey ?? yKey,
-        },
-        children: [],
-      }
-    } else if (resolvedType === 'AreaChartViz' || resolvedType === 'LineChartViz') {
-      elements['chart'] = {
-        type: resolvedType,
-        props: {
-          data,
-          xKey,
-          series: [{ yKey, yName: yKey.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()) }],
-        },
-        children: [],
-      }
-    } else if (resolvedType === 'BubbleChartViz') {
-      const sizeKey = numericColumns.find(c => c !== xKey && c !== yKey) ?? yKey
-      elements['chart'] = {
-        type: 'BubbleChartViz',
-        props: { data, xKey, yKey, sizeKey },
+        type: 'BarChartViz',
+        props: { data, xKey: categoryColumn, yKey: numericColumns[0] },
         children: [],
       }
     } else {
-      // Default TYPE-based logic (bar for 1 numeric, line for 2+)
-      if (numericColumns.length === 1) {
-        elements['chart'] = {
-          type: 'BarChartViz',
-          props: { data, xKey, yKey },
-          children: [],
-        }
-      } else {
-        elements['chart'] = {
-          type: 'LineChartViz',
-          props: {
-            data,
-            xKey,
-            series: numericColumns.map((col) => ({
-              yKey: col,
-              yName: col.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()),
-            })),
-          },
-          children: [],
-        }
+      elements['chart'] = {
+        type: 'LineChartViz',
+        props: {
+          data,
+          xKey: categoryColumn,
+          series: numericColumns.map((col) => ({
+            yKey: col,
+            yName: col.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()),
+          })),
+        },
+        children: [],
       }
     }
     elements[rootId].children.push('chart')
+  } else {
+    const reason = numericColumns.length === 0
+      ? 'Aucune colonne numérique détectée — visualisation graphique non disponible.'
+      : 'Aucune colonne catégorielle détectée — visualisation graphique non disponible.'
+    elements['no-chart-note'] = {
+      type: 'TextContent',
+      props: { content: reason, size: 'xs', c: 'dimmed' },
+      children: [],
+    }
+    elements[rootId].children.push('no-chart-note')
   }
 
   elements['table'] = {
@@ -1069,82 +1097,21 @@ function buildSpecFromGenieStatement(
   return { root: rootId, elements } as GenericUiSpec
 }
 
-function buildGenerativeUiSpec(blocks: ContentBlock[]): GenericUiSpec | null {
-  if (blocks.length === 0) return null
-
-  const elements: Record<string, { type: string; props: Record<string, unknown>; children: string[] }> = {}
-  const rootId = 'root'
-
-  elements[rootId] = {
-    type: 'Stack',
-    props: { gap: 6 },
-    children: [],
-  }
-
-  blocks.forEach((block, index) => {
-    const id = `block-${index}`
-    let element: { type: string; props: Record<string, unknown>; children: string[] } | null = null
-
-    if (block.type === 'text') {
-      if (!block.content?.trim()) return
-      element = { type: 'TextContent', props: { content: block.content, size: 'sm' }, children: [] }
-    } else if (block.type === 'bold') {
-      if (!block.content?.trim()) return
-      element = { type: 'TextContent', props: { content: block.content, size: 'sm', weight: 700 }, children: [] }
-    } else if (block.type === 'heading') {
-      if (!block.content?.trim()) return
-      element = { type: 'TextContent', props: { content: block.content, size: 'sm', weight: 700 }, children: [] }
-    } else if (block.type === 'bullets') {
-      element = { type: 'BulletList', props: { items: block.items }, children: [] }
-    } else if (block.type === 'table') {
-      element = {
-        type: 'DataTable',
-        props: { caption: block.caption, headers: block.headers, rows: block.rows },
-        children: [],
-      }
-    } else if (block.type === 'lineChart') {
-      element = {
-        type: 'LineChartViz',
-        props: {
-          title: block.title,
-          data: block.data,
-          series: block.series,
-          xKey: block.xKey,
-          yLabel: block.yLabel,
-          source: block.source,
-        },
-        children: [],
-      }
-    } else if (block.type === 'barChart') {
-      element = {
-        type: 'BarChartViz',
-        props: {
-          title: block.title,
-          data: block.data,
-          yKey: block.yKey,
-          xKey: block.xKey,
-          color: block.color,
-        },
-        children: [],
-      }
-    }
-
-    if (element) {
-      elements[id] = element
-      elements[rootId].children.push(id)
-    }
-  })
-
-  return {
-    root: rootId,
-    elements,
-  } as GenericUiSpec
-}
 
 function isGenericUiSpec(value: unknown): value is GenericUiSpec {
   if (!value || typeof value !== 'object') return false
   const spec = value as { root?: unknown; elements?: unknown }
   return typeof spec.root === 'string' && Boolean(spec.elements && typeof spec.elements === 'object')
+}
+
+const CHART_VIZ_TYPES = new Set([
+  'LineChartViz', 'BarChartViz', 'AreaChartViz',
+  'PieChartViz', 'DonutChartViz', 'RadarChartViz', 'BubbleChartViz',
+])
+
+function specHasChartElement(spec: GenericUiSpec): boolean {
+  const elements = (spec as unknown as { elements: Record<string, { type: string }> }).elements ?? {}
+  return Object.values(elements).some((el) => CHART_VIZ_TYPES.has(el?.type))
 }
 
 const GENUI_MAX_ROWS = 100
@@ -1256,9 +1223,6 @@ function blocksToPlainText(blocks: ContentBlock[]): string {
           const rows = b.rows.map((r) => r.join(' | ')).join('\n')
           return [b.caption, header, sep, rows].filter(Boolean).join('\n')
         }
-        case 'lineChart':
-        case 'barChart':
-          return `[Graphique : ${b.title}]`
         default:
           return ''
       }
@@ -1313,22 +1277,17 @@ const MessageContent = memo(function MessageContent({
   generatedSpec,
   registry,
   hideText,
-  chartRecommendations,
 }: {
   msg: Message
   messageId: string
   generatedSpec: GenericUiSpec | undefined
   registry: typeof chatUiRegistry
   hideText?: boolean
-  chartRecommendations?: Map<string, ChartRecommendation>
 }) {
-  const fallbackSpec = useMemo(
-    () => (msg.blocks && msg.blocks.length > 0 ? buildGenerativeUiSpec(msg.blocks) : null),
-    [msg.blocks]
-  )
-
-  /* Plugin-generated spec available → render via json-render */
-  if (generatedSpec) {
+  /* Plugin-generated spec available and contains at least one chart → render via json-render.
+     If the LLM returned a spec with only text elements (no chart), fall through to the
+     attachment fallback so the user still sees their Genie query data. */
+  if (generatedSpec && specHasChartElement(generatedSpec)) {
     return (
       <>
         <JSONUIProvider key={messageId} registry={registry}>
@@ -1338,7 +1297,7 @@ const MessageContent = memo(function MessageContent({
     )
   }
 
-  /* Fallback: legacy block-based + Genie query table rendering */
+  /* Fallback: blocks rendered directly + Genie attachment rendering */
   return (
     <>
       {!hideText && msg.content && (
@@ -1348,15 +1307,9 @@ const MessageContent = memo(function MessageContent({
       )}
       {msg.blocks && msg.blocks.length > 0 && (
         <Box>
-          {fallbackSpec ? (
-            <JSONUIProvider key={`fallback-${messageId}`} registry={registry}>
-              <Renderer spec={fallbackSpec} registry={registry} />
-            </JSONUIProvider>
-          ) : (
-            msg.blocks.map((block) => (
-              <RenderBlock key={JSON.stringify(block)} block={block} />
-            ))
-          )}
+          {msg.blocks.map((block) => (
+            <RenderBlock key={JSON.stringify(block)} block={block} />
+          ))}
         </Box>
       )}
       {!msg.blocks?.some((b) => b.type === 'table') && msg.attachments
@@ -1369,11 +1322,7 @@ const MessageContent = memo(function MessageContent({
           const statement = toGenieStatementResponse(queryData)
           if (!statement) return null
 
-          const attachmentSpec = buildSpecFromGenieStatement(
-            statement,
-            attachment.query?.title,
-            chartRecommendations?.get(attachmentId),
-          )
+          const attachmentSpec = buildSpecFromGenieStatement(statement, attachment.query?.title)
           return (
             <Box key={attachmentId} mt="sm">
               <JSONUIProvider key={`genie-${attachmentId}`} registry={registry}>
@@ -1488,68 +1437,6 @@ function RenderBlock({ block }: { block: ContentBlock }) {
               />
             </div>
           )}
-        </Box>
-      )
-    }
-    case 'lineChart': {
-      const lineOptions = {
-        data: block.data,
-        title: { text: block.title, fontSize: 12, fontWeight: 'bold' as const },
-        series: block.series.map((s) => ({
-          type: 'line' as const,
-          xKey: block.xKey,
-          yKey: s.yKey,
-          yName: s.yName,
-          stroke: s.stroke,
-          marker: { enabled: false },
-        })),
-        axes: [
-          { type: 'category' as const, position: 'bottom' as const },
-          {
-            type: 'number' as const,
-            position: 'left' as const,
-            title: block.yLabel ? { text: block.yLabel } : undefined,
-          },
-        ],
-        autoSize: true,
-        legend: { position: 'bottom' as const },
-        zoom: { enabled: true },
-      }
-      return (
-        <Box mt="md" mb="sm" style={{ width: '100%' }}>
-          <Paper p="xs" withBorder radius="sm" style={{ backgroundColor: '#fff' }}>
-            <div style={{ height: 'clamp(260px, 35vh, 380px)', width: '100%' }}>
-              <AgCharts options={lineOptions} />
-            </div>
-            {block.source && (
-              <Text size="xs" c="dimmed" ta="right" mt={4} fs="italic">
-                {'Source : ' + block.source}
-              </Text>
-            )}
-          </Paper>
-        </Box>
-      )
-    }
-    case 'barChart': {
-      const barOptions = {
-        data: block.data,
-        title: { text: block.title, fontSize: 12, fontWeight: 'bold' as const },
-        series: [{ type: 'bar' as const, xKey: block.xKey, yKey: block.yKey, fill: block.color }],
-        axes: [
-          { type: 'category' as const, position: 'bottom' as const },
-          { type: 'number' as const, position: 'left' as const },
-        ],
-        autoSize: true,
-        legend: { enabled: false },
-        zoom: { enabled: true },
-      }
-      return (
-        <Box mt="md" mb="sm" style={{ width: '100%' }}>
-          <Paper p="xs" withBorder radius="sm" style={{ backgroundColor: '#fff' }}>
-            <div style={{ height: 'clamp(240px, 30vh, 340px)', width: '100%' }}>
-              <AgCharts options={barOptions} />
-            </div>
-          </Paper>
         </Box>
       )
     }
@@ -2056,10 +1943,6 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
 
   const inFlightSpecIdsRef = useRef<Set<string>>(new Set())
   const attemptedSpecIdsRef = useRef<Set<string>>(new Set())
-  const lastRequiredColumnsRef = useRef<string[]>([])
-  const lastPromptRef = useRef<string>('')
-  const [chartRecommendations, setChartRecommendations] = useState<Map<string, ChartRecommendation>>(new Map())
-  const attemptedRecommendIdsRef = useRef<Set<string>>(new Set())
   /** True when Genie's last response was a text-only follow-up question (no data) */
   const genieFollowUpRef = useRef(false)
   const sessionIdRef = useRef(typeof crypto !== 'undefined' ? crypto.randomUUID() : `session-${Date.now()}`)
@@ -2143,7 +2026,6 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
   const submitPromptThroughController = useCallback(async (rawPrompt: string, options?: { suppressControllerBubble?: boolean }) => {
     const trimmedPrompt = rawPrompt.trim()
     if (!trimmedPrompt) return
-    lastPromptRef.current = trimmedPrompt
 
     setShowSuggestions(false)
     setControllerLoading(true)
@@ -2182,7 +2064,6 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
       }
 
       setControllerHint(ControllerResponse)
-      lastRequiredColumnsRef.current = ControllerResponse.requiredColumns ?? []
 
       if (ControllerResponse.decision === 'error') {
         setPendingClarification(null)
@@ -2310,58 +2191,34 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
     if (inFlightSpecIdsRef.current.has(messageId)) return
     if (lastSpecCandidateIdRef.current === messageId) return
 
-    const fallbackSpec = latestAssistantMessage.blocks ? buildGenerativeUiSpec(latestAssistantMessage.blocks) : null
-
     lastSpecCandidateIdRef.current = messageId
     attemptedSpecIdsRef.current.add(messageId)
-    inFlightSpecIdsRef.current.add(messageId)
 
-    void generateUiSpecForMessage({
-      prompt: latestAssistantMessage.content || blocksToPlainText(latestAssistantMessage.blocks || []),
-      genieResult: buildGenieResultPayload(latestAssistantMessage),
-    })
-      .then((spec) => {
-        setGeneratedSpecs((previous) => {
-          if (previous[messageId]) return previous
-          if (!spec && !fallbackSpec) return previous
-          return { ...previous, [messageId]: (spec || fallbackSpec)! }
-        })
+    const hasAttachments = Boolean(latestAssistantMessage.attachments?.length)
+
+    if (hasAttachments) {
+      // Genie returned query data — call /api/spec for rich LLM-driven chart selection.
+      // If the LLM call fails or returns nothing, the render function falls back to
+      // buildSpecFromGenieStatement (rule-based bar/line detection).
+      inFlightSpecIdsRef.current.add(messageId)
+      void generateUiSpecForMessage({
+        prompt: latestAssistantMessage.content || blocksToPlainText(latestAssistantMessage.blocks || []),
+        genieResult: buildGenieResultPayload(latestAssistantMessage),
       })
-      .finally(() => {
-        inFlightSpecIdsRef.current.delete(messageId)
-      })
-
-    // Fetch AI chart recommendations for Genie attachments (non-blocking)
-    const attachments = latestAssistantMessage.attachments
-    const queryResults = latestAssistantMessage.queryResults
-    if (attachments && queryResults) {
-      const prompt = lastPromptRef.current
-      const requiredColumns = lastRequiredColumnsRef.current
-      for (const attachment of attachments) {
-        const attachmentId = attachment.attachmentId
-        if (!attachmentId) continue
-        if (attemptedRecommendIdsRef.current.has(attachmentId)) continue
-
-        const queryData = queryResults.get(attachmentId)
-        const statement = toGenieStatementResponse(queryData)
-        if (!statement) continue
-
-        const columns = statement.manifest?.schema?.columns ?? []
-        if (columns.length === 0) continue
-        const sampleData = ((statement.result?.data_array ?? []).slice(0, 10)) as Array<Array<string | null>>
-
-        attemptedRecommendIdsRef.current.add(attachmentId)
-        void fetchChartRecommendation(columns, sampleData, prompt, requiredColumns)
-          .then((rec) => {
-            if (!rec) return
-            setChartRecommendations((prev) => {
-              const next = new Map(prev)
-              next.set(attachmentId, rec)
-              return next
-            })
+        .then((spec) => {
+          setGeneratedSpecs((previous) => {
+            if (previous[messageId]) return previous
+            if (!spec) return previous
+            return { ...previous, [messageId]: spec }
           })
-      }
+        })
+        .finally(() => {
+          inFlightSpecIdsRef.current.delete(messageId)
+        })
+    } else {
+      // Text/blocks only — no LLM call. RenderBlock handles each block directly in MessageContent.
     }
+
   }, [chatStatus, messages])
 
   /* -------- Period confirmation handler (for "fournisseurs inactifs" workflow) -------- */
@@ -2754,27 +2611,10 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
                     <Box style={{ flex: 1, minWidth: 0 }}>
                       {/* Loading state */}
                       {msg.loading && (
-                        <Paper
-                          p="sm"
-                          radius="md"
-                          style={{ backgroundColor: '#f8f9fa', border: '1px solid #e9ecef', borderLeft: '3px solid #0c8599' }}
-                        >
-                          <Group gap="xs">
-                            <Loader size="xs" color="teal" type="dots" />
-                            <Text size="sm" c="dimmed">Analyse en cours...</Text>
-                          </Group>
-                          <Progress
-                            value={65}
-                            color="teal"
-                            size="xs"
-                            mt="xs"
-                            radius="xl"
-                            animated
-                          />
-                          <Text size="xs" c="dimmed" mt={4}>
-                            Parcours des écritures et identification des fournisseurs inactifs...
-                          </Text>
-                        </Paper>
+                        <Group gap="xs">
+                          <Loader size="xs" color="teal" type="dots" />
+                          <Text size="sm" c="dimmed">Analyse en cours...</Text>
+                        </Group>
                       )}
 
                       {/* Period prompt */}
@@ -2861,7 +2701,6 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
                             generatedSpec={generatedSpecs[String(msg.id)]}
                             registry={chatUiRegistry}
                             hideText={Boolean(msg.thinking)}
-                            chartRecommendations={chartRecommendations}
                           />
                         </Paper>
                       )}

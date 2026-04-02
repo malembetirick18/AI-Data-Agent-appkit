@@ -12,7 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from starlette.responses import StreamingResponse
 from src.logger import Logger
 from src.controller_decision import ControllerDecision
-from src.chart_recommender import ChartRecommender
+from src.genui_spec_generator import GenUiSpecGenerator
 
 from dotenv import load_dotenv
 
@@ -43,21 +43,6 @@ class SpecRequest(BaseModel):
     prompt: str
     genie_result: Any = None
 
-
-class ChartRecommendRequest(BaseModel):
-    columns: list[dict]
-    sample_data: list[list] = []
-    query_prompt: str
-    required_columns: list[str] = []
-
-
-class ChartRecommendResponse(BaseModel):
-    chart_type: str
-    x_key: str
-    y_key: str
-    label_key: str
-    value_key: str
-    description: str
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -171,10 +156,33 @@ lm = dspy.LM(
     num_retries=3,
 )
 
+# GenUI spec uses its own LM instance with the catalog as system prompt.
+# No JSONAdapter — output is raw JSONL patches, not structured JSON.
+genui_lm = dspy.LM(
+    model="azure/gpt-5.3-codex",
+    api_key=os.getenv("AZURE_API_KEY"),
+    api_base=os.getenv("AZURE_API_BASE"),
+    api_version="2025-04-01-preview",
+    model_type="responses",
+    system_prompt=default_genui_catalog_prompt,
+    cache=True,
+    num_retries=3,
+)
+
 # Instantiate agents once at startup — DSPy modules are stateless per-call
 with dspy.settings.context(lm=lm, adapter=dspy.JSONAdapter(), track_usage=True):
     controller_agent = ControllerDecision()
-    chart_recommender = ChartRecommender()
+
+with dspy.settings.context(lm=genui_lm, track_usage=True):
+    genui_spec_generator = GenUiSpecGenerator()
+
+logger.info(
+    "Semantic Layer API ready — model=%s catalog=%d chars genui-catalog=%d chars reflection=%s",
+    "azure/gpt-5.3-codex",
+    len(default_catalog_info),
+    len(default_genui_catalog_prompt),
+    os.getenv("ENABLE_CONTROLLER_REFLECTION", "false"),
+)
 
 
 # ── App ───────────────────────────────────────────────────────────────────────
@@ -197,6 +205,9 @@ async def health():
 
 @app.post("/chat/stream")
 async def stream_chat(request: ControllerRequest) -> StreamingResponse:
+    catalog_source = "payload" if request.catalog_info else "default"
+    logger.info("[chat/stream] prompt=%r catalog=%s", request.source_text[:80], catalog_source)
+
     catalog = request.catalog_info or default_catalog_info
     conversation_context = (
         json.dumps(request.conversation_context) if request.conversation_context else ""
@@ -226,6 +237,10 @@ async def stream_chat(request: ControllerRequest) -> StreamingResponse:
         coherenceNote=result.get("coherenceNote", ""),
     )
 
+    logger.info("[chat/stream] → decision=%s confidence=%.2f classification=%s questions=%d",
+                response.decision, response.confidence,
+                response.queryClassification or "-", len(response.questions))
+
     async def event_generator():
         payload = {"role": "controller", "data": response.model_dump()}
         yield f"event: controller_decision\ndata: {json.dumps(payload)}\n\n"
@@ -234,15 +249,11 @@ async def stream_chat(request: ControllerRequest) -> StreamingResponse:
 
 
 @app.post("/spec/generate")
-async def generate_spec(request: SpecRequest) -> StreamingResponse:
-    """Generate a json-render UI spec.
-
-    Uses ``catalogs/genui_catalog_prompt.txt`` as the LLM system message by
-    default (loaded once at startup).  An optional ``catalog_prompt`` field in
-    the request body overrides the file when provided.
-    """
+def generate_spec(request: SpecRequest) -> StreamingResponse:
     if not request.prompt:
         raise HTTPException(status_code=400, detail="prompt is required")
+
+    logger.info("[spec/generate] prompt=%r has_data=%s", request.prompt[:80], bool(request.genie_result))
 
     user_content = request.prompt
     if request.genie_result:
@@ -253,66 +264,20 @@ async def generate_spec(request: SpecRequest) -> StreamingResponse:
         )
         user_content += f"\n\nData:\n{genie_data}"
 
-    messages = [
-        {"role": "system", "content": default_genui_catalog_prompt},
-        {"role": "user", "content": user_content},
-    ]
+    with dspy.settings.context(lm=genui_lm, track_usage=True, system_prompt=default_genui_catalog_prompt):
+        result = genui_spec_generator(user_prompt=user_content)
 
-    response = await asyncio.to_thread(lm, messages=messages)
-    raw = response[0] if response else ""
-    if isinstance(raw, dict):
-        raw = raw.get("text") or raw.get("content") or ""
-    spec = _assemble_spec_from_patches(str(raw) if raw else "")
+    spec = _assemble_spec_from_patches(result.spec_patches or "")
     spec_text = json.dumps(spec)
 
-    async def event_generator():
+    logger.info("[spec/generate] → root=%r elements=%d",
+                spec.get("root"), len(spec.get("elements", {})))
+
+    def event_generator():
         yield f"event: spec\ndata: {spec_text}\n\n"
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 
-@app.post("/chart/recommend")
-async def recommend_chart(request: ChartRecommendRequest) -> ChartRecommendResponse:
-    numeric_types = {"INT", "INTEGER", "BIGINT", "FLOAT", "DOUBLE", "DECIMAL", "NUMERIC", "NUMBER", "LONG"}
-    temporal_types = {"DATE", "TIMESTAMP"}
-
-    enriched = []
-    for i, col in enumerate(request.columns):
-        type_upper = (col.get("type_name") or "STRING").upper()
-        enriched.append({
-            "name": col["name"],
-            "type_name": type_upper,
-            "is_numeric": type_upper in numeric_types or type_upper.startswith("DECIMAL"),
-            "is_temporal": type_upper in temporal_types,
-            "sample_values": [row[i] for row in request.sample_data[:5] if i < len(row)],
-        })
-
-    def _run() -> dspy.Prediction:
-        with dspy.settings.context(lm=lm, adapter=dspy.JSONAdapter(), track_usage=True):
-            return chart_recommender(
-                column_metadata=json.dumps(enriched),
-                query_prompt=request.query_prompt,
-                required_columns=json.dumps(request.required_columns),
-            )
-
-    result = await asyncio.to_thread(_run)
-
-    col_names = {c["name"] for c in request.columns}
-    first_col = request.columns[0]["name"] if request.columns else ""
-
-    def safe(key: str) -> str:
-        return key if key in col_names else first_col
-
-    x = safe(result.x_key or "")
-    y = safe(result.y_key or "")
-
-    return ChartRecommendResponse(
-        chart_type=result.chart_type or "table",
-        x_key=x,
-        y_key=y,
-        label_key=safe(result.label_key or x),
-        value_key=safe(result.value_key or y),
-        description=result.description or "",
-    )
 
 

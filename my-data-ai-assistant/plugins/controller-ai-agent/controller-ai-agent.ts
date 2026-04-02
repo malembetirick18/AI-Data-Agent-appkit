@@ -25,6 +25,7 @@ export type ControllerResponse = {
   predictiveFunctions: string[];
   questions: unknown[];
   queryClassification?: string;
+  needsParams: boolean;
   canSendDirectly: boolean;
   isLowConfidenceProceed: boolean;
 };
@@ -191,6 +192,7 @@ export async function handleControllerRequest(req: Request, res: Response): Prom
     predictiveFunctions: Array.isArray(raw.predictiveFunctions) ? (raw.predictiveFunctions as string[]) : [],
     questions: Array.isArray(raw.questions) ? raw.questions : [],
     queryClassification: typeof raw.queryClassification === 'string' ? raw.queryClassification : undefined,
+    needsParams: raw.needsParams === true,
     canSendDirectly,
     isLowConfidenceProceed: lowConfidence,
   };
