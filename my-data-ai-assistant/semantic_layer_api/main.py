@@ -31,6 +31,7 @@ class ControllerResponse(BaseModel):
     questions: list[Any] = []
     queryClassification: str | None = None
     coherenceNote: str = ""
+    needsParams: bool = False
 
 
 class ControllerRequest(BaseModel):
@@ -221,7 +222,11 @@ async def stream_chat(request: ControllerRequest) -> StreamingResponse:
                 conversation_context=conversation_context,
             )
 
-    result: dspy.Prediction = await asyncio.to_thread(_run_controller)
+    try:
+        result: dspy.Prediction = await asyncio.to_thread(_run_controller)
+    except Exception as exc:
+        logger.error("[chat/stream] LLM call failed: %s", exc, exc_info=True)
+        raise HTTPException(status_code=502, detail=f"LLM controller error: {exc}") from exc
 
     response = ControllerResponse(
         decision=result.get("decision", "error"),
@@ -235,6 +240,7 @@ async def stream_chat(request: ControllerRequest) -> StreamingResponse:
         questions=result.get("questions", []),
         queryClassification=result.get("queryClassification"),
         coherenceNote=result.get("coherenceNote", ""),
+        needsParams=bool(result.get("needsParams", False)),
     )
 
     logger.info("[chat/stream] → decision=%s confidence=%.2f classification=%s questions=%d",

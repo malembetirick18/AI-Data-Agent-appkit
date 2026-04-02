@@ -15,7 +15,7 @@ class ControllerCorrectionSignature(dspy.Signature):
 
     Correction rules (apply in order):
     1. If validation_feedback lists removed names, accept those removals — do NOT re-add them.
-    2. If suggestedTables is now empty and decision is 'proceed', downgrade to 'guide'.
+    2. If suggestedTables is now empty and decision is 'guide', downgrade to 'clarify'.
     3. If coherence_note contains POLYSEMOUS → decision must be 'clarify'.
        If coherence_note contains AUDIT_PATTERN but NOT POLYSEMOUS → the contradiction is a valid
        audit finding; do NOT force 'clarify' on that basis alone. Apply rules 2 and 4 normally.
@@ -23,10 +23,9 @@ class ControllerCorrectionSignature(dspy.Signature):
        (polysemous term makes the SQL underdetermined even for a valid audit pattern).
     4. If coherence_note contains PARAMETRIC → decision must be 'clarify' with needsParams:true.
     5. Re-calibrate confidence to match the primary scoring rules exactly:
-       - 'proceed' (intent clearly maps to catalog tables): confidence >= 0.90
-       - 'proceed' (less obvious mapping, requires assumptions): confidence 0.70–0.89
-       - 'guide': confidence 0.40–0.69
-       - 'clarify': confidence 0.10–0.39
+       - 'proceed': confidence >= 0.90 (only valid decision when intent clearly maps to catalog)
+       - 'guide': confidence 0.75–0.89
+       - 'clarify': confidence 0.10–0.74
        - 'error': confidence 0.0
     6. Do NOT alter rewrittenPrompt, queryClassification, coherenceNote, or questions structure.
     7. If self_reflection_text says no correction is needed and validation_feedback reports no

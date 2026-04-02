@@ -67,9 +67,12 @@ def _validate_against_catalog(decision: dict, index: dict) -> tuple[dict, dict]:
         if len(cleaned) != len(original):
             removed[key] = [v for v in original if v not in valid_set]
             decision[key] = cleaned
-    # Downgrade confidence when hallucinations were found in a 'proceed' decision
+    # Downgrade to 'guide' when hallucinations were found in a 'proceed' decision.
+    # Keeping decision='proceed' with capped confidence would cause a routing bug:
+    # the plugin only issues the approval cookie for proceed >= 0.90.
     if removed and decision.get("decision") == "proceed":
-        decision["confidence"] = min(float(decision.get("confidence", 0.0)), 0.75)
+        decision["decision"] = "guide"
+        decision["confidence"] = min(float(decision.get("confidence", 0.0)), 0.85)
     return decision, removed
 
 
@@ -85,9 +88,9 @@ def _build_validation_feedback(removed: dict, decision: dict) -> str:
     parts = []
     for field, names in removed.items():
         parts.append(f"  - {field}: {names} do not exist in the catalog and were removed.")
-    if decision.get("decision") == "proceed" and not decision.get("suggestedTables"):
+    if decision.get("decision") == "guide" and not decision.get("suggestedTables"):
         parts.append(
-            "  - After removal, suggestedTables is now empty — 'proceed' may need downgrade to 'guide'."
+            "  - After removal, suggestedTables is now empty — decision was downgraded to 'guide'; consider 'clarify' if no tables remain."
         )
     return "Programmatic catalog validation found the following issues:\n" + "\n".join(parts)
 
@@ -214,7 +217,13 @@ class ControllerDecision(dspy.Module):
             coherence_note=coherence_note,
         )
 
-        decision: dict[str, Any] = json.loads(raw.decision_json)
+        try:
+            decision: dict[str, Any] = json.loads(raw.decision_json)
+            if not isinstance(decision, dict):
+                raise ValueError(f"Expected dict, got {type(decision).__name__}")
+        except (json.JSONDecodeError, ValueError) as exc:
+            _logger.error("Phase-3 decision_json parse failed: %s — raw=%r", exc, raw.decision_json)
+            decision = {"decision": "error", "confidence": 0.0, "message": "Réponse du contrôleur invalide."}
 
         # Enrich with pipeline metadata not always returned by the LLM
         decision.setdefault("rewrittenPrompt", rewritten_prompt)
@@ -225,8 +234,18 @@ class ControllerDecision(dspy.Module):
         decision.setdefault("confidence", 0.0)
         decision.setdefault("message", "")
         decision.setdefault("needsParams", False)
-        decision["requiredColumns"] = json.loads(required_columns_json)
-        decision["predictiveFunctions"] = json.loads(sql_functions_json)
+        try:
+            decision["requiredColumns"] = json.loads(required_columns_json) if required_columns_json else []
+            if not isinstance(decision["requiredColumns"], list):
+                decision["requiredColumns"] = []
+        except (json.JSONDecodeError, ValueError):
+            decision["requiredColumns"] = []
+        try:
+            decision["predictiveFunctions"] = json.loads(sql_functions_json) if sql_functions_json else []
+            if not isinstance(decision["predictiveFunctions"], list):
+                decision["predictiveFunctions"] = []
+        except (json.JSONDecodeError, ValueError):
+            decision["predictiveFunctions"] = []
         decision.setdefault("coherenceNote", coherence_note)
 
         _logger.info("Phase-3 decision=%r confidence=%.2f tables=%s needsParams=%s",
@@ -286,6 +305,10 @@ class ControllerDecision(dspy.Module):
                 corrected["rewrittenPrompt"]     = decision.get("rewrittenPrompt", rewritten_prompt)
                 corrected["queryClassification"] = decision.get("queryClassification", query_classification)
                 corrected["coherenceNote"]       = coherence_note
+                # Preserve questions: corrector focuses on structure/confidence, not UX questions.
+                # If it returned none but the original had questions, keep the originals.
+                if not corrected.get("questions") and decision.get("questions"):
+                    corrected["questions"] = decision["questions"]
                 # Second evaluation cycle: re-run programmatic validator on corrected output
                 if catalog_index:
                     corrected, _ = _validate_against_catalog(corrected, catalog_index)
@@ -304,8 +327,9 @@ class ControllerDecision(dspy.Module):
         # inject the three scope questions at the top of the clarification list.
         # This is a programmatic check — the LLM rule alone is not reliable enough.
         if not _scope_established(source_text, conversation_context):
-            existing_questions: list[dict] = decision.get("questions", [])
-            has_scope = any(q.get("id") == "scope_level" for q in existing_questions)
+            raw_questions = decision.get("questions", [])
+            existing_questions: list[dict] = raw_questions if isinstance(raw_questions, list) else []
+            has_scope = any(isinstance(q, dict) and q.get("id") == "scope_level" for q in existing_questions)
             if not has_scope:
                 _logger.info("Scope guardrail fired — overriding to 'clarify', injecting %d scope questions",
                              len(_SCOPE_QUESTIONS))

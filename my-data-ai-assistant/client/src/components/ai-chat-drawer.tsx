@@ -55,6 +55,7 @@ import {
   IconSearch,
   IconUpload,
   IconFilter,
+  IconInfoCircle,
 } from '@tabler/icons-react'
 import { AgGridReact } from 'ag-grid-react'
 import { AgCharts } from 'ag-charts-react'
@@ -272,7 +273,7 @@ const msFilter: OptionsFilter = ({ options, search }) => {
   return options.filter(o => 'label' in o && (o as { label: string }).label.toLowerCase().includes(q))
 }
 
-function InteractiveChart({
+const InteractiveChart = memo(function InteractiveChart({
   data,
   initialXKey,
   initialYKeys,
@@ -295,7 +296,7 @@ function InteractiveChart({
   yLabel?: string
   source?: string
 }) {
-  const allColumns = useMemo(() => data.length > 0 ? Object.keys(data[0]) : [], []) // eslint-disable-line react-hooks/exhaustive-deps, react-hooks/preserve-manual-memoization
+  const allColumns = useMemo(() => data.length > 0 ? Object.keys(data[0]) : [], [data])
 
   const numericColumns = useMemo(
     // eslint-disable-next-line react-hooks/preserve-manual-memoization
@@ -618,7 +619,16 @@ function InteractiveChart({
       </Paper>
     </Box>
   )
-}
+}, (prev, next) =>
+  prev.data === next.data &&
+  prev.initialType === next.initialType &&
+  prev.initialXKey === next.initialXKey &&
+  JSON.stringify(prev.initialYKeys) === JSON.stringify(next.initialYKeys) &&
+  prev.initialLabelKey === next.initialLabelKey &&
+  prev.initialValueKey === next.initialValueKey &&
+  prev.initialSizeKey === next.initialSizeKey &&
+  prev.title === next.title
+)
 
 /* ------------------------------------------------------------------ */
 /*  json-render catalog + registry for generative UI                   */
@@ -626,27 +636,27 @@ function InteractiveChart({
 
 const { registry: chatUiRegistry } = defineRegistry(chatUiCatalog, {
   components: {
-    Stack: ({ props, children }) => <Stack gap={props.gap ?? 6}>{children}</Stack>,
-    TextContent: ({ props }) => (
-      <Text size={(props.size as 'xs' | 'sm' | 'md' | 'lg' | 'xl' | undefined) ?? 'sm'} fw={props.weight} c={props.c} style={{ lineHeight: 1.55 }}>
-        {props.content}
+    Stack: memo(function StackRenderer({ props, children }: { props: Record<string, unknown>; children?: React.ReactNode }) { return <Stack gap={(props.gap as number | undefined) ?? 6}>{children}</Stack>; }),
+    TextContent: memo(function TextContent({ props }: { props: Record<string, unknown> }) { return (
+      <Text size={(props.size as 'xs' | 'sm' | 'md' | 'lg' | 'xl' | undefined) ?? 'sm'} fw={props.weight as number | undefined} c={props.c as string | undefined} style={{ lineHeight: 1.55 }}>
+        {props.content as React.ReactNode}
       </Text>
-    ),
-    BulletList: ({ props }) => (
+    ); }),
+    BulletList: memo(function BulletList({ props }: { props: Record<string, unknown> }) { return (
       <List size="sm" mt={4} mb={4} spacing={2} withPadding>
-        {props.items.map((item) => (
+        {(props.items as string[]).map((item) => (
           <List.Item key={item}>
             <Text size="xs" style={{ lineHeight: 1.55 }}>{item}</Text>
           </List.Item>
         ))}
       </List>
-    ),
-    DataTable: ({ props }) => {
+    ); }),
+    DataTable: memo(function DataTable({ props }: { props: { headers?: unknown; rows?: unknown; caption?: string } }) {
       const VISIBLE_COLS = 4
       const LARGE_TABLE_THRESHOLD = 200
 
-      const headers: string[] = Array.isArray(props.headers) ? props.headers : [] // eslint-disable-line react-hooks/exhaustive-deps
-      const rows: string[][] = Array.isArray(props.rows) ? props.rows : [] // eslint-disable-line react-hooks/exhaustive-deps
+      const headers: string[] = Array.isArray(props.headers) ? (props.headers as string[]) : [] // eslint-disable-line react-hooks/exhaustive-deps
+      const rows: string[][] = Array.isArray(props.rows) ? (props.rows as string[][]) : [] // eslint-disable-line react-hooks/exhaustive-deps
 
       const columnDefs = useMemo(() => headers.map((h: string, i: number) => ({
         field: h,
@@ -693,84 +703,40 @@ const { registry: chatUiRegistry } = defineRegistry(chatUiCatalog, {
           )}
         </Box>
       )
-    },
-    LineChartViz: ({ props }) => (
-      <InteractiveChart
-        data={Array.isArray(props.data) ? props.data as Record<string, unknown>[] : []}
-        initialXKey={props.xKey ?? ''}
-        initialYKeys={Array.isArray(props.series) ? (props.series as Array<{ yKey: string }>).map(s => s.yKey) : []}
-        initialType="line"
-        title={props.title && props.title !== 'Title' ? props.title : undefined}
-        yLabel={props.yLabel}
-        source={props.source}
-      />
-    ),
-    BarChartViz: ({ props }) => (
-      <InteractiveChart
-        data={Array.isArray(props.data) ? props.data as Record<string, unknown>[] : []}
-        initialXKey={props.xKey ?? ''}
-        initialYKeys={props.yKey ? [props.yKey] : []}
-        initialType="bar"
-        title={props.title && props.title !== 'Title' ? props.title : undefined}
-      />
-    ),
-    AreaChartViz: ({ props }) => {
+    }),
+    LineChartViz: memo(function LineChartViz({ props }: { props: Record<string, unknown> }) {
+      const data = useMemo(() => Array.isArray(props.data) ? props.data as Record<string, unknown>[] : [], [props.data])
+      const yKeys = useMemo(() => Array.isArray(props.series) ? (props.series as Array<{ yKey: string }>).map(s => s.yKey) : [], [props.series])
+      return <InteractiveChart data={data} initialXKey={props.xKey as string ?? ''} initialYKeys={yKeys} initialType="line" title={props.title && props.title !== 'Title' ? props.title as string : undefined} yLabel={props.yLabel as string | undefined} source={props.source as string | undefined} />
+    }),
+    BarChartViz: memo(function BarChartViz({ props }: { props: Record<string, unknown> }) {
+      const data = useMemo(() => Array.isArray(props.data) ? props.data as Record<string, unknown>[] : [], [props.data])
+      const yKeys = useMemo(() => props.yKey ? [props.yKey as string] : [], [props.yKey])
+      return <InteractiveChart data={data} initialXKey={props.xKey as string ?? ''} initialYKeys={yKeys} initialType="bar" title={props.title && props.title !== 'Title' ? props.title as string : undefined} />
+    }),
+    AreaChartViz: memo(function AreaChartViz({ props }: { props: Record<string, unknown> }) {
       const p = props as { data?: unknown; xKey?: string; series?: Array<{ yKey: string }>; title?: string; yLabel?: string; source?: string }
-      return (
-        <InteractiveChart
-          data={Array.isArray(p.data) ? p.data as Record<string, unknown>[] : []}
-          initialXKey={p.xKey ?? ''}
-          initialYKeys={Array.isArray(p.series) ? p.series.map(s => s.yKey) : []}
-          initialType="area"
-          title={p.title && p.title !== 'Title' ? p.title : undefined}
-          yLabel={p.yLabel}
-          source={p.source}
-        />
-      )
-    },
-    PieChartViz: ({ props }) => (
-      <InteractiveChart
-        data={Array.isArray(props.data) ? props.data as Record<string, unknown>[] : []}
-        initialXKey=""
-        initialYKeys={[]}
-        initialType="pie"
-        initialLabelKey={props.labelKey ?? ''}
-        initialValueKey={props.angleKey ?? ''}
-        title={props.title && props.title !== 'Title' ? props.title : undefined}
-      />
-    ),
-    DonutChartViz: ({ props }) => (
-      <InteractiveChart
-        data={Array.isArray(props.data) ? props.data as Record<string, unknown>[] : []}
-        initialXKey=""
-        initialYKeys={[]}
-        initialType="donut"
-        initialLabelKey={props.labelKey ?? ''}
-        initialValueKey={props.angleKey ?? ''}
-        title={props.title && props.title !== 'Title' ? props.title : undefined}
-      />
-    ),
-    RadarChartViz: ({ props }) => (
-      <InteractiveChart
-        data={Array.isArray(props.data) ? props.data as Record<string, unknown>[] : []}
-        initialXKey=""
-        initialYKeys={[]}
-        initialType="radar"
-        initialLabelKey={props.angleKey ?? ''}
-        initialValueKey={props.radiusKey ?? ''}
-        title={props.title && props.title !== 'Title' ? props.title : undefined}
-      />
-    ),
-    BubbleChartViz: ({ props }) => (
-      <InteractiveChart
-        data={Array.isArray(props.data) ? props.data as Record<string, unknown>[] : []}
-        initialXKey={props.xKey ?? ''}
-        initialYKeys={props.yKey ? [props.yKey] : []}
-        initialType="bubble"
-        initialSizeKey={props.sizeKey ?? ''}
-        title={props.title && props.title !== 'Title' ? props.title : undefined}
-      />
-    ),
+      const data = useMemo(() => Array.isArray(p.data) ? p.data as Record<string, unknown>[] : [], [p.data])
+      const yKeys = useMemo(() => Array.isArray(p.series) ? p.series.map(s => s.yKey) : [], [p.series])
+      return <InteractiveChart data={data} initialXKey={p.xKey ?? ''} initialYKeys={yKeys} initialType="area" title={p.title && p.title !== 'Title' ? p.title : undefined} yLabel={p.yLabel} source={p.source} />
+    }),
+    PieChartViz: memo(function PieChartViz({ props }: { props: Record<string, unknown> }) {
+      const data = useMemo(() => Array.isArray(props.data) ? props.data as Record<string, unknown>[] : [], [props.data])
+      return <InteractiveChart data={data} initialXKey="" initialYKeys={[]} initialType="pie" initialLabelKey={props.labelKey as string ?? ''} initialValueKey={props.angleKey as string ?? ''} title={props.title && props.title !== 'Title' ? props.title as string : undefined} />
+    }),
+    DonutChartViz: memo(function DonutChartViz({ props }: { props: Record<string, unknown> }) {
+      const data = useMemo(() => Array.isArray(props.data) ? props.data as Record<string, unknown>[] : [], [props.data])
+      return <InteractiveChart data={data} initialXKey="" initialYKeys={[]} initialType="donut" initialLabelKey={props.labelKey as string ?? ''} initialValueKey={props.angleKey as string ?? ''} title={props.title && props.title !== 'Title' ? props.title as string : undefined} />
+    }),
+    RadarChartViz: memo(function RadarChartViz({ props }: { props: Record<string, unknown> }) {
+      const data = useMemo(() => Array.isArray(props.data) ? props.data as Record<string, unknown>[] : [], [props.data])
+      return <InteractiveChart data={data} initialXKey="" initialYKeys={[]} initialType="radar" initialLabelKey={props.angleKey as string ?? ''} initialValueKey={props.radiusKey as string ?? ''} title={props.title && props.title !== 'Title' ? props.title as string : undefined} />
+    }),
+    BubbleChartViz: memo(function BubbleChartViz({ props }: { props: Record<string, unknown> }) {
+      const data = useMemo(() => Array.isArray(props.data) ? props.data as Record<string, unknown>[] : [], [props.data])
+      const yKeys = useMemo(() => props.yKey ? [props.yKey as string] : [], [props.yKey])
+      return <InteractiveChart data={data} initialXKey={props.xKey as string ?? ''} initialYKeys={yKeys} initialType="bubble" initialSizeKey={props.sizeKey as string ?? ''} title={props.title && props.title !== 'Title' ? props.title as string : undefined} />
+    }),
     QueryDataTable: ({ props }) => {
       const [spec, setSpec] = useState<GenericUiSpec | null>(null)
       const [loading, setLoading] = useState(true)
@@ -2071,6 +2037,7 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
 
       if (ControllerResponse.decision === 'error') {
         setPendingClarification(null)
+        setClarificationAnswers({})
         return
       }
 
@@ -2135,8 +2102,8 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
         return
       }
 
-      // 'proceed' with low confidence or 'guide' → show confirmation with
-      // option to send directly to Genie (Controller already approved via cookie)
+      // 'guide' → show confirmation form with questions before sending to Genie
+      setClarificationRetryCount(0)
       const questions = ControllerResponse.questions ?? []
       setPendingClarification({
         originalPrompt: trimmedPrompt,
@@ -2243,6 +2210,7 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
       setShowSuggestions(false)
       setControllerHint(null)
       setPendingClarification(null)
+      setClarificationAnswers({})
       setLocalUserMessages((prev) => [
         ...prev,
         {
@@ -2308,7 +2276,9 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
     setPendingClarification(null)
 
     if (pendingClarification.canSendDirectly) {
-      const promptToSend = pendingClarification.enrichedPrompt || clarifiedPrompt
+      const promptToSend = pendingClarification.enrichedPrompt && questionLines.length > 0
+        ? `${pendingClarification.enrichedPrompt}\nClarifications:\n${questionLines.join('\n')}`
+        : pendingClarification.enrichedPrompt || clarifiedPrompt
       // Map technical prompts → original so they never appear in the UI
       enrichedToOriginalRef.current.set(promptToSend.trim(), pendingClarification.originalPrompt)
       enrichedToOriginalRef.current.set(clarifiedPrompt.trim(), pendingClarification.originalPrompt)
@@ -2831,6 +2801,19 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
 
                   <Divider mb="sm" color="#dee2e6" />
 
+                  {pendingClarification.decision === 'guide' && pendingClarification.questions.length > 0 && (
+                    <Alert
+                      icon={<IconInfoCircle size={14} />}
+                      color="blue"
+                      variant="light"
+                      mb="sm"
+                      p="xs"
+                      styles={{ message: { fontSize: 'var(--mantine-font-size-xs)' } }}
+                    >
+                      Votre requête est valide et sera envoyée à Genie. Ces questions sont optionnelles mais nous vous recommandons fortement d&apos;y répondre pour affiner les résultats.
+                    </Alert>
+                  )}
+
                   {pendingClarification.questions.map((question) => {
                     if (question.id === 'sp_folder_id' && clarificationAnswers['scope_level'] !== 'filiale') return null
                     if (question.inputType === 'select' && (!question.options || question.options.length === 0)) return null
@@ -2920,15 +2903,25 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
                   })}
 
                   <Group justify="flex-end" mt="sm">
-                    <Button
-                      size="xs"
-                      color="teal"
-                      variant="filled"
-                      leftSection={pendingClarification.needsParams ? <IconFilter size={12} /> : <IconSparkles size={12} />}
-                      onClick={handleClarificationSubmit}
-                    >
-                      {pendingClarification.canSendDirectly ? 'Confirmer et envoyer' : pendingClarification.needsParams ? 'Appliquer les filtres' : 'Relancer avec ces précisions'}
-                    </Button>
+                    {(() => {
+                      const missingRequired = !pendingClarification.canSendDirectly && pendingClarification.questions.some((q) => {
+                        if (!q.required) return false
+                        if (q.id === 'sp_folder_id' && clarificationAnswers['scope_level'] !== 'filiale') return false
+                        return !clarificationAnswers[q.id]?.trim()
+                      })
+                      return (
+                        <Button
+                          size="xs"
+                          color="teal"
+                          variant="filled"
+                          disabled={missingRequired}
+                          leftSection={pendingClarification.needsParams ? <IconFilter size={12} /> : <IconSparkles size={12} />}
+                          onClick={handleClarificationSubmit}
+                        >
+                          {pendingClarification.canSendDirectly ? 'Confirmer et envoyer' : pendingClarification.needsParams ? 'Appliquer les filtres' : 'Relancer avec ces précisions'}
+                        </Button>
+                      )
+                    })()}
                   </Group>
                 </Paper>
               </Box>

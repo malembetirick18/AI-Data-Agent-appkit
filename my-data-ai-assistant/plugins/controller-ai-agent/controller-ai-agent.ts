@@ -27,7 +27,6 @@ export type ControllerResponse = {
   queryClassification?: string;
   needsParams: boolean;
   canSendDirectly: boolean;
-  isLowConfidenceProceed: boolean;
 };
 
 export type SpecRequest = {
@@ -43,14 +42,9 @@ export type SpecResponse = {
 // ── Confidence helpers ────────────────────────────────────────────────────────
 
 const HIGH_CONFIDENCE_THRESHOLD = 0.90;
-const LOW_CONFIDENCE_THRESHOLD = 0.70;
 
 function isApproved(decision: string, confidence: number): boolean {
   return decision === 'proceed' && confidence >= HIGH_CONFIDENCE_THRESHOLD;
-}
-
-function isLowConfidenceProceed(decision: string, confidence: number): boolean {
-  return decision === 'proceed' && confidence >= LOW_CONFIDENCE_THRESHOLD && confidence < HIGH_CONFIDENCE_THRESHOLD;
 }
 
 // ── SSE helpers ───────────────────────────────────────────────────────────────
@@ -171,8 +165,7 @@ export async function handleControllerRequest(req: Request, res: Response): Prom
   const rewrittenPrompt = typeof raw.rewrittenPrompt === 'string' ? raw.rewrittenPrompt : prompt;
 
   const approved = isApproved(decision, confidence);
-  const lowConfidence = isLowConfidenceProceed(decision, confidence);
-  const canSendDirectly = approved || lowConfidence || decision === 'guide';
+  const canSendDirectly = approved || decision === 'guide';
 
   if (canSendDirectly) {
     const token = issueControllerApproval({ approvedPrompt: rewrittenPrompt });
@@ -194,7 +187,6 @@ export async function handleControllerRequest(req: Request, res: Response): Prom
     queryClassification: typeof raw.queryClassification === 'string' ? raw.queryClassification : undefined,
     needsParams: raw.needsParams === true,
     canSendDirectly,
-    isLowConfidenceProceed: lowConfidence,
   };
 
   res.status(200).json(controllerResponse);
