@@ -65,8 +65,8 @@ class ControllerDecisionSignature(dspy.Signature):
       set confidence >= 0.90. Most 'proceed' decisions should have confidence between 0.90 and 0.98.
     - When decision is 'proceed' but the mapping is less obvious (e.g. requires assumptions),
       set confidence between 0.70 and 0.89.
-    - When decision is 'guide', set confidence between 0.40 and 0.69.
-    - When decision is 'clarify', set confidence between 0.10 and 0.39.
+    - When decision is 'guide', set confidence between 0.60 and 0.69.
+    - When decision is 'clarify', set confidence between 0.0 and 0.59.
     - When decision is 'error', set confidence to 0.0.
     - Do NOT default to low confidence values like 0.5 or 0.7 for clear 'proceed' cases.
       If the intent is clear and tables exist, confidence MUST be >= 0.90.
