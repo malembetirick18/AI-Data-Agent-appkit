@@ -25,13 +25,13 @@ import {
   MultiSelect,
   NumberInput,
   Badge,
-  Progress,
   Loader,
   Switch,
   Avatar,
   Alert,
   Checkbox,
   Transition,
+  type OptionsFilter,
 } from '@mantine/core'
 import {
   IconSparkles,
@@ -257,7 +257,7 @@ const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}(T|$)/
 
 const isIsoDateColumn = (data: Record<string, unknown>[], key: string): boolean => {
   const samples = data.slice(0, 5).map(r => r[key])
-  return samples.length > 0 && samples.every(v => typeof v === 'string' && ISO_DATE_RE.test(v as string))
+  return samples.length > 0 && samples.every(v => typeof v === 'string' && ISO_DATE_RE.test(v))
 }
 
 const frDateFormatter = ({ value }: { value: string }) =>
@@ -266,10 +266,10 @@ const frDateFormatter = ({ value }: { value: string }) =>
 // MultiSelect filter: always keeps the full option list in `data` so every column is
 // searchable, but renders only the first 8 entries when the search field is empty.
 // Once the user types, all matching options across the full list are shown.
-const msFilter = ({ options, search }: { options: { label?: string; [k: string]: unknown }[]; search: string }) => {
+const msFilter: OptionsFilter = ({ options, search }) => {
   const q = search.toLowerCase().trim()
   if (!q) return options.slice(0, 8)
-  return options.filter(o => o.label?.toLowerCase().includes(q) ?? false)
+  return options.filter(o => 'label' in o && (o as { label: string }).label.toLowerCase().includes(q))
 }
 
 function InteractiveChart({
@@ -367,7 +367,7 @@ function InteractiveChart({
       case 'bubble':return `Corrélation ${f(xKey)} / ${yk} — taille : ${f(activeSizeKey)}`
       default: return ''
     }
-  }, [chartType, xKey, activeYKeys, activeLabelKey, activeValueKey, activeSizeKey, data.length]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [chartType, xKey, activeYKeys, activeLabelKey, activeValueKey, activeSizeKey, data.length])  
 
   const handleTypeChange = (type: ChartVizType) => {
     setChartType(type)
@@ -477,7 +477,7 @@ function InteractiveChart({
         sizeKey: activeSizeKey,
         yName: formatColumnLabel(yKey),
         ...(isSingleBubbleSeries ? {
-          itemStyler: (params: any) => {
+          itemStyler: (params: { datum: Record<string, unknown> }) => {
             const idx = bubbleDatumColorIndex.get(params.datum) ?? 0
             return { fill: categoryColor(idx), stroke: categoryColor(idx) }
           },
@@ -491,7 +491,8 @@ function InteractiveChart({
             formatter: bubbleXIsNumeric
               ? numberLabelFormatter
               : ({ value }: { value: number }) => {
-                  const label = String(sortedData[Math.round(value)]?.[xKey] ?? '')
+                  const rawVal = sortedData[Math.round(value)]?.[xKey] ?? ''
+                  const label = typeof rawVal === 'string' || typeof rawVal === 'number' || typeof rawVal === 'boolean' ? String(rawVal) : ''
                   return label.length > 8 ? label.substring(0, 8) + '\u2026' : label
                 },
           },
@@ -516,7 +517,7 @@ function InteractiveChart({
         yName: formatColumnLabel(yKey),
         // bar: color each item (category) individually when single series
         ...(isSingleBarSeries ? {
-          itemStyler: (params: any) => {
+          itemStyler: (params: { datum: Record<string, unknown> }) => {
             const idx = datumColorIndex.get(params.datum) ?? 0
             return { fill: categoryColor(idx), stroke: categoryColor(idx) }
           },
@@ -582,7 +583,7 @@ function InteractiveChart({
             <>
               <Select size="xs" placeholder="Label" data={allColOptions} value={activeLabelKey} onChange={v => v && setLabelKey(v)} style={{ width: 130 }} maxDropdownHeight={200} comboboxProps={{ withinPortal: false }} searchable />
               {chartType === 'radar' ? (
-                <MultiSelect size="xs" placeholder="Valeurs (rechercher…)" data={numColOptions} filter={msFilter as any} value={activeYKeys.length > 0 ? activeYKeys : [activeValueKey]} onChange={vals => setYKeys(vals.length > 0 ? vals : activeYKeys)} style={{ minWidth: 130, maxWidth: 220 }} maxDropdownHeight={200} comboboxProps={{ withinPortal: false }} searchable maxValues={5} hidePickedOptions />
+                <MultiSelect size="xs" placeholder="Valeurs (rechercher…)" data={numColOptions} filter={msFilter} value={activeYKeys.length > 0 ? activeYKeys : [activeValueKey]} onChange={vals => setYKeys(vals.length > 0 ? vals : activeYKeys)} style={{ minWidth: 130, maxWidth: 220 }} maxDropdownHeight={200} comboboxProps={{ withinPortal: false }} searchable maxValues={5} hidePickedOptions />
               ) : (
                 <Select size="xs" placeholder="Valeur" data={numColOptions} value={activeValueKey} onChange={v => v && setValueKey(v)} style={{ width: 130 }} maxDropdownHeight={200} comboboxProps={{ withinPortal: false }} searchable />
               )}
@@ -591,7 +592,7 @@ function InteractiveChart({
             <>
               <Select size="xs" placeholder="Axe X" data={allColOptions} value={xKey} onChange={v => { if (!v) return; setXKey(v); setYKeys(prev => prev.filter(k => k !== v)) }} style={{ width: 130 }} maxDropdownHeight={200} comboboxProps={{ withinPortal: false }} searchable />
               {(chartType === 'line' || chartType === 'area') ? (
-                <MultiSelect size="xs" placeholder="Axes Y (rechercher…)" data={yOptions} filter={msFilter as any} value={activeYKeys} onChange={vals => setYKeys(vals.length > 0 ? vals : activeYKeys)} style={{ minWidth: 130, maxWidth: 220 }} maxDropdownHeight={200} comboboxProps={{ withinPortal: false }} searchable maxValues={5} hidePickedOptions />
+                <MultiSelect size="xs" placeholder="Axes Y (rechercher…)" data={yOptions} filter={msFilter} value={activeYKeys} onChange={vals => setYKeys(vals.length > 0 ? vals : activeYKeys)} style={{ minWidth: 130, maxWidth: 220 }} maxDropdownHeight={200} comboboxProps={{ withinPortal: false }} searchable maxValues={5} hidePickedOptions />
               ) : (
                 <Select size="xs" placeholder="Axe Y" data={yOptions} value={activeYKeys[0] || null} onChange={v => v && setYKeys([v])} style={{ width: 130 }} maxDropdownHeight={200} comboboxProps={{ withinPortal: false }} searchable />
               )}
@@ -713,17 +714,20 @@ const { registry: chatUiRegistry } = defineRegistry(chatUiCatalog, {
         title={props.title && props.title !== 'Title' ? props.title : undefined}
       />
     ),
-    AreaChartViz: ({ props }) => (
-      <InteractiveChart
-        data={Array.isArray(props.data) ? props.data as Record<string, unknown>[] : []}
-        initialXKey={props.xKey ?? ''}
-        initialYKeys={Array.isArray(props.series) ? (props.series as Array<{ yKey: string }>).map(s => s.yKey) : []}
-        initialType="area"
-        title={props.title && props.title !== 'Title' ? props.title : undefined}
-        yLabel={props.yLabel}
-        source={props.source}
-      />
-    ),
+    AreaChartViz: ({ props }) => {
+      const p = props as { data?: unknown; xKey?: string; series?: Array<{ yKey: string }>; title?: string; yLabel?: string; source?: string }
+      return (
+        <InteractiveChart
+          data={Array.isArray(p.data) ? p.data as Record<string, unknown>[] : []}
+          initialXKey={p.xKey ?? ''}
+          initialYKeys={Array.isArray(p.series) ? p.series.map(s => s.yKey) : []}
+          initialType="area"
+          title={p.title && p.title !== 'Title' ? p.title : undefined}
+          yLabel={p.yLabel}
+          source={p.source}
+        />
+      )
+    },
     PieChartViz: ({ props }) => (
       <InteractiveChart
         data={Array.isArray(props.data) ? props.data as Record<string, unknown>[] : []}
@@ -2845,7 +2849,7 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
                         <Text size="xs" fw={600} mb={6} c="dark">{sanitizeLabel(question.label)}</Text>
                         {question.inputType === 'select' ? (
                           <Select
-                            data={question.options!}
+                            data={question.options}
                             value={clarificationAnswers[question.id] ?? ''}
                             onChange={(value) => {
                               setClarificationAnswers((previous) => ({

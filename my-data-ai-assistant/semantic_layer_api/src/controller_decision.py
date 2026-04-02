@@ -163,6 +163,8 @@ class ControllerDecision(dspy.Module):
         self.analyze_query = dspy.ChainOfThought(QueryAnalysisSignature)
         self.rephrase_query = dspy.ChainOfThought(RephraseQuerySignature)
         self.controller_decision = dspy.ChainOfThought(ControllerDecisionSignature)
+        self.self_reflect: dspy.ChainOfThought | None = None
+        self.correct_decision: dspy.ChainOfThought | None = None
         if _REFLECTION_ENABLED:
             self.self_reflect = dspy.ChainOfThought(ControllerSelfReflectionSignature)
             self.correct_decision = dspy.ChainOfThought(ControllerCorrectionSignature)
@@ -257,7 +259,7 @@ class ControllerDecision(dspy.Module):
         # Only fires for proceed/guide — clarify/error are already conservative.
         # Single reflection+correction cycle per request (synchronous latency constraint).
         # A second programmatic validation after correction closes the evaluation loop.
-        if _REFLECTION_ENABLED and decision.get("decision") in {"proceed", "guide"}:
+        if self.self_reflect is not None and self.correct_decision is not None and decision.get("decision") in {"proceed", "guide"}:
             try:
                 # Phase 3c — Self-Reflection: verbal diagnosis of the decision's flaws
                 _logger.info("Phase-3c self-reflection triggered for decision=%r", decision.get("decision"))
