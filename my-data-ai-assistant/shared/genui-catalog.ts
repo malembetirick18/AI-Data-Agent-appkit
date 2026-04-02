@@ -14,6 +14,7 @@ export const chatUiCatalog = defineCatalog(jsonRenderSchema, {
         content: z.string(),
         weight: z.number().optional(),
         size: z.string().optional(),
+        c: z.string().optional(),
       }),
       slots: [],
       description: 'Plain text or emphasized text content.',
@@ -47,6 +48,22 @@ export const chatUiCatalog = defineCatalog(jsonRenderSchema, {
       }),
       slots: [],
       description: 'Line chart using AgCharts. series is an array of {yKey, yName, stroke?}.',
+    },
+    AreaChartViz: {
+      props: z.object({
+        title: z.string(),
+        data: z.array(z.record(z.string(), z.union([z.string(), z.number()]))),
+        xKey: z.string(),
+        series: z.array(z.object({
+          yKey: z.string(),
+          yName: z.string(),
+          stroke: z.string().optional(),
+        })),
+        yLabel: z.string().optional(),
+        source: z.string().optional(),
+      }),
+      slots: [],
+      description: 'Area chart using AgCharts. series is an array of {yKey, yName, stroke?}.',
     },
     BarChartViz: {
       props: z.object({

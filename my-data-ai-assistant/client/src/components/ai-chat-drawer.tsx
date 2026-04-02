@@ -628,7 +628,7 @@ const { registry: chatUiRegistry } = defineRegistry(chatUiCatalog, {
   components: {
     Stack: ({ props, children }) => <Stack gap={props.gap ?? 6}>{children}</Stack>,
     TextContent: ({ props }) => (
-      <Text size={(props.size as 'xs' | 'sm' | 'md' | 'lg' | 'xl' | undefined) ?? 'sm'} fw={props.weight} c={props.c as string | undefined} style={{ lineHeight: 1.55 }}>
+      <Text size={(props.size as 'xs' | 'sm' | 'md' | 'lg' | 'xl' | undefined) ?? 'sm'} fw={props.weight} c={props.c} style={{ lineHeight: 1.55 }}>
         {props.content}
       </Text>
     ),
@@ -2837,7 +2837,7 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
                     if (isDisplayOnlyLabel(question.label)) return null
                     // Unrecognised inputType → treat as section sub-heading
                     const knownTypes = ['select', 'number', 'toggle', 'text']
-                    if (!knownTypes.includes(question.inputType)) {
+                    if (!question.inputType || !knownTypes.includes(question.inputType)) {
                       return (
                         <Text key={question.id} size="xs" fw={700} c="dimmed" tt="uppercase" mt="xs" mb={4} style={{ letterSpacing: 0.6 }}>
                           {sanitizeLabel(question.label)}
