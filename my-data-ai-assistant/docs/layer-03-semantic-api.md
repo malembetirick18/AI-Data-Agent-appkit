@@ -17,8 +17,35 @@
 | Méthode | Route | Description |
 |---------|-------|-------------|
 | `GET` | `/health` | Healthcheck |
-| `POST` | `/chat/stream` | Pipeline contrôleur → SSE `event: controller_decision` |
-| `POST` | `/spec/generate` | Génération spec GenUI → SSE `event: spec` |
+| `POST` | `/chat/stream` | Pipeline contrôleur → SSE (`event: status`, `event: reasoning_token`, `event: controller_decision`) |
+| `POST` | `/spec/generate` | Génération spec GenUI → JSONL stream (patches + `# status` comments) |
+
+### Streaming architecture (FastAPI ≥ 0.134 + DSPy `streamify`)
+
+Both endpoints use the native FastAPI `yield` pattern:
+
+```python
+@app.post("/chat/stream", response_class=StreamingResponse)
+async def stream_chat(request: ControllerRequest) -> AsyncIterable[str]:
+    async for chunk in _stream_controller(...):
+        if isinstance(chunk, StatusMessage):
+            yield f"event: status\ndata: ...\n\n"
+        elif isinstance(chunk, StreamResponse):
+            yield f"event: reasoning_token\ndata: ...\n\n"
+        elif isinstance(chunk, dspy.Prediction):
+            yield f"event: controller_decision\ndata: ...\n\n"
+```
+
+References:
+- https://fastapi.tiangolo.com/advanced/stream-data/
+- https://github.com/stanfordnlp/dspy/blob/main/docs/docs/tutorials/streaming/index.md
+
+**Key invariants:**
+- No manual `StreamingResponse(generator)` wrapping — `response_class=StreamingResponse` + `yield` is sufficient.
+- `dspy.streamify()` wraps both `controller_agent` and `genui_spec_generator` at startup.
+- `StatusMessageProvider` subclasses (`ControllerStatusProvider`, `SpecStatusProvider`) provide human-readable progress updates.
+- `StreamListener(signature_field_name=...)` selects which output field to stream token-by-token.
+- Both LM instances (`lm`, `genui_lm`) share `_LM_KWARGS` — do not duplicate Azure config.
 
 ---
 
@@ -44,7 +71,9 @@ Phase 3 ── ControllerDecisionSignature  [ACTEUR — 1 appel LLM]
 
 Phase 3b ── Évaluateur programmatique  [ÉVALUATEUR — coût zéro]
             _build_catalog_index() → index tables/colonnes/fonctions
-            _validate_against_catalog() → supprime les hallucinations
+            _validate_against_catalog(phase3_confidence) → supprime les hallucinations
+              ↳ si phase3_confidence ≥ _HIGH_CONFIDENCE_THRESHOLD (0.85)
+                et que le strip viderait suggestedTables → strip ignoré (LLM de confiance)
             _build_validation_feedback() → feedback textuel (QUOI est faux)
 
 Phase 3c ── ControllerSelfReflectionSignature  [AUTO-RÉFLEXION — conditionnel]
@@ -110,6 +139,8 @@ Guardrail scope (toujours exécuté après Phase 4)
 
 **Pénalité hallucination :** si des noms hallucinations sont détectés lors d'une décision `proceed`, la confiance est plafonnée à `min(conf, 0.75)`.
 
+> **Heuristique haute confiance (`_HIGH_CONFIDENCE_THRESHOLD = 0.85`) :** si Phase-3 renvoie une confiance ≥ 0.85 et que le nettoyage viderait entièrement `suggestedTables`, le strip est ignoré — le LLM est jugé suffisamment certain pour que le catalogue (potentiellement incomplet) ne l'emporte pas. Les pénalités Rule 1 et Rule 2 s'appliquent normalement en dessous de ce seuil.
+
 ---
 
 ## Guardrail de périmètre (scope)
@@ -173,6 +204,17 @@ Champs validés :
 | `predictiveFunctions` | `catalog.functions[*].name` |
 | `suggestedFunctions` | `catalog.functions[*].name` |
 
+### Règles de pénalité après stripping
+
+| Condition | Effet |
+|-----------|-------|
+| `suggestedTables` vidé après strip **ET** `phase3_confidence < 0.85` | `decision = "clarify"`, `confidence ≤ 0.45` (Rule 1) |
+| `suggestedTables` vidé après strip **ET** `phase3_confidence ≥ 0.85` | Strip ignoré — table conservée, aucune pénalité (heuristique haute confiance) |
+| Autres champs hallucination, tables restantes, décision `proceed`/`guide` | `decision = "guide"`, `confidence ≤ 0.70` (Rule 2) |
+| Décisions `clarify`/`error` avec hallucinations | Pas de modification supplémentaire (déjà conservateurs) |
+
+La constante `_HIGH_CONFIDENCE_THRESHOLD = 0.85` est définie en tête de `controller_decision.py`.
+
 ---
 
 ## Génération de specs GenUI
@@ -180,13 +222,26 @@ Champs validés :
 Module : `src/genui_spec_generator.py`  
 Signature : `src/signatures/genui_spec_signature.py`
 
-Le LLM génère du **JSONL RFC 6902** (une opération `add` par ligne). L'assembleur `_assemble_spec_from_patches()` reconstruit le dictionnaire `{ root, elements, state }`.
+Le LLM génère du **JSONL RFC 6902** (une opération `add` par ligne). Le client (`useUIStream`) assemble les patches côté navigateur — aucune validation ou assemblage côté serveur.
 
-Fallback : si le LLM produit un JSON objet au lieu de JSONL, il est accepté directement si `root` et `elements` sont présents.
+### Streaming `/spec/generate`
 
-### Endpoint `/spec/generate` — async (important)
+L'endpoint utilise `dspy.streamify()` avec `StreamListener(signature_field_name="spec_patches")` pour émettre les tokens au fil de l'eau.
 
-L'endpoint est `async def generate_spec(...)` avec `result = await asyncio.to_thread(_run_genui)`. **Ne jamais le repasser en `def` synchrone.** Un handler synchrone bloquerait un worker du threadpool FastAPI pendant toute la durée de l'appel DSPy (10–30s), épuisant le pool sous charge concurrente. Le sibling `/chat/stream` utilise le même pattern.
+| Type de chunk | Format émis | Consommation client |
+|---------------|-------------|--------------------|
+| `StatusMessage` | `# Generating UI spec…\n` (commentaire JSONL) | Ignoré par les parsers JSONL, affiché par les clients compatibles |
+| `StreamResponse` | Ligne JSONL brute (`{"op":"add",...}\n`) | `useUIStream` assemble les patches en spec |
+| `Prediction` | *(non émis au client)* | Signal de fin interne, log uniquement |
+
+**Invariants :**
+- Pas de `_parse_patches`, `_assemble_spec_from_patches`, ni de couche de validation côté serveur. Ne pas les ré-ajouter.
+- Pas de fallback JSON objet — seul le format JSONL patches est supporté.
+- Le `developer_prompt` (catalogue GenUI) est passé via l'input DSPy, pas via `system_prompt` du LM.
+
+### Endpoint `/spec/generate` — async streaming (important)
+
+L'endpoint est `async def generate_spec(...)` avec `async for chunk in _stream_spec(...)`. Les chunks sont émis au fur et à mesure via `yield`. **Ne jamais revenir à un pattern `asyncio.to_thread` + itération post-hoc.** Le streaming temps réel permet au client de commencer l'assemblage avant la fin de la génération LLM.
 
 ---
 

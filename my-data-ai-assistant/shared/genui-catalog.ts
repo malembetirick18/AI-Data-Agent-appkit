@@ -137,6 +137,21 @@ export const chatUiCatalog = defineCatalog(jsonRenderSchema, {
       slots: ['default'],
       description: 'Form container used to group interactive supervisor inputs.',
     },
+    AccordionGroup: {
+      props: z.object({
+        variant: z.enum(['default', 'contained', 'separated']).optional(),
+      }),
+      slots: ['default'],
+      description: 'Accordion container for grouped collapsible sections. Children must be AccordionSection elements.',
+    },
+    AccordionSection: {
+      props: z.object({
+        title: z.string(),
+        value: z.string(),
+      }),
+      slots: ['default'],
+      description: 'Single accordion item with a title header and collapsible content. value must be unique within its parent AccordionGroup.',
+    },
     SelectInputField: {
       props: z.object({
         label: z.string(),

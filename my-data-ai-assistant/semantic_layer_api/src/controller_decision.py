@@ -20,7 +20,6 @@ from src.signatures.query_analysis_signature import QueryAnalysisSignature
 # the DSPy modules are only instantiated when _REFLECTION_ENABLED is True.
 from src.signatures.controller_self_reflection_signature import ControllerSelfReflectionSignature
 from src.signatures.controller_correction_signature import ControllerCorrectionSignature
-from src.signatures.reasoning_summary_signature import ReasoningSummarySignature
 
 # Child of the root "semantic-layer-api" logger — propagates to its handler, no double output.
 _logger = Logger("semantic-layer-api").child("controller")
@@ -29,6 +28,10 @@ _logger = Logger("semantic-layer-api").child("controller")
 # In dev they add two extra LLM calls per request; keeping them off avoids latency overhead.
 # Pattern: Programmatic Evaluator (3b) → Self-Reflection LLM (3c) → Corrector LLM (4).
 _REFLECTION_ENABLED = os.getenv("ENABLE_CONTROLLER_REFLECTION", "false").lower() == "true"
+
+# Catalog validation: when Phase-3 confidence is at or above this threshold, trust the LLM's
+# table choice even if it is absent from the catalog index. Catalog may be incomplete.
+_HIGH_CONFIDENCE_THRESHOLD = 0.85
 
 
 # ── Catalog validation helpers ────────────────────────────────────────────────
@@ -46,7 +49,9 @@ def _build_catalog_index(catalog_info: str) -> dict:
     }
 
 
-def _validate_against_catalog(decision: dict, index: dict) -> tuple[dict, dict]:
+def _validate_against_catalog(
+    decision: dict, index: dict, phase3_confidence: float = 0.0
+) -> tuple[dict, dict]:
     """Strip names not present in the catalog index.
 
     Returns (cleaned_decision, removed_by_field) where removed_by_field maps
@@ -66,14 +71,35 @@ def _validate_against_catalog(decision: dict, index: dict) -> tuple[dict, dict]:
             continue
         cleaned = [v for v in original if v in valid_set]
         if len(cleaned) != len(original):
+            # High-confidence trust: if Phase-3 was very confident and stripping would
+            # empty suggestedTables, trust the LLM — the catalog may be incomplete.
+            if key == "suggestedTables" and not cleaned and phase3_confidence >= _HIGH_CONFIDENCE_THRESHOLD:
+                continue
             removed[key] = [v for v in original if v not in valid_set]
             decision[key] = cleaned
-    # Downgrade to 'guide' when hallucinations were found in a 'proceed' decision.
-    # Keeping decision='proceed' with capped confidence would cause a routing bug:
-    # the plugin only issues the approval cookie for proceed >= 0.90.
-    if removed and decision.get("decision") == "proceed":
-        decision["decision"] = "guide"
-        decision["confidence"] = min(float(decision.get("confidence", 0.0)), 0.85)
+    # Generalized hallucination penalty — applies to any decision type.
+    #
+    # Rule 1 (hardest): suggestedTables stripped to empty under ANY decision
+    #   → 'clarify' (confidence ≤ 0.45).  No valid data source means the model
+    #   cannot guide the user; asking for clarification is the only safe path.
+    #
+    # Rule 2 (heavy): other fields hallucinated but at least one valid table remains,
+    #   AND the original decision was 'proceed' or 'guide'
+    #   → 'guide' (confidence ≤ 0.70).  The data source is known but the model
+    #   fabricated details, so a direct execute is unsafe.
+    #
+    # 'clarify' and 'error' decisions that already have hallucinations are left at
+    # their decision value — they are already conservative.
+    if removed:
+        tables_now_empty = (
+            "suggestedTables" in removed and not decision.get("suggestedTables")
+        )
+        if tables_now_empty:
+            decision["decision"] = "clarify"
+            decision["confidence"] = min(float(decision.get("confidence", 0.0)), 0.45)
+        elif decision.get("decision") in {"proceed", "guide"}:
+            decision["decision"] = "guide"
+            decision["confidence"] = min(float(decision.get("confidence", 0.0)), 0.70)
     return decision, removed
 
 
@@ -89,9 +115,17 @@ def _build_validation_feedback(removed: dict, decision: dict) -> str:
     parts = []
     for field, names in removed.items():
         parts.append(f"  - {field}: {names} do not exist in the catalog and were removed.")
-    if decision.get("decision") == "guide" and not decision.get("suggestedTables"):
+    if not decision.get("suggestedTables") and "suggestedTables" in removed:
         parts.append(
-            "  - After removal, suggestedTables is now empty — decision was downgraded to 'guide'; consider 'clarify' if no tables remain."
+            "  - suggestedTables is now empty after stripping hallucinations — decision downgraded to "
+            "'clarify' (confidence ≤ 0.45). No valid data source remains; the user must specify "
+            "the correct table or view before any query can be attempted."
+        )
+    elif decision.get("decision") == "guide" and removed:
+        parts.append(
+            "  - Hallucinated names were stripped but at least one valid table remains — "
+            "decision downgraded to 'guide' (confidence ≤ 0.70). "
+            "Direct execution is unsafe; user confirmation is required."
         )
     return "Programmatic catalog validation found the following issues:\n" + "\n".join(parts)
 
@@ -167,7 +201,6 @@ class ControllerDecision(dspy.Module):
         self.analyze_query = dspy.ChainOfThought(QueryAnalysisSignature)
         self.rephrase_query = dspy.ChainOfThought(RephraseQuerySignature)
         self.controller_decision = dspy.ChainOfThought(ControllerDecisionSignature)
-        self.summarize_reasoning = dspy.Predict(ReasoningSummarySignature)
         self.self_reflect: dspy.ChainOfThought | None = None
         self.correct_decision: dspy.ChainOfThought | None = None
         if _REFLECTION_ENABLED:
@@ -219,26 +252,6 @@ class ControllerDecision(dspy.Module):
             coherence_note=coherence_note,
         )
 
-        # Collect chain-of-thought reasoning from all DSPy ChainOfThought modules,
-        # then sanitize it into a plain business-language summary with no technical terms.
-        reasoning_parts: list[str] = []
-        if getattr(analysis, "reasoning", None):
-            reasoning_parts.append(analysis.reasoning.strip())
-        if query_classification in _REPHRASE_CLASSIFICATIONS and getattr(rewritten, "reasoning", None):
-            reasoning_parts.append(rewritten.reasoning.strip())
-        if getattr(raw, "reasoning", None):
-            reasoning_parts.append(raw.reasoning.strip())
-
-        raw_reasoning_text = "\n\n".join(reasoning_parts)
-        aggregated_reasoning: str = ""
-        if raw_reasoning_text:
-            try:
-                summary = self.summarize_reasoning(raw_reasoning=raw_reasoning_text)
-                aggregated_reasoning = summary.business_summary.strip()
-            except Exception as exc:
-                _logger.warning("Reasoning summarization failed (non-fatal): %s", exc)
-                aggregated_reasoning = ""
-
         try:
             decision: dict[str, Any] = json.loads(raw.decision_json)
             if not isinstance(decision, dict):
@@ -284,11 +297,17 @@ class ControllerDecision(dspy.Module):
         removed: dict[str, list] = {}
         validation_feedback = ""
         if catalog_index:
-            decision, removed = _validate_against_catalog(decision, catalog_index)
+            phase3_confidence = float(decision.get("confidence", 0.0))
+            decision, removed = _validate_against_catalog(decision, catalog_index, phase3_confidence)
             validation_feedback = _build_validation_feedback(removed, decision)
             if removed:
-                _logger.info("Phase-3b stripped %d hallucinated names from fields: %s",
-                             sum(len(v) for v in removed.values()), list(removed.keys()))
+                _logger.info(
+                    "Phase-3b stripped %d hallucinated names from fields: %s → decision now=%r confidence=%.2f",
+                    sum(len(v) for v in removed.values()),
+                    list(removed.keys()),
+                    decision.get("decision"),
+                    float(decision.get("confidence", 0.0)),
+                )
             else:
                 _logger.debug("Phase-3b catalog validation clean")
 
@@ -380,9 +399,6 @@ class ControllerDecision(dspy.Module):
                     exc,
                     exc_info=True,
                 )
-
-        # Attach aggregated chain-of-thought reasoning so callers can surface it in the UI.
-        decision["reasoning"] = aggregated_reasoning
 
         # Return dspy.Prediction to enable MLflow LM usage tracking.
         # Prediction.get() is dict-compatible — callers need no changes.

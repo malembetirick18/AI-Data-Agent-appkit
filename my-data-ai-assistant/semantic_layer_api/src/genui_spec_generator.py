@@ -8,12 +8,12 @@ _logger = Logger("semantic-layer-api").child("genui")
 
 class GenUiSpecGenerator(dspy.Module):
     def __init__(self):
-        self.predict = dspy.Predict(GenUiSpecSignature)
+        self.generate = dspy.Predict(GenUiSpecSignature)
 
-    def forward(self, user_prompt: str) -> dspy.Prediction:
+    def forward(self, developer_prompt: str, user_prompt: str) -> dspy.Prediction:
         _logger.info("Generating UI spec — prompt=%r", user_prompt[:80])
         try:
-            result = self.predict(user_prompt=user_prompt)
+            result = self.generate(developer_prompt=developer_prompt, user_prompt=user_prompt)
         except Exception as exc:
             _logger.error("GenUI DSPy predict failed: %s", exc, exc_info=True)
             raise

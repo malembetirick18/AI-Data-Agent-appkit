@@ -4,6 +4,8 @@ import type { GenericUiSpec } from '../types/chat'
 
 export function useSpecStreaming() {
   const [generatedSpecs, setGeneratedSpecs] = useState<Record<string, GenericUiSpec>>({})
+  // Tracks message IDs where spec generation failed — used to activate the Genie fallback renderer.
+  const [failedSpecIds, setFailedSpecIds] = useState<Set<string>>(new Set())
   const [streamingSpecMessageId, setStreamingSpecMessageId] = useState<string | null>(null)
   // Ref counterpart — stable reference for use inside useUIStream callbacks (stale closure prevention)
   const streamingSpecMessageIdRef = useRef<string | null>(null)
@@ -21,6 +23,8 @@ export function useSpecStreaming() {
       }
     },
     onError: () => {
+      const id = streamingSpecMessageIdRef.current
+      if (id) setFailedSpecIds((prev) => { const next = new Set(prev); next.add(id); return next })
       streamingSpecMessageIdRef.current = null
       setStreamingSpecMessageId(null)
     },
@@ -42,13 +46,17 @@ export function useSpecStreaming() {
 
   const clearSpecs = () => {
     setGeneratedSpecs({})
+    setFailedSpecIds(new Set())
     clearStreaming()
   }
 
   return {
     generatedSpecs,
+    failedSpecIds,
     streamingSpecMessageId,
     streamingSpecMessageIdRef,
+    isStreaming: uiStream.isStreaming,
+    hasPartialSpec: Boolean(uiStream.spec),
     uiStream,
     attemptedSpecIdsRef,
     lastSpecCandidateIdRef,

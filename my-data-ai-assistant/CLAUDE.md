@@ -126,10 +126,18 @@ Forwards raw JSONL RFC 6902 patches from Python `/spec/generate` directly to the
 ## Architecture Decisions
 
 - **Controller approval gate**: UUID token in `httpOnly` cookie, single-use, validated in `server.ts` before every Genie call. Bypassing this gate is intentional only for `guide` decision (canSendDirectly logic).
-- **`canSendDirectly` formula**: `isApproved(decision, confidence) || decision === 'guide'`. The low-confidence band (0.70–0.89) requires manual user confirmation — it does NOT set `canSendDirectly = true` automatically.
+- **`canSendDirectly` formula**: `isApproved(decision, confidence) || decision === 'guide'`.
+  - `proceed` + confidence >= 0.90 → `isControllerApproved` → `sendMessage` directly (no panel shown)
+  - `guide` → bottom block → `canSendDirectly: true` → accordion with optional questions; "Confirmer et envoyer" sends directly to Genie
+  - `proceed` + confidence < 0.90 → bottom block → `canSendDirectly: false` → accordion with questions; "Relancer avec ces précisions" re-runs the controller with the enriched prompt
+  - `clarify` → separate block → `canSendDirectly: false` → accordion with required questions; re-runs the controller on submit
+  - Do NOT set `canSendDirectly: true` for low-confidence `proceed` — the controller signature allows `proceed` at 0.50–0.75 when "mapping requires assumptions"; the client must route these back through the controller.
 - **Reflexion pipeline**: enabled via `ENABLE_CONTROLLER_REFLECTION=true`. Adds 2 LLM calls (phases 3c + 4). Only fires when there is a real signal (`bool(removed) or bool(coherence_note)`). Disabled in dev. Non-fatal — errors fall back to Phase 3b output.
 - **Scope guardrail runs before Reflexion**: the scope guardrail block executes after Phase 3b validation and **before** the Reflexion block so a scope-forced `clarify` never wastes two extra LLM calls.
-- **`generate_spec` async**: FastAPI threadpool exhaustion under load. Always keep `/spec/generate` as `async def` with `asyncio.to_thread`.
+- **`generate_spec` streaming**: `/spec/generate` uses `dspy.streamify()` with typed chunk dispatch (`StreamResponse`, `StatusMessage`, `Prediction`). Patches stream as JSONL lines; status updates stream as `# comment` lines. No server-side patch validation — `useUIStream` handles assembly on the client. Do not re-add `_parse_patches`, `_assemble_spec_from_patches`, or any intermediate parse layer.
+- **`/chat/stream` DSPy streaming**: Controller endpoint also uses `dspy.streamify()`. Emits `event: status` (progress), `event: reasoning_token` (partial reasoning), and `event: controller_decision` (final) SSE events. Both endpoints use the FastAPI ≥ 0.134 `yield` pattern (`response_class=StreamingResponse`, `AsyncIterable[str]` return) — no manual `StreamingResponse(generator)` wrapping.
+- **`StatusMessageProvider` classes**: `ControllerStatusProvider` and `SpecStatusProvider` provide real-time observability into LM calls via DSPy's streaming infrastructure. They are registered once at startup via `dspy.streamify(..., status_message_provider=...)`.
+- **LM config DRY**: Both `lm` and `genui_lm` share `_LM_KWARGS` dict. Do not duplicate Azure config params.
 - **Config constants**: `SEMANTIC_LAYER_API_URL` and `REQUEST_TIMEOUT_MS` are defined once in `plugins/controller-ai-agent/controller-ai-agent.ts` and exported. `server.ts` imports them — do not redeclare locally.
 - **Single spec endpoint**: Only `/api/spec-stream` exists. Both `AiChatDrawer`'s main `useUIStream` and `QueryDataTable`'s internal `useUIStream` use this endpoint. The `/api/spec` endpoint and `handleSpecRequest`/`assembleSpecFromPatches` have been deleted (April 2026).
 - **React client split**: `ai-chat-drawer.tsx` was refactored from 3,568 lines into focused modules: `types/chat.ts`, `lib/{chart-utils,message-utils,spec-utils,genie-utils}.ts`, `components/{InteractiveChart,MessageContent,ClarificationPanel,TeamControlsPanel,SaveControlModal}.tsx`, `hooks/{useSpecStreaming,useControllerState,useSaveDialog}.ts`, `registry/chat-ui-registry.tsx`. The orchestration shell `ai-chat-drawer.tsx` is ~600 lines.
@@ -176,3 +184,46 @@ Three signature classes (`QueryClassificationSignature`, `RequiredColumnsSignatu
 
 ### Bug 21 — `INITIAL_USER_RIGHTS` exported from component file (`react-refresh/only-export-components`)
 `client/src/components/SaveControlModal.tsx`: exporting a non-component constant (`INITIAL_USER_RIGHTS`) from a component file breaks React fast-refresh. The export was unused — `useSaveDialog.ts` already defines its own local copy. Fixed: removed the export entirely.
+
+---
+
+## Bugs Fixed (April 2026 — GenUI Rendering Pass)
+
+### Bug 22 — `memo()` wrappers in `chat-ui-registry.tsx` caused blank renders
+`client/src/registry/chat-ui-registry.tsx`: all 18 registry components were wrapped with `React.memo()`. `defineRegistry` from `@json-render/react` calls components as **plain JavaScript functions** (confirmed at line 1184 of the library source: `return componentFn({props, children, ...})`), not via JSX. `memo(fn)` returns a `{ $typeof: Symbol(react.memo), type: fn }` object — not a callable function — so every call threw a `TypeError`, caught silently by `ElementErrorBoundary`, producing blank renders. Fixed: removed all `memo()` wrappers. All registry components must be plain named functions.
+
+### Bug 23 — `specHasChartElement` gate blocked non-chart specs from rendering
+`client/src/components/MessageContent.tsx` and `ai-chat-drawer.tsx` used `specHasChartElement` to decide whether to render via `<Renderer>`. A valid spec containing only `DataTable` + `TextContent` returned `false` → fell through to Genie fallback → blank or duplicate display. Fixed: replaced `specHasChartElement` with `specIsValid` (checks `{ root, elements }` format correctness, not content type). New function added to `client/src/lib/genie-utils.ts`.
+
+### Bug 24 — Python LLM generated wrong patch format (`/title`, `/layout`, `/children`)
+`semantic_layer_api/src/signatures/genui_spec_signature.py`: the `spec_patches` OutputField description was too weak — LLM generated patches at `/title`, `/layout`, `/children` instead of `/root` + `/elements/<key>`. Assembled spec had `root: undefined` → `Renderer` returned null. Fixed: rewrote the field description with explicit REQUIRED / OPTIONAL / FORBIDDEN path rules and an inline JSONL example enforcing the correct format.
+
+### Bug 25 — `AreaChartViz` missing from `genui_catalog_prompt.txt`
+`semantic_layer_api/catalogs/genui_catalog_prompt.txt`: the AVAILABLE COMPONENTS list had 17 entries but `shared/genui-catalog.ts` and `chat-ui-registry.tsx` both define 18 components. `AreaChartViz` was entirely absent from the LLM prompt — the model could never generate it. Fixed: added `AreaChartViz` entry (same props shape as `LineChartViz`; prefer it for cumulative totals or filled-volume data). Updated count 17 → 18.
+
+### Bug 26 — `GenUiSpecSignature` description forbade `/state` patches (conflicted with catalog)
+`semantic_layer_api/src/signatures/genui_spec_signature.py`: the field description said "never use … any other top-level path", which excluded `/state` patches. But `genui_catalog_prompt.txt` (the LLM system prompt) explicitly teaches `/state`, `repeat`, `$bindState`, etc. for interactive components (`WorkflowRuleBuilder`, `FormPanel`, form inputs). The contradiction produced unpredictable behavior for state-driven specs. Fixed: updated the description to list `/state/<path>` as OPTIONAL and document the `repeat`, `on`, `visible`, `watch` element fields.
+
+### Bug 27 — `useMemo` / hooks inside `defineRegistry` components (anti-pattern)
+`client/src/registry/chat-ui-registry.tsx`: several registry components (`DataTable`, chart renderers) used `useMemo` internally. Because `defineRegistry` calls them as plain functions (not via JSX), hook calls attach to the outer registry-wrapper React fiber — violating rules of hooks and causing stale memoized values. Fixed: removed all `useMemo` calls from registry components; moved `VISIBLE_COLS` and `LARGE_TABLE_THRESHOLD` to module scope; all values are now computed inline per call.
+
+### Bug 28 — `useUIStream` instantiated inside registry component (`QueryDataTable`)
+`client/src/registry/chat-ui-registry.tsx`: `QueryDataTable` had its own `useUIStream` instance. Same fiber-attachment anti-pattern as Bug 27 — hooks must not live in registry components. Fixed: `QueryDataTable` is now a simple placeholder that renders `props.caption` only; the single `useUIStream` instance lives exclusively in `hooks/useSpecStreaming.ts` (called from `ai-chat-drawer.tsx`).
+
+### Bug 29 — Phase-3b over-stripped high-confidence table selections
+`semantic_layer_api/src/controller_decision.py`: `_validate_against_catalog` applied a hard Rule 1 penalty (override to `clarify` + confidence ≤ 0.45) whenever `suggestedTables` was stripped empty — even when Phase-3 had returned a very high confidence (e.g. 0.97) with a valid table the catalog index simply didn't know about (e.g. a materialized view). The correct, confident answer was discarded in favour of a `clarify` dead-end. Fixed: added `_HIGH_CONFIDENCE_THRESHOLD = 0.85`. When Phase-3 confidence ≥ 0.85 and stripping would empty `suggestedTables`, the strip is skipped entirely — the LLM's table choice is trusted, `removed` stays empty, and Reflexion (Phase 3c+4) does not fire unnecessarily. Low-confidence cases (< 0.85) are still subject to Rule 1 unchanged.
+
+---
+
+## Registry Rules (`chat-ui-registry.tsx`)
+
+- **No hooks of any kind** inside registry components — `defineRegistry` calls them as plain functions, not via JSX. `useState`, `useMemo`, `useEffect`, `useUIStream`, etc. all attach to the wrong fiber.
+- **No `memo()` wrappers** — `memo(fn)` is not callable as a plain function and will throw silently, producing blank renders.
+- **No `React.lazy` or `Suspense`** — same reason.
+- **Module-level constants only** — shared constants like `VISIBLE_COLS` must be at module scope, not computed inside components.
+- **`useUIStream` belongs only in `hooks/useSpecStreaming.ts`** — destructured and passed down from `ai-chat-drawer.tsx`. Never instantiate it elsewhere.
+
+## `specIsValid` vs `specHasChartElement`
+
+- Use **`specIsValid`** as the gate for rendering via `<Renderer>`. It checks `{ root: string, elements: object }` format — correct for any spec type (table-only, text-only, chart, form, mixed).
+- `specHasChartElement` checks content type — do not use it as a render gate. It remains available for other feature-flag purposes only.

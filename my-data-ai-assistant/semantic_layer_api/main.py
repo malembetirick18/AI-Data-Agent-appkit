@@ -1,23 +1,42 @@
-from fastapi import FastAPI, HTTPException
-import dspy
-from pydantic import BaseModel
-import mlflow
-import os
-import asyncio
+"""Semantic Layer API — FastAPI + DSPy streaming refactor.
+
+Refactored based on:
+  • https://fastapi.tiangolo.com/advanced/stream-data/
+  • https://github.com/stanfordnlp/dspy/blob/main/docs/docs/tutorials/streaming/index.md
+
+Key changes
+───────────
+1. Endpoints use `response_class=StreamingResponse` with `yield` directly
+   from the path-operation function (FastAPI ≥ 0.134 pattern) instead of
+   manually constructing StreamingResponse with an inner generator.
+2. DSPy streaming uses typed chunk dispatch (`StreamResponse`, `Prediction`,
+   `StatusMessage`) instead of raw string buffering.
+3. A `StatusMessageProvider` gives real-time observability into LM calls.
+4. The controller endpoint is also streamified for consistency, so it can
+   emit status messages while the LM is thinking.
+"""
+from __future__ import annotations
+
 import json
-import re
+import os
+from collections.abc import AsyncIterable
 from typing import Any, Union
 
+import dspy
+import mlflow
+from dspy.streaming import StatusMessage, StreamListener, StreamResponse
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from starlette.responses import StreamingResponse
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
+from dotenv import load_dotenv
+
 from src.logger import Logger
 from src.controller_decision import ControllerDecision
 from src.genui_spec_generator import GenUiSpecGenerator
 
-from dotenv import load_dotenv
 
-
-# ── Request / response models ─────────────────────────────────────────────────
+# ── Request / Response models ─────────────────────────────────────────────────
 
 class ControllerResponse(BaseModel):
     decision: str
@@ -46,132 +65,29 @@ class SpecRequest(BaseModel):
     genie_result: Union[dict, list, str, None] = None
 
 
-
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-
-# ── Bootstrap ─────────────────────────────────────────────────────────────────
-
-load_dotenv(override=True)
-
-logger = Logger()
-
-catalog_path = os.path.join(os.path.dirname(__file__), "catalogs", "genie_knowledge_store.json")
-with open(catalog_path, "r", encoding="utf-8") as f:
-    genie_knowledge_store = json.load(f)
-default_catalog_info = json.dumps(genie_knowledge_store)
-
-genui_catalog_prompt_path = os.path.join(os.path.dirname(__file__), "catalogs", "genui_catalog_prompt.txt")
-with open(genui_catalog_prompt_path, "r", encoding="utf-8") as f:
-    default_genui_catalog_prompt = f.read()
-
-log_traces = os.getenv("MLFLOW_LOG_TRACES", "true") == "true"
-silent = os.getenv("MLFLOW_SILENT", "true") == "true"
-
-mlflow.dspy.autolog(log_traces=log_traces, silent=silent)
-mlflow.set_tracking_uri(os.getenv("MLFLOW_TRACKING_URI", "databricks"))
-mlflow.set_experiment(os.getenv("MLFLOW_SEMANTIC_LAYER_TRACING_EXPERIMENT", "semantic-layer-experiment"))
-
-_AZURE_API_KEY = os.getenv("AZURE_API_KEY")
-_AZURE_API_BASE = os.getenv("AZURE_API_BASE")
-if not _AZURE_API_KEY:
-    raise RuntimeError("Missing required environment variable: AZURE_API_KEY")
-if not _AZURE_API_BASE:
-    raise RuntimeError("Missing required environment variable: AZURE_API_BASE")
-
-lm = dspy.LM(
-    model="azure/gpt-5.3-codex",
-    api_key=_AZURE_API_KEY,
-    api_base=_AZURE_API_BASE,
-    api_version="2025-04-01-preview",
-    model_type="responses",
-    cache=True,
-    num_retries=3,
-)
-
-# GenUI spec uses its own LM instance with the catalog as system prompt.
-# No JSONAdapter — output is raw JSONL patches, not structured JSON.
-genui_lm = dspy.LM(
-    model="azure/gpt-5.3-codex",
-    api_key=_AZURE_API_KEY,
-    api_base=_AZURE_API_BASE,
-    api_version="2025-04-01-preview",
-    model_type="responses",
-    system_prompt=default_genui_catalog_prompt,
-    cache=True,
-    num_retries=3,
-)
-
-# Instantiate agents once at startup — DSPy modules are stateless per-call
-with dspy.settings.context(lm=lm, adapter=dspy.JSONAdapter(), track_usage=True):
-    controller_agent = ControllerDecision()
-
-with dspy.settings.context(lm=genui_lm, track_usage=True):
-    genui_spec_generator = GenUiSpecGenerator()
-
-logger.info(
-    "Semantic Layer API ready — model=%s catalog=%d chars genui-catalog=%d chars reflection=%s",
-    "azure/gpt-5.3-codex",
-    len(default_catalog_info),
-    len(default_genui_catalog_prompt),
-    os.getenv("ENABLE_CONTROLLER_REFLECTION", "false"),
-)
-
-
-# ── App ───────────────────────────────────────────────────────────────────────
-
-app = FastAPI(root_path="/api", title="Semantic layer API", version="0.0.1")
-
-_allowed_origins_raw = os.getenv("ALLOWED_ORIGINS", "")
-_allowed_origins: list[str] = (
-    [o.strip() for o in _allowed_origins_raw.split(",") if o.strip()]
-    if _allowed_origins_raw
-    else ["*"]
-)
-# CORS: combining allow_origins=["*"] with allow_credentials=True violates the CORS spec
-# and browsers will reject such responses. When explicit origins are configured we enable
-# credentials; when falling back to wildcard we disable credentials.
-_allow_credentials = _allowed_origins != ["*"]
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=_allowed_origins,
-    allow_credentials=_allow_credentials,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-
-@app.get("/health", status_code=200)
-async def health():
-    return {"status": "healthy"}
-
-
-@app.post("/chat/stream")
-async def stream_chat(request: ControllerRequest) -> StreamingResponse:
-    catalog_source = "payload" if request.catalog_info else "default"
-    logger.info("[chat/stream] prompt=%r catalog=%s", request.source_text[:80], catalog_source)
-
-    catalog = request.catalog_info or default_catalog_info
-    conversation_context = (
-        json.dumps(request.conversation_context) if request.conversation_context else ""
-    )
-
-    def _run_controller() -> dspy.Prediction:
-        with dspy.settings.context(lm=lm, adapter=dspy.JSONAdapter(), track_usage=True):
-            return controller_agent(
-                source_text=request.source_text,
-                catalog_info=catalog,
-                conversation_context=conversation_context,
-            )
-
+def _build_spec_prompt(request: SpecRequest) -> str:
+    """Combine prompt text with optional Genie result data."""
+    if not request.genie_result:
+        return request.prompt
     try:
-        result: dspy.Prediction = await asyncio.to_thread(_run_controller)
-    except Exception as exc:
-        logger.error("[chat/stream] LLM call failed: %s", exc, exc_info=True)
-        raise HTTPException(status_code=502, detail=f"LLM controller error: {exc}") from exc
+        genie_data = (
+            json.dumps(request.genie_result)
+            if not isinstance(request.genie_result, str)
+            else request.genie_result
+        )
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(
+            status_code=400,
+            detail="genie_result contains non-serializable data",
+        ) from exc
+    return f"{request.prompt}\n\nData:\n{genie_data}"
 
-    response = ControllerResponse(
+
+def _prediction_to_controller_response(result: dspy.Prediction) -> ControllerResponse:
+    """Map a DSPy Prediction to the typed API response."""
+    return ControllerResponse(
         decision=result.get("decision", "error"),
         confidence=float(result.get("confidence", 0.0)),
         message=result.get("message", ""),
@@ -184,89 +100,242 @@ async def stream_chat(request: ControllerRequest) -> StreamingResponse:
         queryClassification=result.get("queryClassification"),
         coherenceNote=result.get("coherenceNote", ""),
         needsParams=bool(result.get("needsParams", False)),
-        reasoning=result.get("reasoning", ""),
     )
 
-    logger.info("[chat/stream] → decision=%s confidence=%.2f classification=%s questions=%d",
-                response.decision, response.confidence,
-                response.queryClassification or "-", len(response.questions))
 
-    async def event_generator():
-        try:
-            payload = {"role": "controller", "data": response.model_dump()}
-            yield f"event: controller_decision\ndata: {json.dumps(payload)}\n\n"
-        except Exception as exc:
-            logger.error("[chat/stream] event_generator failed: %s", exc, exc_info=True)
-            yield f"event: error\ndata: {json.dumps({'error': 'Stream generation failed'})}\n\n"
+# ── Status message providers (DSPy streaming observability) ───────────────────
 
-    return StreamingResponse(event_generator(), media_type="text/event-stream")
+class ControllerStatusProvider(dspy.streaming.StatusMessageProvider):
+    """Emits human-readable status updates while the controller LM runs."""
+
+    def lm_start_status_message(self, instance, inputs):
+        return "Analyzing query against catalog…"
+
+    def lm_end_status_message(self, outputs):
+        return "Controller decision ready."
 
 
-@app.post("/spec/generate")
-async def generate_spec(request: SpecRequest) -> StreamingResponse:
+class SpecStatusProvider(dspy.streaming.StatusMessageProvider):
+    """Emits status updates while the GenUI spec LM runs."""
+
+    def lm_start_status_message(self, instance, inputs):
+        return "Generating UI spec…"
+
+    def lm_end_status_message(self, outputs):
+        return "Spec generation complete."
+
+
+# ── Bootstrap ─────────────────────────────────────────────────────────────────
+
+load_dotenv(override=True)
+
+logger = Logger()
+
+catalog_path = os.path.join(
+    os.path.dirname(__file__), "catalogs", "genie_knowledge_store.json"
+)
+with open(catalog_path, "r", encoding="utf-8") as f:
+    genie_knowledge_store = json.load(f)
+default_catalog_info = json.dumps(genie_knowledge_store)
+
+genui_catalog_prompt_path = os.path.join(
+    os.path.dirname(__file__), "catalogs", "genui_catalog_prompt.txt"
+)
+with open(genui_catalog_prompt_path, "r", encoding="utf-8") as f:
+    default_genui_catalog_prompt = f.read()
+
+log_traces = os.getenv("MLFLOW_LOG_TRACES", "true") == "true"
+silent = os.getenv("MLFLOW_SILENT", "true") == "true"
+
+mlflow.dspy.autolog(log_traces=log_traces, silent=silent)
+mlflow.set_tracking_uri(os.getenv("MLFLOW_TRACKING_URI", "databricks"))
+mlflow.set_experiment(
+    os.getenv("MLFLOW_SEMANTIC_LAYER_TRACING_EXPERIMENT", "semantic-layer-experiment")
+)
+
+AZURE_API_KEY = os.getenv("AZURE_API_KEY")
+AZURE_API_BASE = os.getenv("AZURE_API_BASE")
+
+if not AZURE_API_KEY:
+    raise RuntimeError("Missing required environment variable: AZURE_API_KEY")
+if not AZURE_API_BASE:
+    raise RuntimeError("Missing required environment variable: AZURE_API_BASE")
+
+lm = dspy.LM(
+    model="azure/gpt-5.3-codex",
+    api_key=AZURE_API_KEY,
+    api_base=AZURE_API_BASE,
+    api_version="2025-04-01-preview",
+    model_type="responses",
+    cache=True,
+    num_retries=3,
+)
+
+dspy.configure(lm=lm, adapter=dspy.JSONAdapter(), track_usage=True)
+
+controller_agent = ControllerDecision()
+genui_spec_generator = GenUiSpecGenerator()
+
+# Streamified versions with typed listeners
+stream_controller = dspy.streamify(
+    controller_agent,
+    stream_listeners=[
+        StreamListener(
+            signature_field_name="reasoning",
+            predict=controller_agent.controller_decision,
+            predict_name="controller_decision",
+        ),
+    ],
+    status_message_provider=ControllerStatusProvider(),
+)
+
+stream_spec = dspy.streamify(
+    genui_spec_generator,
+    stream_listeners=[
+        StreamListener(signature_field_name="spec_patches"),
+    ],
+    status_message_provider=SpecStatusProvider(),
+)
+
+logger.info(
+    "Semantic Layer API ready — model=%s catalog=%d chars genui-catalog=%d chars",
+    "azure/gpt-5.3-codex",
+    len(default_catalog_info),
+    len(default_genui_catalog_prompt),
+)
+
+
+# ── App ───────────────────────────────────────────────────────────────────────
+
+app = FastAPI(root_path="/api", title="Semantic layer API", version="0.1.0")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+@app.get("/health", status_code=200)
+async def health():
+    return {"status": "healthy"}
+
+
+# ── Controller endpoint (SSE) ────────────────────────────────────────────────
+
+@app.post("/chat/stream", response_class=StreamingResponse)
+async def stream_chat(request: ControllerRequest) -> AsyncIterable[str]:
+    """Stream controller decision as Server-Sent Events.
+
+    Yields status messages while the LM is running, then emits the final
+    controller_decision event once the Prediction is ready.
+    """
+    catalog_source = "payload" if request.catalog_info else "default"
+    logger.info(
+        "[chat/stream] prompt=%r catalog=%s",
+        request.source_text[:80],
+        catalog_source,
+    )
+
+    catalog = request.catalog_info or default_catalog_info
+    conversation_context = (
+        json.dumps(request.conversation_context)
+        if request.conversation_context
+        else ""
+    )
+
+    reasoning_parts: list[str] = []
+
+    try:
+         async for chunk in stream_controller(
+                source_text=request.source_text,
+                catalog_info=catalog,
+                conversation_context=conversation_context,
+            ):
+                if isinstance(chunk, StatusMessage):
+                    yield f"event: status\ndata: {json.dumps({'message': chunk.message})}\n\n"
+
+                elif isinstance(chunk, StreamResponse):
+                    # Accumulate reasoning tokens from controller_decision predictor
+                    if chunk.chunk:
+                        reasoning_parts.append(chunk.chunk)
+                    yield (
+                        f"event: reasoning_token\n"
+                        f"data: {json.dumps({'chunk': chunk.chunk})}\n\n"
+                    )
+
+                elif isinstance(chunk, dspy.Prediction):
+                    response = _prediction_to_controller_response(chunk)
+                    # Inject reasoning assembled from the stream, not from the Prediction
+                    response.reasoning = "".join(reasoning_parts)
+                    logger.info(
+                        "[chat/stream] → decision=%s confidence=%.2f classification=%s questions=%d",
+                        response.decision,
+                        response.confidence,
+                        response.queryClassification or "-",
+                        len(response.questions),
+                    )
+                    payload = {"role": "controller", "data": response.model_dump()}
+                    yield f"event: controller_decision\ndata: {json.dumps(payload)}\n\n"
+
+    except Exception as exc:
+        logger.error("[chat/stream] LLM call failed: %s", exc, exc_info=True)
+        error_payload = json.dumps({"error": f"LLM controller error: {exc}"})
+        yield f"event: error\ndata: {error_payload}\n\n"
+           
+
+
+# ── Spec generation endpoint (JSONL stream) ──────────────────────────────────
+
+@app.post("/spec/generate", response_class=StreamingResponse)
+async def generate_spec(request: SpecRequest) -> AsyncIterable[str]:
+    """Stream GenUI spec patches as JSONL lines.
+
+    Each line is a complete JSON patch object. Status messages are emitted
+    as SSE-style comments (lines prefixed with `#`) so they don't break
+    JSONL consumers but can be consumed by aware clients.
+    """
     if not request.prompt:
         raise HTTPException(status_code=400, detail="prompt is required")
 
-    logger.info("[spec/generate] prompt=%r has_data=%s", request.prompt[:80], bool(request.genie_result))
-
-    user_content = request.prompt
-    if request.genie_result:
-        try:
-            genie_data = (
-                json.dumps(request.genie_result)
-                if not isinstance(request.genie_result, str)
-                else request.genie_result
-            )
-        except (TypeError, ValueError) as exc:
-            logger.error("[spec/generate] genie_result serialization failed: %s", exc)
-            raise HTTPException(status_code=400, detail="genie_result contains non-serializable data") from exc
-        user_content += f"\n\nData:\n{genie_data}"
-
-    def _run_genui() -> dspy.Prediction:
-        with dspy.settings.context(lm=genui_lm, track_usage=True):
-            return genui_spec_generator(user_prompt=user_content)
+    user_content = _build_spec_prompt(request)
+    logger.info(
+        "[spec/generate] prompt=%r has_data=%s",
+        request.prompt[:80],
+        bool(request.genie_result),
+    )
 
     try:
-        result = await asyncio.to_thread(_run_genui)
+        async for chunk in stream_spec(
+            developer_prompt=default_genui_catalog_prompt,
+            user_prompt=user_content,
+        ):
+            if isinstance(chunk, StatusMessage):
+                # Emit as a comment — JSONL readers ignore these
+                yield f"# {chunk.message}\n"
+
+            elif isinstance(chunk, StreamResponse):
+                # Individual tokens — not complete JSONL lines, skip content yield.
+                # StatusMessage already covers progress; Prediction holds the full output.
+                pass
+
+            elif isinstance(chunk, dspy.Prediction):
+                # dspy.Prediction is the authoritative source for spec_patches.
+                # StreamResponse chunks are partial tokens and cannot be used as JSONL.
+                # When the LM result is cached, StreamResponse is skipped entirely and
+                # only Prediction is emitted — so this branch must always yield the patches.
+                patches = getattr(chunk, "spec_patches", "") or ""
+                if patches.strip():
+                    logger.info("[spec/generate] streaming complete")
+                    for line in patches.split("\n"):
+                        stripped = line.strip()
+                        if stripped:
+                            yield stripped + "\n"
+                else:
+                    logger.error("[spec/generate] LLM produced empty spec_patches")
+
     except Exception as exc:
-        logger.error("[spec/generate] LLM call failed: %s", exc, exc_info=True)
-        raise HTTPException(status_code=502, detail=f"LLM spec generation error: {exc}") from exc
-
-    raw = result.spec_patches or ""
-    # Strip optional markdown code fences
-    fenced = re.search(r"```(?:json[lL]?)?\s*([\s\S]*?)```", raw.strip())
-    if fenced:
-        raw = fenced.group(1)
-
-    # Collect only valid RFC 6902 "add" patch lines (op + path + value required)
-    _REQUIRED_PATCH_KEYS = {"op", "path", "value"}
-    patch_lines: list[str] = []
-    for line in raw.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            patch = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(patch, dict) and patch.get("op") == "add":
-            if _REQUIRED_PATCH_KEYS.issubset(patch.keys()):
-                patch_lines.append(line)
-            else:
-                logger.warning("[spec/generate] incomplete patch ignored (missing path/value): %r", patch)
-
-    if not patch_lines:
-        logger.error("[spec/generate] LLM produced no valid patches — raw=%r", raw[:300])
-        raise HTTPException(status_code=502, detail="LLM produced no valid UI spec patches.")
-
-    logger.info("[spec/generate] → %d patches", len(patch_lines))
-
-    async def event_generator():
-        for line in patch_lines:
-            yield line + "\n"
-
-    return StreamingResponse(event_generator(), media_type="text/plain; charset=utf-8")
-
-
-
-
+        logger.error("[spec/generate] failed during streaming: %s", exc, exc_info=True)
+        yield f"# error: {exc}\n"
+            

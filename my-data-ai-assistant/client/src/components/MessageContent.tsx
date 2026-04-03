@@ -8,7 +8,6 @@ import { chatUiRegistry } from '../registry/chat-ui-registry'
 import {
   toGenieStatementResponse,
   buildSpecFromGenieStatement,
-  specHasChartElement,
 } from '../lib/genie-utils'
 import type { Message, ContentBlock, GenericUiSpec } from '../types/chat'
 
@@ -124,19 +123,43 @@ const MessageContent = memo(function MessageContent({
   generatedSpec,
   registry,
   hideText,
+  isSpecStreaming,
 }: {
   msg: Message
   messageId: string
   generatedSpec: GenericUiSpec | undefined
   registry: typeof chatUiRegistry
   hideText?: boolean
+  isSpecStreaming?: boolean
 }) {
-  if (generatedSpec && specHasChartElement(generatedSpec)) {
+  if (generatedSpec) {
     return (
       <>
         <JSONUIProvider key={messageId} registry={registry}>
-          <Renderer spec={generatedSpec} registry={registry} />
+          <Renderer spec={generatedSpec} registry={registry} loading={isSpecStreaming} />
         </JSONUIProvider>
+      </>
+    )
+  }
+
+  // During active GenUI streaming: the parent renders the two-step progress indicator.
+  // Skip attachment/fallback rendering here to prevent the Genie chart from flickering
+  // in and out. Only preserve any visible text or block content.
+  if (isSpecStreaming) {
+    const hasText = !hideText && Boolean(msg.content?.trim())
+    const hasBlocksNow = Boolean(msg.blocks?.length)
+    if (!hasText && !hasBlocksNow) return null
+    return (
+      <>
+        {hasText && <Text size="sm" style={{ lineHeight: 1.55 }}>{msg.content}</Text>}
+        {hasBlocksNow && (
+          <Box>
+            {msg.blocks!.map((block, blockIndex) => (
+              // eslint-disable-next-line react/no-array-index-key
+              <RenderBlock key={blockIndex} block={block} />
+            ))}
+          </Box>
+        )}
       </>
     )
   }

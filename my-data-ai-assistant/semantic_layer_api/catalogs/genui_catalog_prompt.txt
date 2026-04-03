@@ -46,13 +46,14 @@ For lists where users can add/remove items (todos, carts, etc.), use pushState a
 
 IMPORTANT: State paths use RFC 6901 JSON Pointer syntax (e.g. "/todos/0/title"). Do NOT use JavaScript-style dot notation (e.g. "/todos.length" is WRONG). To generate unique IDs for new items, use "$id" instead of trying to read array length.
 
-AVAILABLE COMPONENTS (17):
+AVAILABLE COMPONENTS (20):
 
 - Stack: { gap?: number } - Vertical layout container for assistant blocks. [accepts children]
 - TextContent: { content: string, weight?: number, size?: string } - Plain text or emphasized text content.
 - BulletList: { items: Array<string> } - Bulleted list content.
 - DataTable: { caption?: string, headers: Array<string>, rows: Array<Array<string>> } - Tabular content with headers and rows.
 - LineChartViz: { title: string, data: Array<unknown>, xKey: string, series: Array<{ yKey: string, yName: string, stroke?: string }>, yLabel?: string, source?: string } - Line chart using AgCharts. series is an array of {yKey, yName, stroke?}. Use for time series or continuous numeric X axis with one or more numeric Y series.
+- AreaChartViz: { title: string, data: Array<unknown>, xKey: string, series: Array<{ yKey: string, yName: string, stroke?: string }>, yLabel?: string, source?: string } - Area chart using AgCharts. Same props as LineChartViz. Prefer over LineChartViz when visualising cumulative totals, filled volume, or when the area under the curve carries meaning (e.g. total spend over time, inventory levels).
 - BarChartViz: { title: string, data: Array<unknown>, xKey: string, yKey: string, color?: string } - Bar chart using AgCharts. Use for categorical comparisons with a single numeric metric.
 - PieChartViz: { title: string, data: Array<unknown>, angleKey: string, labelKey: string } - Pie chart using AgCharts. angleKey must be a numeric column (the measured value), labelKey must be a string/category column (the slice label). Use when showing part-to-whole distribution across a small number of categories (≤10).
 - DonutChartViz: { title: string, data: Array<unknown>, angleKey: string, labelKey: string } - Donut chart using AgCharts. Same props as PieChartViz. Prefer over pie when a central KPI label or summary value needs to be shown in the hole.
@@ -65,6 +66,8 @@ AVAILABLE COMPONENTS (17):
 - NumberInputField: { label: string, placeholder?: string, value?: number, min?: number, max?: number, step?: number, required?: boolean, disabled?: boolean } - Mantine numeric input for thresholds and tolerances.
 - ToggleField: { label: string, description?: string, checked?: boolean, disabled?: boolean } - Mantine toggle switch for binary workflow choices.
 - WorkflowRuleBuilder: { title?: string, description?: string, fields: Array<{ value: string, label: string }>, operators?: Array<string>, rules: Array<{ field?: string, operator?: string, valueText?: string, valueNumber?: number, valueType?: "text" | "number" }> } - Workflow input builder for conditions such as equals, contains, greater than, or strictly lower than.
+- AccordionGroup: { variant?: "default" | "contained" | "separated" } - Accordion container for grouped collapsible sections. [accepts AccordionSection children] Defaults to "separated" variant.
+- AccordionSection: { title: string, value: string } - Single accordion item with a title header and collapsible content area. [accepts children] value must be unique within its parent AccordionGroup. Use to organise multi-section data (e.g. results grouped by category, expandable detail panels, FAQ-style summaries).
 
 AVAILABLE ACTIONS:
 

@@ -1,32 +1,37 @@
-import { memo, useState, useMemo, useEffect } from 'react'
 import {
-  Text, Box, List, Paper, Stack, Group, Loader,
+  Text, Box, List, Paper, Stack, Accordion,
   Select, TextInput, NumberInput, Switch,
 } from '@mantine/core'
 import { AgGridReact } from 'ag-grid-react'
 import { AllEnterpriseModule, ModuleRegistry, themeQuartz } from 'ag-grid-enterprise'
-import { JSONUIProvider, Renderer, defineRegistry, useUIStream } from '@json-render/react'
+import { defineRegistry } from '@json-render/react'
 import { chatUiCatalog } from '../../../shared/genui-catalog'
 import InteractiveChart from '../components/InteractiveChart'
-import type { GenericUiSpec } from '../types/chat'
 
 ModuleRegistry.registerModules([AllEnterpriseModule])
 
+// Components passed to defineRegistry MUST be pure render functions with no hooks.
+// defineRegistry calls them as plain functions (not via JSX), so any hook call
+// would attach to the outer registry-wrapper fiber — an anti-pattern.
+// All state, memoization, and streaming belong exclusively in ai-chat-drawer.tsx.
+const VISIBLE_COLS = 4
+const LARGE_TABLE_THRESHOLD = 200
+
 const { registry: chatUiRegistry } = defineRegistry(chatUiCatalog, {
   components: {
-    Stack: memo(function StackRenderer({ props, children }: { props: Record<string, unknown>; children?: React.ReactNode }) {
+    Stack: function StackRenderer({ props, children }: { props: Record<string, unknown>; children?: React.ReactNode }) {
       return <Stack gap={(props.gap as number | undefined) ?? 6}>{children}</Stack>
-    }),
+    },
 
-    TextContent: memo(function TextContent({ props }: { props: Record<string, unknown> }) {
+    TextContent: function TextContentRenderer({ props }: { props: Record<string, unknown> }) {
       return (
         <Text size={(props.size as 'xs' | 'sm' | 'md' | 'lg' | 'xl' | undefined) ?? 'sm'} fw={props.weight as number | undefined} c={props.c as string | undefined} style={{ lineHeight: 1.55 }}>
           {props.content as React.ReactNode}
         </Text>
       )
-    }),
+    },
 
-    BulletList: memo(function BulletList({ props }: { props: Record<string, unknown> }) {
+    BulletList: function BulletListRenderer({ props }: { props: Record<string, unknown> }) {
       return (
         <List size="sm" mt={4} mb={4} spacing={2} withPadding>
           {(props.items as string[]).map((item, itemIndex) => (
@@ -37,29 +42,17 @@ const { registry: chatUiRegistry } = defineRegistry(chatUiCatalog, {
           ))}
         </List>
       )
-    }),
+    },
 
-    DataTable: memo(function DataTable({ props }: { props: { headers?: unknown; rows?: unknown; caption?: string } }) {
-      const VISIBLE_COLS = 4
-      const LARGE_TABLE_THRESHOLD = 200
-
-      const headers = useMemo(
-        () => Array.isArray(props.headers) ? (props.headers as string[]) : [],
-        [props.headers]
-      )
-      const rows = useMemo(
-        () => Array.isArray(props.rows) ? (props.rows as string[][]) : [],
-        [props.rows]
-      )
-      const columnDefs = useMemo(() => headers.map((h: string, i: number) => ({
+    DataTable: function DataTableRenderer({ props }: { props: { headers?: unknown; rows?: unknown; caption?: string } }) {
+      const headers = Array.isArray(props.headers) ? (props.headers as string[]) : []
+      const rows = Array.isArray(props.rows) ? (props.rows as string[][]) : []
+      const columnDefs = headers.map((h: string, i: number) => ({
         field: h, headerName: h, sortable: true, filter: true, resizable: true, flex: 1, minWidth: 100,
         hide: i >= VISIBLE_COLS,
-      })), [headers])
-      const rowData = useMemo(() =>
-        rows.map((row: string[]) =>
-          Object.fromEntries(headers.map((h: string, i: number) => [h, row[i] ?? '']))
-        ),
-        [headers, rows]
+      }))
+      const rowData = rows.map((row: string[]) =>
+        Object.fromEntries(headers.map((h: string, i: number) => [h, row[i] ?? '']))
       )
 
       const isLarge = rowData.length > LARGE_TABLE_THRESHOLD
@@ -89,83 +82,72 @@ const { registry: chatUiRegistry } = defineRegistry(chatUiCatalog, {
           )}
         </Box>
       )
-    }),
+    },
 
-    LineChartViz: memo(function LineChartViz({ props }: { props: Record<string, unknown> }) {
-      const data = useMemo(() => Array.isArray(props.data) ? props.data as Record<string, unknown>[] : [], [props.data])
-      const yKeys = useMemo(() => Array.isArray(props.series) ? (props.series as Array<{ yKey: string }>).map(s => s.yKey) : [], [props.series])
+    LineChartViz: function LineChartVizRenderer({ props }: { props: Record<string, unknown> }) {
+      const data = Array.isArray(props.data) ? props.data as Record<string, unknown>[] : []
+      const yKeys = Array.isArray(props.series) ? (props.series as Array<{ yKey: string }>).map(s => s.yKey) : []
       return <InteractiveChart data={data} initialXKey={props.xKey as string ?? ''} initialYKeys={yKeys} initialType="line" title={props.title && props.title !== 'Title' ? props.title as string : undefined} yLabel={props.yLabel as string | undefined} source={props.source as string | undefined} />
-    }),
+    },
 
-    BarChartViz: memo(function BarChartViz({ props }: { props: Record<string, unknown> }) {
-      const data = useMemo(() => Array.isArray(props.data) ? props.data as Record<string, unknown>[] : [], [props.data])
-      const yKeys = useMemo(() => props.yKey ? [props.yKey as string] : [], [props.yKey])
+    BarChartViz: function BarChartVizRenderer({ props }: { props: Record<string, unknown> }) {
+      const data = Array.isArray(props.data) ? props.data as Record<string, unknown>[] : []
+      const yKeys = props.yKey ? [props.yKey as string] : []
       return <InteractiveChart data={data} initialXKey={props.xKey as string ?? ''} initialYKeys={yKeys} initialType="bar" title={props.title && props.title !== 'Title' ? props.title as string : undefined} />
-    }),
+    },
 
-    AreaChartViz: memo(function AreaChartViz({ props }: { props: Record<string, unknown> }) {
+    AreaChartViz: function AreaChartVizRenderer({ props }: { props: Record<string, unknown> }) {
       const p = props as { data?: unknown; xKey?: string; series?: Array<{ yKey: string }>; title?: string; yLabel?: string; source?: string }
-      const data = useMemo(() => Array.isArray(p.data) ? p.data as Record<string, unknown>[] : [], [p.data])
-      const yKeys = useMemo(() => Array.isArray(p.series) ? p.series.map(s => s.yKey) : [], [p.series])
+      const data = Array.isArray(p.data) ? p.data as Record<string, unknown>[] : []
+      const yKeys = Array.isArray(p.series) ? p.series.map(s => s.yKey) : []
       return <InteractiveChart data={data} initialXKey={p.xKey ?? ''} initialYKeys={yKeys} initialType="area" title={p.title && p.title !== 'Title' ? p.title : undefined} yLabel={p.yLabel} source={p.source} />
-    }),
+    },
 
-    PieChartViz: memo(function PieChartViz({ props }: { props: Record<string, unknown> }) {
-      const data = useMemo(() => Array.isArray(props.data) ? props.data as Record<string, unknown>[] : [], [props.data])
+    PieChartViz: function PieChartVizRenderer({ props }: { props: Record<string, unknown> }) {
+      const data = Array.isArray(props.data) ? props.data as Record<string, unknown>[] : []
       return <InteractiveChart data={data} initialXKey="" initialYKeys={[]} initialType="pie" initialLabelKey={props.labelKey as string ?? ''} initialValueKey={props.angleKey as string ?? ''} title={props.title && props.title !== 'Title' ? props.title as string : undefined} />
-    }),
+    },
 
-    DonutChartViz: memo(function DonutChartViz({ props }: { props: Record<string, unknown> }) {
-      const data = useMemo(() => Array.isArray(props.data) ? props.data as Record<string, unknown>[] : [], [props.data])
+    DonutChartViz: function DonutChartVizRenderer({ props }: { props: Record<string, unknown> }) {
+      const data = Array.isArray(props.data) ? props.data as Record<string, unknown>[] : []
       return <InteractiveChart data={data} initialXKey="" initialYKeys={[]} initialType="donut" initialLabelKey={props.labelKey as string ?? ''} initialValueKey={props.angleKey as string ?? ''} title={props.title && props.title !== 'Title' ? props.title as string : undefined} />
-    }),
+    },
 
-    RadarChartViz: memo(function RadarChartViz({ props }: { props: Record<string, unknown> }) {
-      const data = useMemo(() => Array.isArray(props.data) ? props.data as Record<string, unknown>[] : [], [props.data])
+    RadarChartViz: function RadarChartVizRenderer({ props }: { props: Record<string, unknown> }) {
+      const data = Array.isArray(props.data) ? props.data as Record<string, unknown>[] : []
       return <InteractiveChart data={data} initialXKey="" initialYKeys={[]} initialType="radar" initialLabelKey={props.angleKey as string ?? ''} initialValueKey={props.radiusKey as string ?? ''} title={props.title && props.title !== 'Title' ? props.title as string : undefined} />
-    }),
+    },
 
-    BubbleChartViz: memo(function BubbleChartViz({ props }: { props: Record<string, unknown> }) {
-      const data = useMemo(() => Array.isArray(props.data) ? props.data as Record<string, unknown>[] : [], [props.data])
-      const yKeys = useMemo(() => props.yKey ? [props.yKey as string] : [], [props.yKey])
+    BubbleChartViz: function BubbleChartVizRenderer({ props }: { props: Record<string, unknown> }) {
+      const data = Array.isArray(props.data) ? props.data as Record<string, unknown>[] : []
+      const yKeys = props.yKey ? [props.yKey as string] : []
       return <InteractiveChart data={data} initialXKey={props.xKey as string ?? ''} initialYKeys={yKeys} initialType="bubble" initialSizeKey={props.sizeKey as string ?? ''} title={props.title && props.title !== 'Title' ? props.title as string : undefined} />
-    }),
-
-    QueryDataTable: memo(function QueryDataTable({ props }) {
-      const [error, setError] = useState<string | null>(null)
-      const paramsKey = JSON.stringify(props.parameters ?? {})
-      const uiStream = useUIStream({
-        api: '/api/spec-stream',
-        onError: () => setError('Erreur de chargement'),
-      })
-
-      useEffect(() => {
-        if (!props.queryKey) return
-        void uiStream.send(props.queryKey, { genieResult: props.parameters ?? {} })
-      }, [props.queryKey, paramsKey]) // eslint-disable-line react-hooks/exhaustive-deps
-
-      const spec = uiStream.spec as GenericUiSpec | undefined
-      // Suppress stale error while a new stream is in progress
-      const displayError = uiStream.isStreaming ? null : error
-
+    },
+    
+    QueryDataTable: function QueryDataTableRenderer({ props }) {
       return (
         <Box mt="xs" mb="xs">
           {props.caption && <Text size="xs" c="dimmed" mb={4} fs="italic">{props.caption}</Text>}
-          {!spec && !displayError && (
-            <Group gap="xs">
-              <Loader size="xs" color="teal" type="dots" />
-              <Text size="xs" c="dimmed">Chargement...</Text>
-            </Group>
-          )}
-          {displayError && <Text size="xs" c="red">{displayError}</Text>}
-          {spec && (
-            <JSONUIProvider registry={chatUiRegistry}>
-              <Renderer spec={spec} registry={chatUiRegistry} />
-            </JSONUIProvider>
-          )}
         </Box>
       )
-    }),
+    },
+
+    AccordionGroup: function AccordionGroupRenderer({ props, children }: { props: Record<string, unknown>; children?: React.ReactNode }) {
+      return (
+        <Accordion variant={(props.variant as 'default' | 'contained' | 'separated' | undefined) ?? 'separated'}>
+          {children}
+        </Accordion>
+      )
+    },
+
+    AccordionSection: function AccordionSectionRenderer({ props, children }: { props: Record<string, unknown>; children?: React.ReactNode }) {
+      return (
+        <Accordion.Item value={props.value as string}>
+          <Accordion.Control>{props.title as string}</Accordion.Control>
+          <Accordion.Panel>{children}</Accordion.Panel>
+        </Accordion.Item>
+      )
+    },
 
     FormPanel: ({ props, children }) => (
       <Paper p="sm" withBorder radius="md" style={{ backgroundColor: '#ffffff' }}>
@@ -226,7 +208,7 @@ const { registry: chatUiRegistry } = defineRegistry(chatUiCatalog, {
               const ruleKey = [rule.field ?? 'field', rule.operator ?? 'operator', rule.valueText ?? '', String(rule.valueNumber ?? '')].join('|') || `rule-${index}`
               return (
                 <Paper key={ruleKey} p="xs" radius="sm" style={{ backgroundColor: '#f8f9fa' }}>
-                  <Group grow align="flex-start">
+                  <Stack gap="xs">
                     <Select label="Champ" data={fieldOptions} value={rule.field ?? null} readOnly size="xs" radius="sm" />
                     <Select label="Règle" data={operators.map((operator) => ({ value: operator, label: operator }))} value={rule.operator ?? null} readOnly size="xs" radius="sm" />
                     {rule.valueType === 'number' ? (
@@ -234,7 +216,7 @@ const { registry: chatUiRegistry } = defineRegistry(chatUiCatalog, {
                     ) : (
                       <TextInput label="Valeur" value={rule.valueText ?? ''} readOnly size="xs" radius="sm" />
                     )}
-                  </Group>
+                  </Stack>
                 </Paper>
               )
             })}

@@ -1,21 +1,22 @@
 import {
   Box, Text, Group, Button, Select, TextInput, NumberInput, Switch,
-  Paper, Divider, Alert, Accordion,
+  Paper, Divider, Alert,
 } from '@mantine/core'
 import {
-  IconAlertTriangle, IconFilter, IconSparkles, IconChevronDown, IconInfoCircle,
+  IconAlertTriangle, IconFilter, IconSparkles, IconInfoCircle,
 } from '@tabler/icons-react'
 import { sanitizeLabel, isDisplayOnlyLabel } from '../lib/message-utils'
 import type { PendingClarification } from '../types/chat'
 
-const KNOWN_INPUT_TYPES = ['select', 'number', 'toggle', 'text']
+/** Guard against LLM-generated questions with missing id/label fields. */
+function isValidQuestion(q: { id?: unknown; label?: unknown }): q is { id: string; label: string } {
+  return typeof q.id === 'string' && q.id.length > 0 && typeof q.label === 'string'
+}
 
 interface ClarificationPanelProps {
   pendingClarification: PendingClarification
   clarificationAnswers: Record<string, string>
   onAnswerChange: (id: string, value: string) => void
-  guideAccordionValue: string | null
-  onGuideAccordionChange: (value: string | null) => void
   onSubmit: () => void
 }
 
@@ -23,11 +24,10 @@ export function ClarificationPanel({
   pendingClarification,
   clarificationAnswers,
   onAnswerChange,
-  guideAccordionValue,
-  onGuideAccordionChange,
   onSubmit,
 }: ClarificationPanelProps) {
   const missingRequired = !pendingClarification.canSendDirectly && pendingClarification.questions.some((q) => {
+    if (!isValidQuestion(q)) return false
     if (!q.required) return false
     if (q.id === 'sp_folder_id' && clarificationAnswers['scope_level'] !== 'filiale') return false
     return !clarificationAnswers[q.id]?.trim()
@@ -104,59 +104,25 @@ export function ClarificationPanel({
 
       <Divider mb="sm" color="#dee2e6" />
 
-      {pendingClarification.decision === 'guide' && pendingClarification.questions.length > 0 && (
+      {pendingClarification.canSendDirectly && pendingClarification.questions.length > 0 && (
         <Alert icon={<IconInfoCircle size={14} />} color="blue" variant="light" mb="sm" p="xs"
           styles={{ message: { fontSize: 'var(--mantine-font-size-xs)' } }}>
           Votre requête est valide et sera envoyée à Genie. Ces questions sont optionnelles mais nous vous recommandons fortement d&apos;y répondre pour affiner les résultats.
         </Alert>
       )}
 
-      {pendingClarification.decision === 'guide' ? (
-        <Accordion
-          value={guideAccordionValue} onChange={onGuideAccordionChange}
-          variant="separated" radius="sm"
-          styles={{
-            item: { border: '1px solid #dee2e6', backgroundColor: '#fff' },
-            control: { padding: '8px 12px' },
-            label: { fontSize: 'var(--mantine-font-size-sm)', fontWeight: 600, color: '#212529' },
-            panel: { padding: '0 12px 12px' },
-            chevron: { width: 16, height: 16 },
-          }}
-        >
-          {pendingClarification.questions.map((question, index) => {
-            if (question.id === 'sp_folder_id' && clarificationAnswers['scope_level'] !== 'filiale') return null
-            if (question.inputType === 'select' && (!question.options || question.options.length === 0)) return null
-            if (isDisplayOnlyLabel(question.label)) return null
-            if (!question.inputType || !KNOWN_INPUT_TYPES.includes(question.inputType)) return null
-            const title = sanitizeLabel(question.label) || `Question ${index + 1}`
-            return (
-              <Accordion.Item key={question.id} value={question.id}>
-                <Accordion.Control chevron={<IconChevronDown size={14} />}>{title}</Accordion.Control>
-                <Accordion.Panel>{renderQuestionInput(question)}</Accordion.Panel>
-              </Accordion.Item>
-            )
-          })}
-        </Accordion>
-      ) : (
-        pendingClarification.questions.map((question) => {
-          if (question.id === 'sp_folder_id' && clarificationAnswers['scope_level'] !== 'filiale') return null
-          if (question.inputType === 'select' && (!question.options || question.options.length === 0)) return null
-          if (isDisplayOnlyLabel(question.label)) return null
-          if (!question.inputType || !KNOWN_INPUT_TYPES.includes(question.inputType)) {
-            return (
-              <Text key={question.id} size="xs" fw={700} c="dimmed" tt="uppercase" mt="xs" mb={4} style={{ letterSpacing: 0.6 }}>
-                {sanitizeLabel(question.label)}
-              </Text>
-            )
-          }
-          return (
-            <Box key={question.id} mb="sm">
-              <Text size="xs" fw={600} mb={6} c="dark">{sanitizeLabel(question.label)}</Text>
-              {renderQuestionInput(question)}
-            </Box>
-          )
-        })
-      )}
+      {pendingClarification.questions.map((question) => {
+        if (!isValidQuestion(question)) return null
+        if (question.id === 'sp_folder_id' && clarificationAnswers['scope_level'] !== 'filiale') return null
+        if (question.inputType === 'select' && (!question.options || question.options.length === 0)) return null
+        if (isDisplayOnlyLabel(question.label)) return null
+        return (
+          <Box key={question.id} mb="sm">
+            <Text size="xs" fw={600} mb={6} c="dark">{sanitizeLabel(question.label)}</Text>
+            {renderQuestionInput(question)}
+          </Box>
+        )
+      })}
 
       <Group justify="flex-end" mt="sm">
         <Button

@@ -32,7 +32,6 @@ export function useControllerState({
   const [pendingClarification, setPendingClarification] = useState<PendingClarification | null>(null)
   const [clarificationAnswers, setClarificationAnswers] = useState<Record<string, string>>({})
   const [clarificationRetryCount, setClarificationRetryCount] = useState(0)
-  const [guideAccordionValue, setGuideAccordionValue] = useState<string | null>(null)
   const activeAbortRef = useRef<AbortController | null>(null)
 
   // Abort any in-flight controller request when the hook unmounts.
@@ -149,7 +148,6 @@ export function useControllerState({
       if (isControllerApproved(ControllerResponse.decision, ControllerResponse.confidence)) {
         setPendingClarification(null)
         setClarificationAnswers({})
-        setGuideAccordionValue(null)
         setClarificationRetryCount(0)
         latestReasoningRef.current = ControllerResponse.reasoning ?? ''
         setLatestReasoning(ControllerResponse.reasoning ?? '')
@@ -188,12 +186,13 @@ export function useControllerState({
         questions,
         suggestedTables: ControllerResponse.suggestedTables ?? [],
         suggestedFunctions: ControllerResponse.suggestedFunctions ?? [],
-        canSendDirectly: true,
+        // guide: questions are optional, user can send directly to Genie
+        // proceed (confidence < 0.90): re-run controller with clarifications
+        canSendDirectly: ControllerResponse.decision === 'guide',
       })
       setClarificationAnswers(
         Object.fromEntries(questions.map((q) => [q.id, ''])) as Record<string, string>
       )
-      setGuideAccordionValue(questions[0]?.id ?? null)
     } finally {
       setControllerLoading(false)
     }
@@ -205,7 +204,6 @@ export function useControllerState({
     setPendingClarification(null)
     setClarificationAnswers({})
     setClarificationRetryCount(0)
-    setGuideAccordionValue(null)
   }
 
   return {
@@ -216,8 +214,6 @@ export function useControllerState({
     setPendingClarification,
     clarificationAnswers,
     setClarificationAnswers,
-    guideAccordionValue,
-    setGuideAccordionValue,
     submitPromptThroughController,
     resetControllerState,
   }

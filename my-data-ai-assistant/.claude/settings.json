@@ -1,0 +1,56 @@
+{
+    "permissions": {
+        "allow": [
+            "Read",
+            "Edit",
+            "WebSearch",
+            "TodoRead",
+            "TodoWrite",
+            "mcp__databricks__*"
+        ],
+        "deny": [
+            "Bash(rm -rf *)",
+            "Bash(git push *)",
+            "Bash(git commit *)",
+            "Bash(npm publish *)",
+            "Bash(pip install *)",
+            "Bash(curl * | bash)",
+            "Bash(wget * | bash)"
+        ],
+        "ignorePaths": [
+            "**/.env",
+            "**/.env.*",
+            "**/.env.local",
+            "**/.env.development",
+            "**/.env.staging",
+            "**/.env.production",
+            "**/.env.test",
+
+            "**/secrets.*",
+            "**/secrets/",
+            "**/*.secret",
+            "**/*.secrets",
+
+            "**/*.pem",
+            "**/*.key",
+            "**/*.p12",
+            "**/*.pfx",
+            "**/*.jks",
+            "**/*.keystore",
+            "**/*.truststore",
+            "**/*.cert",
+            "**/*.crt",
+            "**/*.ca-bundle",
+            "**/*token*.json",
+            "**/oauth*.json",
+            "**/.databricks-token",
+            "**/.databrickscfg",
+            "**/.ssh/",
+            "**/.gnupg/",
+            "**/.pgpass",
+            "**/id_rsa*",
+            "**/id_ed25519*",
+            "**/known_hosts"
+        ]
+    }
+}

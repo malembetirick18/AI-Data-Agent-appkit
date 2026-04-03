@@ -23,7 +23,7 @@ import { useSpecStreaming } from '../hooks/useSpecStreaming'
 import { useControllerState } from '../hooks/useControllerState'
 import { useSaveDialog } from '../hooks/useSaveDialog'
 import { blocksToPlainText, formatQRAnswers } from '../lib/message-utils'
-import { buildGenieResultPayload, specHasChartElement } from '../lib/genie-utils'
+import { buildGenieResultPayload } from '../lib/genie-utils'
 import type { Message, AiChatDrawerProps, TeamControl, SavedControl } from '../types/chat'
 
 export type { SavedControl }
@@ -136,7 +136,7 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
   const viewport = useRef<HTMLDivElement>(null)
 
   const specStreaming = useSpecStreaming()
-  const { generatedSpecs, streamingSpecMessageId, uiStream, lastSpecCandidateIdRef, attemptedSpecIdsRef } = specStreaming
+  const { generatedSpecs, failedSpecIds, streamingSpecMessageId, isStreaming, hasPartialSpec, uiStream, lastSpecCandidateIdRef, attemptedSpecIdsRef } = specStreaming
 
   const messagesRef = useRef(messages)
   useEffect(() => { messagesRef.current = messages })
@@ -418,23 +418,44 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
                         </Accordion>
                       )}
 
-                      {streamingSpecMessageId === String(msg.id) && uiStream.isStreaming && !uiStream.spec && (
-                        <Group gap="xs" mt="xs" mb={4}>
-                          <Loader size="xs" color="teal" type="dots" />
-                          <Text size="xs" c="dimmed">Génération de la visualisation...</Text>
-                        </Group>
+                      {streamingSpecMessageId === String(msg.id) && isStreaming && (
+                        <Stack gap={4} mt="xs" mb={4}>
+                          <Group gap="xs">
+                            <ThemeIcon size={16} variant="light" color="teal" radius="xl">
+                              <IconSparkles size={10} />
+                            </ThemeIcon>
+                            <Text size="xs" c="dimmed">Analyse des données complète</Text>
+                          </Group>
+                          <Group gap="xs">
+                            <Loader size="xs" color="teal" type="dots" />
+                            <Text size="xs" c="dimmed">
+                              {hasPartialSpec ? 'Assemblage des composants visuels...' : 'Génération de la visualisation...'}
+                            </Text>
+                          </Group>
+                        </Stack>
                       )}
 
                       {!msg.periodPrompt && !msg.loading && (() => {
                         const msgId = String(msg.id)
-                        const resolvedSpec = generatedSpecs[msgId] ?? (streamingSpecMessageId === msgId && uiStream.spec ? uiStream.spec : undefined)
+                        // Only use the finalized spec from onComplete — never the live uiStream.spec.
+                        // The hook guarantees a valid spec on success; errors are tracked in failedSpecIds.
+                        const resolvedSpec = generatedSpecs[msgId]
+                        const isActivelyStreaming = streamingSpecMessageId === msgId && isStreaming
+                        const hasSpecFailed = failedSpecIds.has(msgId)
+
+                        // Suppress the Paper for thinking messages while streaming:
+                        // the two-step loader above already handles UX; rendering an
+                        // empty Paper here would produce a blank bordered box.
+                        if (isActivelyStreaming && msg.thinking && !msg.blocks?.length) return null
+
                         return (
                           !msg.thinking || Boolean(msg.blocks?.length) ||
                           (msg.attachments?.some((a: GenieAttachmentResponse) => Boolean(a.attachmentId)) && Boolean(msg.queryResults?.size)) ||
-                          Boolean(resolvedSpec && specHasChartElement(resolvedSpec))
+                          Boolean(resolvedSpec) ||
+                          hasSpecFailed
                         ) && (
                           <Paper p="sm" radius="md" style={{ backgroundColor: '#f8f9fa', border: '1px solid #e9ecef', borderLeft: '3px solid #0c8599' }}>
-                            <MessageContent msg={msg} messageId={msgId} generatedSpec={resolvedSpec} registry={chatUiRegistry} hideText={Boolean(msg.thinking)} />
+                            <MessageContent msg={msg} messageId={msgId} generatedSpec={resolvedSpec} registry={chatUiRegistry} hideText={Boolean(msg.thinking)} isSpecStreaming={isStreaming} />
                           </Paper>
                         )
                       })()}
@@ -491,8 +512,6 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
                   pendingClarification={controller.pendingClarification}
                   clarificationAnswers={controller.clarificationAnswers}
                   onAnswerChange={(id, value) => controller.setClarificationAnswers((prev) => ({ ...prev, [id]: value }))}
-                  guideAccordionValue={controller.guideAccordionValue}
-                  onGuideAccordionChange={controller.setGuideAccordionValue}
                   onSubmit={handleClarificationSubmit}
                 />
               </Box>

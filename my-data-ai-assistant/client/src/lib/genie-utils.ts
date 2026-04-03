@@ -149,17 +149,8 @@ export function buildSpecFromGenieStatement(
   return { root: rootId, elements } as GenericUiSpec
 }
 
-export const CHART_VIZ_TYPES = new Set([
-  'LineChartViz', 'BarChartViz', 'AreaChartViz',
-  'PieChartViz', 'DonutChartViz', 'RadarChartViz', 'BubbleChartViz',
-])
 
-export function specHasChartElement(spec: GenericUiSpec): boolean {
-  const elements = (spec as unknown as { elements: Record<string, { type: string }> }).elements ?? {}
-  return Object.values(elements).some((el) => CHART_VIZ_TYPES.has(el?.type))
-}
-
-export const GENUI_MAX_ROWS = 100
+export const GENUI_MAX_ROWS = 1000
 
 export function _truncateStatementResult(value: unknown): unknown {
   const statement = toGenieStatementResponse(value)
