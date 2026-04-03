@@ -184,6 +184,10 @@ Le LLM génère du **JSONL RFC 6902** (une opération `add` par ligne). L'assemb
 
 Fallback : si le LLM produit un JSON objet au lieu de JSONL, il est accepté directement si `root` et `elements` sont présents.
 
+### Endpoint `/spec/generate` — async (important)
+
+L'endpoint est `async def generate_spec(...)` avec `result = await asyncio.to_thread(_run_genui)`. **Ne jamais le repasser en `def` synchrone.** Un handler synchrone bloquerait un worker du threadpool FastAPI pendant toute la durée de l'appel DSPy (10–30s), épuisant le pool sous charge concurrente. Le sibling `/chat/stream` utilise le même pattern.
+
 ---
 
 ## Configuration
@@ -209,6 +213,7 @@ Fallback : si le LLM produit un JSON objet au lieu de JSONL, il est accepté dir
 | `signatures/controller_self_reflection_signature.py` | Phase 3c | Auto-réflexion LLM — diagnostic verbal (POURQUOI c'est faux) |
 | `signatures/controller_correction_signature.py` | Phase 4 | Correcteur LLM — applique validation_feedback + self_reflection_text |
 | `signatures/genui_spec_signature.py` | Spec | Génération JSONL patches |
+| `signatures/reasoning_summary_signature.py` | — | Résumé de raisonnement (support interne au pipeline) |
 
 ### Fichiers legacy (non utilisés — peuvent être supprimés)
 

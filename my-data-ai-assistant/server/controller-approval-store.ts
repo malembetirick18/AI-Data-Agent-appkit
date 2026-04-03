@@ -12,6 +12,14 @@ type ApprovalEntry = {
 
 const approvalStore = new Map<string, ApprovalEntry>();
 
+// Hard cap: prevents unbounded memory growth under spam or buggy clients (DoS).
+const MAX_STORE_SIZE = 500;
+
+// Periodic cleanup: sweep expired tokens every 5 minutes regardless of traffic.
+const _sweepInterval = setInterval(() => sweepExpiredApprovals(), 5 * 60_000);
+// Allow the process to exit cleanly without waiting for this timer.
+if (_sweepInterval.unref) _sweepInterval.unref();
+
 export const CONTROLLER_APPROVAL_COOKIE_NAME = 'genie_controller_approval';
 
 function getApprovalTtlMs(): number {
@@ -38,6 +46,11 @@ export function issueControllerApproval(params: { approvedPrompt: string; traceI
   const token = randomUUID();
 
   sweepExpiredApprovals(now);
+
+  if (approvalStore.size >= MAX_STORE_SIZE) {
+    throw new Error('Approval store capacity exceeded. Try again later.');
+  }
+
   approvalStore.set(token, {
     approvedPrompt,
     createdAt: now,
@@ -59,10 +72,6 @@ export function consumeControllerApproval(params: { token: string; content: stri
 
   if (!approval) {
     return { ok: false, reason: 'Missing or expired controller approval.' };
-  }
-
-  if (approval.expiresAt <= now) {
-    return { ok: false, reason: 'Controller approval expired.' };
   }
 
   if (normalizePrompt(params.content) !== approval.approvedPrompt) {

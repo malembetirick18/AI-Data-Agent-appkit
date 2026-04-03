@@ -1,0 +1,224 @@
+import { useState, useCallback, useRef, useEffect } from 'react'
+import { runControllerPreflight, isControllerApproved } from '../lib/spec-utils'
+import type { ControllerApiResponse, PendingClarification, Message } from '../types/chat'
+
+interface UseControllerStateParams {
+  enrichedToOriginal: Map<string, string>
+  latestReasoningRef: React.MutableRefObject<string>
+  setLatestReasoning: (v: string) => void
+  messagesRef: React.MutableRefObject<Message[]>
+  sessionIdRef: React.MutableRefObject<string>
+  conversationIdRef: React.MutableRefObject<string>
+  sendMessage: (content: string) => void
+  setLocalUserMessages: React.Dispatch<React.SetStateAction<Message[]>>
+  setShowSuggestions: (v: boolean) => void
+  setInput: (v: string) => void
+}
+
+export function useControllerState({
+  enrichedToOriginal,
+  latestReasoningRef,
+  setLatestReasoning,
+  messagesRef,
+  sessionIdRef,
+  conversationIdRef,
+  sendMessage,
+  setLocalUserMessages,
+  setShowSuggestions,
+  setInput,
+}: UseControllerStateParams) {
+  const [ControllerLoading, setControllerLoading] = useState(false)
+  const [ControllerHint, setControllerHint] = useState<ControllerApiResponse | null>(null)
+  const [pendingClarification, setPendingClarification] = useState<PendingClarification | null>(null)
+  const [clarificationAnswers, setClarificationAnswers] = useState<Record<string, string>>({})
+  const [clarificationRetryCount, setClarificationRetryCount] = useState(0)
+  const [guideAccordionValue, setGuideAccordionValue] = useState<string | null>(null)
+  const activeAbortRef = useRef<AbortController | null>(null)
+
+  // Abort any in-flight controller request when the hook unmounts.
+  useEffect(() => {
+    return () => { activeAbortRef.current?.abort() }
+  }, [])
+
+  const buildConversationContext = useCallback((currentUserMessage?: string) => {
+    const pastMessages = messagesRef.current
+      .filter((message) => Boolean(message.content?.trim()))
+      .slice(-6)
+      .map((message) => ({ role: message.role, content: message.content }))
+    const messages = currentUserMessage
+      ? [...pastMessages, { role: 'user' as const, content: currentUserMessage }]
+      : pastMessages
+    return {
+      conversationId: conversationIdRef.current,
+      sessionId: sessionIdRef.current,
+      source: 'ai-chat-drawer' as const,
+      messages,
+    }
+  }, [messagesRef, sessionIdRef, conversationIdRef])
+
+  const submitPromptThroughController = useCallback(async (
+    rawPrompt: string,
+    options?: { suppressControllerBubble?: boolean }
+  ) => {
+    const trimmedPrompt = rawPrompt.trim()
+    if (!trimmedPrompt) return
+
+    // Cancel any previous in-flight request before starting a new one.
+    activeAbortRef.current?.abort()
+    const abortController = new AbortController()
+    activeAbortRef.current = abortController
+
+    setShowSuggestions(false)
+    setControllerLoading(true)
+    setControllerHint(null)
+    setInput('')
+
+    if (!enrichedToOriginal.has(trimmedPrompt)) {
+      setLocalUserMessages((prev) => [
+        ...prev,
+        {
+          id: `local-${Date.now()}`,
+          role: 'user' as const,
+          content: trimmedPrompt,
+          timestamp: new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }),
+          epoch: Date.now(),
+        },
+      ])
+    }
+
+    try {
+      const ControllerResponse = await runControllerPreflight({
+        prompt: trimmedPrompt,
+        conversationContext: buildConversationContext(trimmedPrompt),
+        signal: abortController.signal,
+      })
+
+      if (!ControllerResponse) {
+        setPendingClarification(null)
+        setClarificationAnswers({})
+        setGuideAccordionValue(null)
+        setControllerHint({
+          decision: 'error',
+          message: "L'agent IA n'a pas répondu. La demande est bloquée tant qu'elle n'a pas été validée.",
+        })
+        return
+      }
+
+      setControllerHint(ControllerResponse)
+
+      if (ControllerResponse.decision === 'error') {
+        setPendingClarification(null)
+        setClarificationAnswers({})
+        setGuideAccordionValue(null)
+        return
+      }
+
+      if (ControllerResponse.decision === 'clarify') {
+        const newRetryCount = clarificationRetryCount + 1
+        setClarificationRetryCount(newRetryCount)
+
+        if (newRetryCount >= 3) {
+          setPendingClarification(null)
+          setClarificationAnswers({})
+          setControllerHint({
+            decision: 'error',
+            message: 'Après plusieurs tentatives de clarification, je ne suis pas en mesure de traiter cette demande. Veuillez contacter l\'équipe support pour obtenir de l\'aide.',
+          })
+          return
+        }
+
+        const questions = ControllerResponse.questions ?? []
+        setPendingClarification({
+          originalPrompt: trimmedPrompt,
+          message: ControllerResponse.message,
+          decision: ControllerResponse.decision,
+          rewrittenPrompt: ControllerResponse.rewrittenPrompt,
+          enrichedPrompt: ControllerResponse.enrichedPrompt,
+          questions,
+          suggestedTables: ControllerResponse.suggestedTables ?? [],
+          suggestedFunctions: ControllerResponse.suggestedFunctions ?? [],
+          canSendDirectly: false,
+          needsParams: ControllerResponse.needsParams ?? false,
+        })
+        setClarificationAnswers(
+          Object.fromEntries(questions.map((q) => [q.id, ''])) as Record<string, string>
+        )
+        return
+      }
+
+      if (isControllerApproved(ControllerResponse.decision, ControllerResponse.confidence)) {
+        setPendingClarification(null)
+        setClarificationAnswers({})
+        setGuideAccordionValue(null)
+        setClarificationRetryCount(0)
+        latestReasoningRef.current = ControllerResponse.reasoning ?? ''
+        setLatestReasoning(ControllerResponse.reasoning ?? '')
+        const promptToSend = ControllerResponse.enrichedPrompt || ControllerResponse.rewrittenPrompt?.trim() || trimmedPrompt
+        if (promptToSend !== trimmedPrompt) {
+          const ultimate = enrichedToOriginal.get(trimmedPrompt) ?? trimmedPrompt
+          enrichedToOriginal.set(promptToSend.trim(), ultimate)
+        }
+        if (!options?.suppressControllerBubble && ControllerResponse.message?.trim()) {
+          setLocalUserMessages((prev) => [
+            ...prev,
+            {
+              id: `ctrl-${Date.now()}`,
+              role: 'assistant' as const,
+              content: ControllerResponse.message,
+              timestamp: new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }),
+              epoch: Date.now(),
+              type: 'controller' as const,
+            },
+          ])
+        }
+        sendMessage(promptToSend)
+        return
+      }
+
+      setClarificationRetryCount(0)
+      latestReasoningRef.current = ControllerResponse.reasoning ?? ''
+      setLatestReasoning(ControllerResponse.reasoning ?? '')
+      const questions = ControllerResponse.questions ?? []
+      setPendingClarification({
+        originalPrompt: trimmedPrompt,
+        message: ControllerResponse.message || "L'agent IA recommande de vérifier la reformulation avant envoi à l'agent IA.",
+        decision: ControllerResponse.decision,
+        rewrittenPrompt: ControllerResponse.rewrittenPrompt,
+        enrichedPrompt: ControllerResponse.enrichedPrompt,
+        questions,
+        suggestedTables: ControllerResponse.suggestedTables ?? [],
+        suggestedFunctions: ControllerResponse.suggestedFunctions ?? [],
+        canSendDirectly: true,
+      })
+      setClarificationAnswers(
+        Object.fromEntries(questions.map((q) => [q.id, ''])) as Record<string, string>
+      )
+      setGuideAccordionValue(questions[0]?.id ?? null)
+    } finally {
+      setControllerLoading(false)
+    }
+  }, [buildConversationContext, clarificationRetryCount, enrichedToOriginal, latestReasoningRef, setLatestReasoning, sendMessage, setInput, setLocalUserMessages, setShowSuggestions])
+
+  const resetControllerState = () => {
+    setControllerLoading(false)
+    setControllerHint(null)
+    setPendingClarification(null)
+    setClarificationAnswers({})
+    setClarificationRetryCount(0)
+    setGuideAccordionValue(null)
+  }
+
+  return {
+    ControllerLoading,
+    ControllerHint,
+    setControllerHint,
+    pendingClarification,
+    setPendingClarification,
+    clarificationAnswers,
+    setClarificationAnswers,
+    guideAccordionValue,
+    setGuideAccordionValue,
+    submitPromptThroughController,
+    resetControllerState,
+  }
+}

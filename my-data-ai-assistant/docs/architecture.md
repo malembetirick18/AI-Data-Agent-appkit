@@ -51,7 +51,8 @@
    ↓
 5a. decision='proceed' ∧ confidence ≥ 0.90 → approbation automatique
     POST /api/chat-controller/:alias/messages → Genie exécute le SQL
-    → Résultats → POST /api/spec → GenUI spec → rendu UI chart/tableau
+    → Résultats → POST /api/spec-stream → useUIStream consomme les JSONL RFC 6902 patches
+    → GenUI spec → <Renderer> rendu UI chart/tableau
     
 5b. decision='clarify' | 'guide' → affichage des questions de clarification
     → Réponses de l'utilisateur → retour en 2.
@@ -82,4 +83,5 @@
 | API Sém. | `semantic_layer_api/src/controller_decision.py` | Pipeline agent multi-étapes |
 | API Sém. | `semantic_layer_api/src/genui_spec_generator.py` | Génération specs GenUI |
 | Partagé | `shared/genui-catalog.ts` | Catalogue de composants JSON Render |
+| Partagé | `shared/normalize-spec.ts` | Normalisation des specs GenUI — source unique partagée entre serveur et client |
 | Données | `catalog_schemas_description/genie_knowledge_store.json` | Métadonnées Genie (tables, colonnes, fonctions) |

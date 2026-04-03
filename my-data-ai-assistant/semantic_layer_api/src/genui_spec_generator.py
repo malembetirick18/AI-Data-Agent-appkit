@@ -12,6 +12,10 @@ class GenUiSpecGenerator(dspy.Module):
 
     def forward(self, user_prompt: str) -> dspy.Prediction:
         _logger.info("Generating UI spec — prompt=%r", user_prompt[:80])
-        result = self.predict(user_prompt=user_prompt)
+        try:
+            result = self.predict(user_prompt=user_prompt)
+        except Exception as exc:
+            _logger.error("GenUI DSPy predict failed: %s", exc, exc_info=True)
+            raise
         _logger.info("UI spec prediction done — output=%d chars", len(result.spec_patches or ""))
         return result

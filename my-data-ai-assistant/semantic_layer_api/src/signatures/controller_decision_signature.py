@@ -14,8 +14,14 @@ class ControllerDecisionSignature(dspy.Signature):
     - proceed: use when the rewritten prompt is clear enough for Genie to generate a SQL query.
       Prefer this decision when the user question maps to known tables, even if the exact columns
       are not spelled out. Genie handles column resolution internally.
-    - guide: use when the request is valid but would benefit from a simpler reformulation or
-      explicit table/function hints before sending to Genie
+    - guide: use when the request maps unambiguously to one or more tables in catalog_info AND
+      you want to ask the user 1–3 purely business-level optional questions before sending to
+      Genie (e.g. confirm an amount threshold, a date range, or a category filter the user
+      knows from their business domain). NEVER use guide to ask about table names, column names,
+      view names, or any internal catalog detail the user cannot reasonably know. If the only
+      questions you can formulate require catalog knowledge (e.g. "which table to use?"), use
+      clarify instead with a business-friendly rephrasing. Also: if catalog_info does not
+      unambiguously identify the target table(s), do NOT use guide — use clarify.
     - clarify: use ONLY when the user request is truly ambiguous (e.g. multiple incompatible
       interpretations), or when no table in catalog_info is even remotely relevant.
       IMPORTANT — also use clarify in these specific cases even if the intent is broadly clear:
@@ -75,6 +81,11 @@ class ControllerDecisionSignature(dspy.Signature):
     - Suggested tables and functions must come only from catalog_info
     - Favor low-complexity queries and minimal joins
     - If the best answer requires clarification, ask short structured questions
+    - Only use 'guide' when catalog_info already identifies the target table(s) unambiguously.
+      If table resolution requires user input (ambiguous or missing mapping), use 'clarify'.
+    - Guide questions must be answerable by the user from their business knowledge alone,
+      without knowing the internal data model. Questions about table names, column identifiers,
+      or function names are NEVER valid guide questions.
     - When in doubt between 'clarify' and 'proceed', choose 'clarify'
     - Only choose 'proceed' when the query is complete: intent is unambiguous AND all
       required business parameters (thresholds, amounts, periods) are explicitly stated

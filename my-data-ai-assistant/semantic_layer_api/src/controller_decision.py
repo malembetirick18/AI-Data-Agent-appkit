@@ -20,6 +20,7 @@ from src.signatures.query_analysis_signature import QueryAnalysisSignature
 # the DSPy modules are only instantiated when _REFLECTION_ENABLED is True.
 from src.signatures.controller_self_reflection_signature import ControllerSelfReflectionSignature
 from src.signatures.controller_correction_signature import ControllerCorrectionSignature
+from src.signatures.reasoning_summary_signature import ReasoningSummarySignature
 
 # Child of the root "semantic-layer-api" logger — propagates to its handler, no double output.
 _logger = Logger("semantic-layer-api").child("controller")
@@ -166,6 +167,7 @@ class ControllerDecision(dspy.Module):
         self.analyze_query = dspy.ChainOfThought(QueryAnalysisSignature)
         self.rephrase_query = dspy.ChainOfThought(RephraseQuerySignature)
         self.controller_decision = dspy.ChainOfThought(ControllerDecisionSignature)
+        self.summarize_reasoning = dspy.Predict(ReasoningSummarySignature)
         self.self_reflect: dspy.ChainOfThought | None = None
         self.correct_decision: dspy.ChainOfThought | None = None
         if _REFLECTION_ENABLED:
@@ -217,6 +219,26 @@ class ControllerDecision(dspy.Module):
             coherence_note=coherence_note,
         )
 
+        # Collect chain-of-thought reasoning from all DSPy ChainOfThought modules,
+        # then sanitize it into a plain business-language summary with no technical terms.
+        reasoning_parts: list[str] = []
+        if getattr(analysis, "reasoning", None):
+            reasoning_parts.append(analysis.reasoning.strip())
+        if query_classification in _REPHRASE_CLASSIFICATIONS and getattr(rewritten, "reasoning", None):
+            reasoning_parts.append(rewritten.reasoning.strip())
+        if getattr(raw, "reasoning", None):
+            reasoning_parts.append(raw.reasoning.strip())
+
+        raw_reasoning_text = "\n\n".join(reasoning_parts)
+        aggregated_reasoning: str = ""
+        if raw_reasoning_text:
+            try:
+                summary = self.summarize_reasoning(raw_reasoning=raw_reasoning_text)
+                aggregated_reasoning = summary.business_summary.strip()
+            except Exception as exc:
+                _logger.warning("Reasoning summarization failed (non-fatal): %s", exc)
+                aggregated_reasoning = ""
+
         try:
             decision: dict[str, Any] = json.loads(raw.decision_json)
             if not isinstance(decision, dict):
@@ -259,6 +281,7 @@ class ControllerDecision(dspy.Module):
         # a verbal feedback string. This output is passed explicitly to the LLM corrector in
         # Phase 4 so it does not have to re-derive what went wrong from scratch.
         catalog_index = _build_catalog_index(catalog_info)
+        removed: dict[str, list] = {}
         validation_feedback = ""
         if catalog_index:
             decision, removed = _validate_against_catalog(decision, catalog_index)
@@ -269,6 +292,22 @@ class ControllerDecision(dspy.Module):
             else:
                 _logger.debug("Phase-3b catalog validation clean")
 
+        # ── Scope guardrail ──────────────────────────────────────────────────
+        # Runs before Reflexion so scope-forced clarify decisions never enter
+        # the costly Phase 3c+4 path.
+        if not _scope_established(source_text, conversation_context):
+            raw_questions = decision.get("questions", [])
+            existing_questions: list[dict] = raw_questions if isinstance(raw_questions, list) else []
+            has_scope = any(isinstance(q, dict) and q.get("id") == "scope_level" for q in existing_questions)
+            if not has_scope:
+                _logger.info("Scope guardrail fired — overriding to 'clarify', injecting %d scope questions",
+                             len(_SCOPE_QUESTIONS))
+                decision["decision"] = "clarify"
+                decision["questions"] = _SCOPE_QUESTIONS + existing_questions
+                if not decision.get("message"):
+                    decision["message"] = "Veuillez préciser le périmètre d'analyse avant de continuer."
+                decision["confidence"] = min(float(decision.get("confidence", 0.0)), 0.35)
+
         # ── Phases 3c + 4 — Full Reflexion cycle (production only) ──────────────────────────
         # Reflexion pattern (Shinn et al., 2023):
         #   Phase 3c — Self-Reflection LLM: reads evaluator feedback and produces a verbal
@@ -276,9 +315,16 @@ class ControllerDecision(dspy.Module):
         #   Phase 4  — Correction LLM: uses both the evaluator feedback (3b) and the verbal
         #              diagnosis (3c) to produce a corrected, structurally consistent JSON.
         # Only fires for proceed/guide — clarify/error are already conservative.
+        # Only fires when there is a real signal (hallucinations found OR coherence issue).
         # Single reflection+correction cycle per request (synchronous latency constraint).
         # A second programmatic validation after correction closes the evaluation loop.
-        if self.self_reflect is not None and self.correct_decision is not None and decision.get("decision") in {"proceed", "guide"}:
+        _has_reflection_signal = bool(removed) or bool(coherence_note)
+        if (
+            self.self_reflect is not None
+            and self.correct_decision is not None
+            and decision.get("decision") in {"proceed", "guide"}
+            and _has_reflection_signal
+        ):
             try:
                 # Phase 3c — Self-Reflection: verbal diagnosis of the decision's flaws
                 _logger.info("Phase-3c self-reflection triggered for decision=%r", decision.get("decision"))
@@ -300,7 +346,20 @@ class ControllerDecision(dspy.Module):
                     validation_feedback=validation_feedback,
                     self_reflection_text=self_reflection_text,
                 )
-                corrected: dict[str, Any] = json.loads(raw_correction.corrected_decision_json)
+                try:
+                    corrected = json.loads(raw_correction.corrected_decision_json)
+                except json.JSONDecodeError as parse_exc:
+                    _logger.error(
+                        "Phase-4 corrected_decision_json parse failed: %s — raw=%r",
+                        parse_exc,
+                        raw_correction.corrected_decision_json[:200],
+                    )
+                    raise
+                if not isinstance(corrected, dict):
+                    raise ValueError(
+                        f"Corrector returned {type(corrected).__name__} instead of dict — "
+                        f"raw={raw_correction.corrected_decision_json[:120]!r}"
+                    )
                 # Preserve pipeline-injected fields — the corrector must not override these
                 corrected["rewrittenPrompt"]     = decision.get("rewrittenPrompt", rewritten_prompt)
                 corrected["queryClassification"] = decision.get("queryClassification", query_classification)
@@ -322,22 +381,8 @@ class ControllerDecision(dspy.Module):
                     exc_info=True,
                 )
 
-        # ── Scope guardrail ──────────────────────────────────────────────────
-        # If scope (groupe/filiale) is not established in the prompt or context,
-        # inject the three scope questions at the top of the clarification list.
-        # This is a programmatic check — the LLM rule alone is not reliable enough.
-        if not _scope_established(source_text, conversation_context):
-            raw_questions = decision.get("questions", [])
-            existing_questions: list[dict] = raw_questions if isinstance(raw_questions, list) else []
-            has_scope = any(isinstance(q, dict) and q.get("id") == "scope_level" for q in existing_questions)
-            if not has_scope:
-                _logger.info("Scope guardrail fired — overriding to 'clarify', injecting %d scope questions",
-                             len(_SCOPE_QUESTIONS))
-                decision["decision"] = "clarify"
-                decision["questions"] = _SCOPE_QUESTIONS + existing_questions
-                if not decision.get("message"):
-                    decision["message"] = "Veuillez préciser le périmètre d'analyse avant de continuer."
-                decision["confidence"] = min(float(decision.get("confidence", 0.0)), 0.35)
+        # Attach aggregated chain-of-thought reasoning so callers can surface it in the UI.
+        decision["reasoning"] = aggregated_reasoning
 
         # Return dspy.Prediction to enable MLflow LM usage tracking.
         # Prediction.get() is dict-compatible — callers need no changes.

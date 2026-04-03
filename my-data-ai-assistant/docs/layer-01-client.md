@@ -44,17 +44,22 @@ handleSubmit()
   │       └─ decision='error' → message d'erreur
   └─ (si approuvé) POST /api/chat-controller/:alias/messages
        └─ SSE stream → renderGenieResult()
-            └─ POST /api/spec → spec GenUI → <Renderer>
+            └─ [si attachments] uiStream.send(prompt, { genieResult })
+                 └─ POST /api/spec-stream (JSONL RFC 6902 patches)
+                      └─ useUIStream reconstruit spec progressivement → <Renderer>
+                      └─ (fallback) buildSpecFromGenieStatement() si spec indisponible
 ```
 
 ### Fonctions helper clés
 
-| Fonction | Ligne | Rôle |
-|----------|-------|------|
-| `isControllerApproved()` | ~225 | `decision==='proceed' && confidence>=0.90` |
-| `transformStatementToChartData()` | ~925 | Convertit résultat SQL Genie en données chart |
-| `buildSpecFromGenieStatement()` | ~988 | Auto-génère un `GenericUiSpec` depuis les colonnes |
-| `formatColumnLabel()` | ~230 | `snake_case` → `Title Case` |
+| Fonction | Rôle |
+|----------|------|
+| `isControllerApproved()` | `decision==='proceed' && confidence>=0.90` |
+| `transformStatementToChartData()` | Convertit résultat SQL Genie en données chart |
+| `buildSpecFromGenieStatement()` | Fallback — auto-génère un `GenericUiSpec` depuis les colonnes Genie |
+| `formatColumnLabel()` | `snake_case` → `Title Case` |
+| `buildGenieResultPayload()` | Construit le payload `genieResult` pour `uiStream.send()` |
+| `blocksToPlainText()` | Convertit les blocs de message en texte pour le prompt spec |
 
 ### Seuils de confiance
 
@@ -132,6 +137,69 @@ Chaque graphique génère automatiquement une description contextuelle en franç
 - **Dropdown :** affiche les 8 premières colonnes sans recherche ; toutes les correspondances lors d'une saisie
 - **maxValues :** 5 séries simultanées
 - **hidePickedOptions :** les options déjà sélectionnées disparaissent du dropdown
+
+---
+
+## Intégration `useUIStream` + `useGenieChat`
+
+`useUIStream` (de `@json-render/react`) remplace l'ancien polling `generateUiSpecForMessage`. Il consomme les JSONL RFC 6902 patches de `/api/spec-stream` et reconstruit progressivement un objet `Spec { root, elements }`.
+
+### Pattern de double tracking (ref + state)
+
+`onComplete` et `onError` sont des closures définies à l'instantiation du hook — elles capturent les valeurs au moment de la définition. Pour éviter les stale closures :
+
+- **`streamingSpecMessageIdRef`** (useRef) — toujours à jour, lu dans `onComplete`/`onError`
+- **`streamingSpecMessageId`** (useState) — déclenche les re-renders React pour l'affichage du loader
+
+Ne jamais fusionner ces deux en un seul. Ne pas remplacer le ref par un accès direct à la state.
+
+### Résolution de spec à l'affichage
+
+```typescript
+const resolvedSpec =
+  generatedSpecs[msgId] ??                                          // spec complète (historique)
+  (streamingSpecMessageId === msgId && uiStream.spec               // spec en cours de streaming
+    ? uiStream.spec as GenericUiSpec
+    : undefined)
+```
+
+Si `resolvedSpec` est `undefined`, le fallback `buildSpecFromGenieStatement()` génère une spec automatique depuis les données Genie brutes.
+
+### Déduplication
+
+`attemptedSpecIdsRef` (Set) empêche de déclencher `uiStream.send()` plus d'une fois par `messageId`. Ne pas supprimer cette garde.
+
+---
+
+## Règles de memoïsation React
+
+### `InteractiveChart`
+
+Toutes les listes d'options de colonnes doivent être dans `useMemo` :
+
+```typescript
+const allColOptions  = useMemo(() => allColumns.map(...), [allColumns])
+const numColOptions  = useMemo(() => numericColumns.map(...), [numericColumns])
+const yOptions       = useMemo(() => numericColumns.filter(c => c !== xKey).map(...), [numericColumns, xKey])
+const sizeOptions    = useMemo(() => numericColumns.filter(...).map(...), [numericColumns, xKey, yKeys])
+const activeYKeys    = useMemo(() => yKeys.length > 0 ? yKeys : (yOptions[0] ? [yOptions[0].value] : []), [yKeys, yOptions])
+```
+
+Ne **jamais** recalculer ces listes inline — cela force AG Charts à re-rendre le graphique à chaque render parent.
+
+### `DataTable`
+
+```typescript
+const headers = useMemo(() => Array.isArray(props.headers) ? props.headers as string[] : [], [props.headers])
+const rows    = useMemo(() => Array.isArray(props.rows)    ? props.rows as string[][]  : [], [props.rows])
+```
+
+Sans ces `useMemo`, `columnDefs` et `rowData` (qui en dépendent) sont recalculés à chaque render → AG Grid réinitialise entièrement la grille.
+
+### Clés React
+
+- `RenderBlock` : utiliser `blockIndex` (index) — **jamais** `JSON.stringify(block)`
+- `BulletList` items : utiliser `itemIndex` — les items dupliqués causeraient des conflits de clés
 
 ---
 

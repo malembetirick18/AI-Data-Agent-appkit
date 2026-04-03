@@ -1,6 +1,6 @@
 import { createApp, genie, server } from '@databricks/appkit';
 import type { Application, Request, Response } from 'express';
-import { controllerAiAgent, handleControllerRequest, handleSpecRequest } from '../plugins/controller-ai-agent';
+import { controllerAiAgent, handleControllerRequest, SEMANTIC_LAYER_API_URL, REQUEST_TIMEOUT_MS } from '../plugins/controller-ai-agent';
 import {
   CONTROLLER_APPROVAL_COOKIE_NAME,
   clearControllerApprovalCookie,
@@ -38,6 +38,8 @@ function truncateQueryResultEvent(event: GenieStreamEvent): GenieStreamEvent {
         data_array: rows.slice(0, MAX_SSE_ROWS),
       },
     },
+    _truncated: true,
+    _originalCount: rows.length,
   };
 }
 
@@ -53,7 +55,7 @@ function openSseStream(res: Response): void {
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache, no-transform');
   res.setHeader('Connection', 'keep-alive');
-  res.flushHeaders?.();
+  res.flushHeaders();
 }
 
 createApp({
@@ -73,7 +75,45 @@ createApp({
 }).then(async (appKit) => {
   appKit.server.extend((app: Application) => {
     app.post('/api/controller', handleControllerRequest);
-    app.post('/api/spec', handleSpecRequest);
+
+    app.post('/api/spec-stream', async (req: Request, res: Response) => {
+      const body = req.body as { prompt?: unknown; genieResult?: unknown } | undefined;
+      const prompt = typeof body?.prompt === 'string' ? body.prompt.trim() : '';
+
+      if (!prompt) {
+        res.status(400).json({ error: 'prompt is required' });
+        return;
+      }
+
+      try {
+        const specResp = await fetch(`${SEMANTIC_LAYER_API_URL}/spec/generate`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ prompt, genie_result: body?.genieResult ?? null }),
+          signal: AbortSignal.timeout(Number(REQUEST_TIMEOUT_MS)),
+        });
+
+        if (!specResp.ok) {
+          const errorText = await specResp.text().catch(() => '');
+          res.status(502).json({ error: `Spec generation failed: ${errorText || specResp.statusText}` });
+          return;
+        }
+
+        // Python returns JSONL patches directly — forward as-is for useUIStream
+        const patches = await specResp.text();
+        res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+        res.setHeader('Cache-Control', 'no-cache, no-transform');
+        res.status(200);
+        res.write(patches);
+        res.end();
+      } catch (error) {
+        if (!res.headersSent) {
+          res.status(502).json({
+            error: error instanceof Error ? error.message : 'Failed to generate spec.',
+          });
+        }
+      }
+    });
 
     app.post('/api/chat-controller/:alias/messages', async (req: Request, res: Response) => {
       const alias = Array.isArray(req.params.alias) ? req.params.alias[0] : req.params.alias;

@@ -11,7 +11,7 @@ import {
 export type ControllerRequest = {
   prompt: string;
   catalogInfo?: string;
-  conversationContext?: Record<string, unknown>[] | null;
+  conversationContext?: Record<string, unknown> | null;
 };
 
 export type ControllerResponse = {
@@ -27,16 +27,7 @@ export type ControllerResponse = {
   queryClassification?: string;
   needsParams: boolean;
   canSendDirectly: boolean;
-};
-
-export type SpecRequest = {
-  prompt: string;
-  genieResult?: unknown;
-};
-
-export type SpecResponse = {
-  spec: unknown;
-  model: string;
+  reasoning: string;
 };
 
 // ── Confidence helpers ────────────────────────────────────────────────────────
@@ -68,24 +59,10 @@ function parseControllerDecisionFromSse(text: string): Record<string, unknown> |
   return null;
 }
 
-function parseSpecFromSse(text: string): unknown {
-  const lines = text.split('\n');
-  for (const line of lines) {
-    if (line.startsWith('data:')) {
-      try {
-        return JSON.parse(line.slice(5).trim());
-      } catch {
-        // continue
-      }
-    }
-  }
-  return null;
-}
-
 // ── Shared config ─────────────────────────────────────────────────────────────
 
-const SEMANTIC_LAYER_API_URL = process.env.SEMANTIC_LAYER_API_URL ?? 'http://localhost:8001/api';
-const REQUEST_TIMEOUT_MS = 45_000;
+export const SEMANTIC_LAYER_API_URL = process.env.SEMANTIC_LAYER_API_URL ?? 'http://localhost:8001/api';
+export const REQUEST_TIMEOUT_MS = 45_000;
 
 // ── Plugin (manifest only — routes registered directly in server.ts) ──────────
 
@@ -160,7 +137,11 @@ export async function handleControllerRequest(req: Request, res: Response): Prom
     return;
   }
 
-  const decision = typeof raw.decision === 'string' ? raw.decision : 'error';
+  const VALID_DECISIONS: readonly ControllerResponse['decision'][] = ['proceed', 'guide', 'clarify', 'error'];
+  const rawDecision = typeof raw.decision === 'string' ? raw.decision : '';
+  const decision: ControllerResponse['decision'] = VALID_DECISIONS.includes(rawDecision as ControllerResponse['decision'])
+    ? (rawDecision as ControllerResponse['decision'])
+    : 'error';
   const confidence = typeof raw.confidence === 'number' ? raw.confidence : 0;
   const rewrittenPrompt = typeof raw.rewrittenPrompt === 'string' ? raw.rewrittenPrompt : prompt;
 
@@ -175,7 +156,7 @@ export async function handleControllerRequest(req: Request, res: Response): Prom
   }
 
   const controllerResponse: ControllerResponse = {
-    decision: decision as ControllerResponse['decision'],
+    decision: decision,
     confidence,
     message: typeof raw.message === 'string' ? raw.message : '',
     rewrittenPrompt,
@@ -187,48 +168,9 @@ export async function handleControllerRequest(req: Request, res: Response): Prom
     queryClassification: typeof raw.queryClassification === 'string' ? raw.queryClassification : undefined,
     needsParams: raw.needsParams === true,
     canSendDirectly,
+    reasoning: typeof raw.reasoning === 'string' ? raw.reasoning : '',
   };
 
   res.status(200).json(controllerResponse);
 }
 
-// ── POST /api/spec ────────────────────────────────────────────────────────────
-
-export async function handleSpecRequest(req: Request, res: Response): Promise<void> {
-  const body = req.body as SpecRequest | undefined;
-  const prompt = typeof body?.prompt === 'string' ? body.prompt.trim() : '';
-
-  if (!prompt) {
-    res.status(400).json({ error: 'prompt is required' });
-    return;
-  }
-
-  try {
-    const response = await fetch(`${SEMANTIC_LAYER_API_URL}/spec/generate`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ prompt, genie_result: body?.genieResult ?? null }),
-      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-    });
-
-    if (!response.ok) {
-      const errorText = await response.text().catch(() => '');
-      res.status(502).json({ error: `Semantic layer API error: ${errorText || response.statusText}` });
-      return;
-    }
-
-    const text = await response.text();
-    const specData = parseSpecFromSse(text);
-
-    if (!specData) {
-      res.status(502).json({ error: 'Invalid spec response from semantic layer API.' });
-      return;
-    }
-
-    res.status(200).json({ spec: specData, model: 'semantic-layer' } satisfies SpecResponse);
-  } catch (error) {
-    res.status(502).json({
-      error: error instanceof Error ? error.message : 'Failed to generate spec.',
-    });
-  }
-}

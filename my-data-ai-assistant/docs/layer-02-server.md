@@ -19,8 +19,21 @@
 AppKit App
 ├── Plugin: server          — routes Express de base (AppKit)
 ├── Plugin: controllerAiAgent — /api/controller, /api/spec
+│   server.ts direct        — /api/spec-stream, /api/chat-controller (routes étendues)
 └── Plugin: genie           — espace Genie (DATABRICKS_GENIE_SPACE_ID)
 ```
+
+### `/api/spec-stream` — Spec streaming (JSONL)
+
+Route enregistrée directement dans `server.ts` (pas dans le plugin). Elle :
+1. Appelle `SEMANTIC_LAYER_API_URL/spec/generate` pour obtenir la spec brute
+2. Normalise via `normalizeApiSpec` de `shared/normalize-spec.ts`
+3. Retourne deux lignes JSONL RFC 6902 :
+   ```
+   {"op":"add","path":"/elements","value":{...}}\n
+   {"op":"add","path":"/root","value":"stack-1"}\n
+   ```
+   Format consommé directement par `useUIStream` côté client.
 
 ---
 
@@ -29,7 +42,8 @@ AppKit App
 | Méthode | Route | Rôle |
 |---------|-------|------|
 | `POST` | `/api/controller` | Décision contrôleur (plugin `controllerAiAgent`) |
-| `POST` | `/api/spec` | Génération spec GenUI (plugin `controllerAiAgent`) |
+| `POST` | `/api/spec` | Génération spec GenUI JSON — retour `{ spec, model }` (plugin `controllerAiAgent`) |
+| `POST` | `/api/spec-stream` | Génération spec GenUI streaming — JSONL RFC 6902 patches pour `useUIStream` |
 | `POST` | `/api/chat-controller/:alias/messages` | Envoi message Genie + stream SSE résultats |
 | `GET` | `/api/chat-controller/:alias/conversations/:conversationId` | Historique conversation Genie |
 

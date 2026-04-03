@@ -16,6 +16,10 @@ class ControllerCorrectionSignature(dspy.Signature):
     Correction rules (apply in order):
     1. If validation_feedback lists removed names, accept those removals — do NOT re-add them.
     2. If suggestedTables is now empty and decision is 'guide', downgrade to 'clarify'.
+    2b. If decision is 'guide' and any question in questions[] asks about table names, view names,
+        column names, or internal catalog identifiers (anything the user could not know from their
+        business domain), downgrade to 'clarify' and rephrase those questions in business terms.
+        If no business rephrasing is possible, remove the question entirely.
     3. If coherence_note contains POLYSEMOUS → decision must be 'clarify'.
        If coherence_note contains AUDIT_PATTERN but NOT POLYSEMOUS → the contradiction is a valid
        audit finding; do NOT force 'clarify' on that basis alone. Apply rules 2 and 4 normally.

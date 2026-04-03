@@ -19,6 +19,17 @@ export class ControllerAiAgent { ... }
 export function controllerAiAgent(): Plugin  // factory
 export function handleControllerRequest(req, res): Promise<void>
 export function handleSpecRequest(req, res): Promise<void>
+export function parseSpecFromSse(text: string): unknown  // helper partagé
+```
+
+### Type `ControllerRequest`
+
+```typescript
+type ControllerRequest = {
+  prompt: string
+  catalogInfo?: string
+  conversationContext?: Record<string, unknown> | null  // objet unique, pas un tableau
+}
 ```
 
 ---
@@ -37,8 +48,8 @@ Traitement :
   2. Parsing de l'événement SSE : event: controller_decision
      data: { role: "controller", data: ControllerResponse }
   3. Calcul des flags :
-     canSendDirectly = isApproved() || isLowConfidenceProceed() || decision==='guide'
-     isLowConfidenceProceed = decision==='proceed' && 0.70 ≤ conf < 0.90
+     canSendDirectly = isApproved() || decision==='guide'
+     (isApproved = decision==='proceed' && confidence >= 0.90)
   4. Émission du cookie d'approbation si canSendDirectly
 
 Sortie  : ControllerApiResponse
@@ -48,12 +59,12 @@ Sortie  : ControllerApiResponse
 
 ```typescript
 const HIGH_CONFIDENCE_THRESHOLD = 0.90
-const LOW_CONFIDENCE_THRESHOLD  = 0.70
 
-isApproved()           = decision==='proceed' && confidence >= 0.90
-isLowConfidenceProceed = decision==='proceed' && confidence >= 0.70 && confidence < 0.90
-canSendDirectly        = isApproved || isLowConfidenceProceed || decision==='guide'
+isApproved()    = decision==='proceed' && confidence >= 0.90
+canSendDirectly = isApproved || decision==='guide'
 ```
+
+> La plage basse de confiance (0.70–0.89) ne déclenche **pas** `canSendDirectly` automatiquement — elle affiche un bouton "Envoyer quand même" côté client pour confirmation manuelle.
 
 ### Type `ControllerApiResponse`
 
