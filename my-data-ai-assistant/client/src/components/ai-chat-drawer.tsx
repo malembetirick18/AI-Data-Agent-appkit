@@ -8,7 +8,7 @@ import {
 } from '@mantine/core'
 import {
   IconSparkles, IconSend, IconArrowsMaximize, IconTrash, IconX,
-  IconBulb, IconChevronDown, IconDeviceFloppy, IconCalendar,
+  IconBulb, IconChevronDown, IconDeviceFloppy,
   IconListDetails, IconRobot, IconAlertTriangle,
 } from '@tabler/icons-react'
 import { useGenieChat } from '@databricks/appkit-ui/react'
@@ -19,6 +19,7 @@ import MessageContent, { CopyButton } from './MessageContent'
 import { TeamControlsPanel } from './TeamControlsPanel'
 import { ClarificationPanel } from './ClarificationPanel'
 import { SaveControlModal } from './SaveControlModal'
+import { PeriodPickerPanel } from './PeriodPickerPanel'
 import { useSpecStreaming } from '../hooks/useSpecStreaming'
 import { useControllerState } from '../hooks/useControllerState'
 import { useSaveDialog } from '../hooks/useSaveDialog'
@@ -63,19 +64,20 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
   const sessionIdRef = useRef(sessionId)
   const conversationIdRef = useRef(conversationId)
 
-  // Record first-seen timestamps for Genie messages (no setState — only mutates stable Maps)
-  useEffect(() => {
-    for (const m of genieMessages) {
-      const key = String(m.id)
+  const messages: Message[] = useMemo(() => {
+    // Populate first-seen epochs/timestamps inline to avoid a separate useEffect
+    // that runs after paint — which caused new Genie messages to sort at epoch=0
+    // (top of the list) for one render before the effect corrected them.
+    for (const gm of genieMessages) {
+      const key = String(gm.id)
       if (!genieTimestamps.has(key)) {
+        // eslint-disable-next-line react-hooks/purity -- intentional: Maps are stable external state; guard prevents re-stamping
         const now = Date.now()
         genieTimestamps.set(key, new Date(now).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }))
         genieEpochs.set(key, now)
       }
     }
-  }, [genieMessages, genieTimestamps, genieEpochs])
 
-  const messages: Message[] = useMemo(() => {
     // Dedup: derive the set of user-message contents confirmed by Genie so we
     // can exclude still-pending local echoes from the merged list, instead of
     // calling setState inside an effect (react-hooks/set-state-in-effect).
@@ -88,11 +90,16 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
         })
     )
 
-    const lastGenieAssistantId = chatStatus === 'idle'
-      ? [...genieMessages].reverse().find(m =>
-          m.role === 'assistant' && Boolean((m as Message).content?.trim() || (m as Message).attachments?.length)
-        )?.id ?? null
-      : null
+    let lastGenieAssistantId: string | number | null = null
+    if (chatStatus === 'idle') {
+      for (let i = genieMessages.length - 1; i >= 0; i--) {
+        const m = genieMessages[i]
+        if (m.role === 'assistant' && Boolean((m as Message).content?.trim() || (m as Message).attachments?.length)) {
+          lastGenieAssistantId = m.id
+          break
+        }
+      }
+    }
 
     // Loading placeholder: derived here instead of stored in localUserMessages
     // state via an effect, to avoid react-hooks/set-state-in-effect errors.
@@ -133,13 +140,14 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
   const [input, setInput] = useState('')
   const [showSuggestions, setShowSuggestions] = useState(true)
   const [showTeamControls, setShowTeamControls] = useState(false)
+  const [dynamicSuggestions, setDynamicSuggestions] = useState<string[]>(suggestions)
   const viewport = useRef<HTMLDivElement>(null)
 
   const specStreaming = useSpecStreaming()
-  const { generatedSpecs, failedSpecIds, streamingSpecMessageId, isStreaming, hasPartialSpec, uiStream, lastSpecCandidateIdRef, attemptedSpecIdsRef } = specStreaming
+  const { generatedSpecs, failedSpecIds, streamingSpecMessageId, isStreaming, hasPartialSpec, lastSpecCandidateIdRef, attemptedSpecIdsRef } = specStreaming
 
   const messagesRef = useRef(messages)
-  useEffect(() => { messagesRef.current = messages })
+  messagesRef.current = messages
 
   const controller = useControllerState({
     enrichedToOriginal,
@@ -161,17 +169,30 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
     if (viewport.current) {
       viewport.current.scrollTo({ top: viewport.current.scrollHeight, behavior: 'smooth' })
     }
-  }, [messages])
+  }, [messages, controller.pendingClarification, controller.ControllerHint, controller.ControllerLoading])
+
+  // Fetch dynamic suggestions from the server once on mount; fall back to static list on error.
+  useEffect(() => {
+    fetch('/api/suggestions')
+      .then((r) => (r.ok ? (r.json() as Promise<{ suggestions: string[] }>) : null))
+      .then((data) => { if (data?.suggestions?.length) setDynamicSuggestions(data.suggestions) })
+      .catch(() => { /* keep static fallback */ })
+  }, [])  
 
   // Trigger spec stream when Genie finishes streaming with query data
   useEffect(() => {
     if (chatStatus !== 'idle') return
     controller.setControllerHint((prev) => (prev?.decision !== 'error' ? null : prev))
 
-    const latestAssistantMessage = [...messages].reverse().find((message) =>
-      message.role === 'assistant' && !message.loading && !message.periodPrompt &&
-      (Boolean(message.content?.trim()) || Boolean(message.blocks?.length) || Boolean(message.attachments?.length))
-    )
+    let latestAssistantMessage: Message | undefined
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i]
+      if (m.role === 'assistant' && !m.loading && !m.periodPrompt &&
+          (Boolean(m.content?.trim()) || Boolean(m.blocks?.length) || Boolean(m.attachments?.length))) {
+        latestAssistantMessage = m
+        break
+      }
+    }
     if (!latestAssistantMessage) return
 
     const hasGenieData = Boolean(latestAssistantMessage.blocks?.length || latestAssistantMessage.attachments?.length)
@@ -194,8 +215,7 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
     }
   }, [chatStatus, messages]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  const handlePeriodConfirm = useCallback((periodValue: string) => {
-    const periodLabel = periodOptions.find((p) => p.value === periodValue)?.label ?? periodValue
+  const handlePeriodConfirm = useCallback((periodLabel: string) => {
     void controller.submitPromptThroughController(`Période confirmée : ${periodLabel}`)
   }, [controller])
 
@@ -354,7 +374,7 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
               <Box>
                 <Text size="xs" fw={600} c="dimmed" mb="xs">{'Exemples de questions d\'analyse et de contrôle'}</Text>
                 <Stack gap={6}>
-                  {suggestions.map((s, suggestionIndex) => (
+                  {dynamicSuggestions.map((s, suggestionIndex) => (
                     <UnstyledButton key={s} onClick={() => { lastSuggestionIndexRef.current = suggestionIndex; handleSend(s) }}
                       style={{ padding: '8px 12px', borderRadius: 8, border: '1px solid #e9ecef', backgroundColor: '#fff', transition: 'all 150ms ease', cursor: 'pointer' }}
                       onMouseEnter={(e: React.MouseEvent<HTMLButtonElement>) => { const t = e.currentTarget; t.style.borderColor = '#0c8599'; t.style.backgroundColor = '#f0fdf9' }}
@@ -387,20 +407,11 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
                       {msg.loading && <Group gap="xs"><Loader size="xs" color="teal" type="dots" /><Text size="sm" c="dimmed">Analyse en cours...</Text></Group>}
 
                       {msg.periodPrompt && !msg.loading && (
-                        <Paper p="sm" radius="md" style={{ backgroundColor: '#f8f9fa', border: '1px solid #e9ecef', borderLeft: '3px solid #0c8599' }}>
-                          <Group gap="xs" mb="xs"><IconCalendar size={14} color="#0c8599" /><Text size="sm" style={{ lineHeight: 1.55 }}>{msg.content}</Text></Group>
-                          <Stack gap={6} mt="xs">
-                            {periodOptions.map((opt) => (
-                              <UnstyledButton key={opt.value} onClick={() => handlePeriodConfirm(opt.value)}
-                                style={{ padding: '8px 12px', borderRadius: 8, border: '1px solid #e9ecef', backgroundColor: '#fff', transition: 'all 150ms ease', cursor: 'pointer' }}
-                                onMouseEnter={(e: React.MouseEvent<HTMLButtonElement>) => { const t = e.currentTarget; t.style.borderColor = '#0c8599'; t.style.backgroundColor = '#f0fdf9' }}
-                                onMouseLeave={(e: React.MouseEvent<HTMLButtonElement>) => { const t = e.currentTarget; t.style.borderColor = '#e9ecef'; t.style.backgroundColor = '#fff' }}
-                              >
-                                <Text size="xs" c="dark">{opt.label}</Text>
-                              </UnstyledButton>
-                            ))}
-                          </Stack>
-                        </Paper>
+                        <PeriodPickerPanel
+                          message={msg.content}
+                          options={msg.periodOptions ?? periodOptions}
+                          onConfirm={handlePeriodConfirm}
+                        />
                       )}
 
                       {msg.thinking && !msg.loading && (
@@ -454,7 +465,7 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
                           Boolean(resolvedSpec) ||
                           hasSpecFailed
                         ) && (
-                          <Paper p="sm" radius="md" style={{ backgroundColor: '#f8f9fa', border: '1px solid #e9ecef', borderLeft: '3px solid #0c8599' }}>
+                          <Paper mt="xs" p="sm" radius="md" style={{ backgroundColor: '#f8f9fa', border: '1px solid #e9ecef', borderLeft: '3px solid #0c8599' }}>
                             <MessageContent msg={msg} messageId={msgId} generatedSpec={resolvedSpec} registry={chatUiRegistry} hideText={Boolean(msg.thinking)} isSpecStreaming={isStreaming} />
                           </Paper>
                         )

@@ -32,8 +32,8 @@ from pydantic import BaseModel
 from dotenv import load_dotenv
 
 from src.logger import Logger
-from src.controller_decision import ControllerDecision
-from src.genui_spec_generator import GenUiSpecGenerator
+from src.modules.controller_decision import ControllerDecision
+from src.modules.genui_spec_generator import GenUiSpecGenerator
 
 
 # ── Request / Response models ─────────────────────────────────────────────────
@@ -138,12 +138,6 @@ with open(catalog_path, "r", encoding="utf-8") as f:
     genie_knowledge_store = json.load(f)
 default_catalog_info = json.dumps(genie_knowledge_store)
 
-genui_catalog_prompt_path = os.path.join(
-    os.path.dirname(__file__), "catalogs", "genui_catalog_prompt.txt"
-)
-with open(genui_catalog_prompt_path, "r", encoding="utf-8") as f:
-    default_genui_catalog_prompt = f.read()
-
 log_traces = os.getenv("MLFLOW_LOG_TRACES", "true") == "true"
 silent = os.getenv("MLFLOW_SILENT", "true") == "true"
 
@@ -169,6 +163,7 @@ lm = dspy.LM(
     model_type="responses",
     cache=True,
     num_retries=3,
+    use_developer_role=True
 )
 
 dspy.configure(lm=lm, adapter=dspy.JSONAdapter(), track_usage=True)
@@ -198,10 +193,9 @@ stream_spec = dspy.streamify(
 )
 
 logger.info(
-    "Semantic Layer API ready — model=%s catalog=%d chars genui-catalog=%d chars",
+    "Semantic Layer API ready — model=%s catalog=%d chars",
     "azure/gpt-5.3-codex",
-    len(default_catalog_info),
-    len(default_genui_catalog_prompt),
+    len(default_catalog_info)
 )
 
 
@@ -217,9 +211,32 @@ app.add_middleware(
 )
 
 
+DEFAULT_SUGGESTIONS: list[str] = [
+    "Les variations de dépenses par fournisseur ou catégorie sont-elles cohérentes avec les tendances historiques et les volumes d'activité ?",
+    "Existe-t-il des transactions d'achats présentant des montants, fréquences ou dates atypiques (ex. fractionnement de factures, achats en fin de période, doublons potentiels) ?",
+    "Des fournisseurs inactifs continuent-ils à être réglés ?",
+    "Quels tiers ont une activité à la fois fournisseur et client ?",
+    "Y a-t-il des écarts significatifs entre les soldes comptables fournisseurs et les balances auxiliaires ?",
+]
+
+
 @app.get("/health", status_code=200)
 async def health():
     return {"status": "healthy"}
+
+
+@app.get("/suggestions")
+async def get_suggestions():
+    """Return the configured accounting analysis suggestion questions."""
+    # Allow operators to override the default suggestions via a JSON array env var.
+    # Example: SUGGESTIONS='["Question 1", "Question 2", ...]'
+    suggestions = os.getenv("SUGGESTIONS", "")
+    suggestions: list[str] = json.loads(suggestions) if suggestions else []
+    if not isinstance(suggestions, list):
+        suggestions = DEFAULT_SUGGESTIONS
+    suggestions: list[str] = [str(q) for q in suggestions if str(q).strip()] or DEFAULT_SUGGESTIONS
+        
+    return {"suggestions": suggestions}
 
 
 # ── Controller endpoint (SSE) ────────────────────────────────────────────────
@@ -308,7 +325,6 @@ async def generate_spec(request: SpecRequest) -> AsyncIterable[str]:
 
     try:
         async for chunk in stream_spec(
-            developer_prompt=default_genui_catalog_prompt,
             user_prompt=user_content,
         ):
             if isinstance(chunk, StatusMessage):

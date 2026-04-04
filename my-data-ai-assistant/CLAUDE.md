@@ -22,17 +22,43 @@ databricks experimental aitools skills install
 ## Project: My Data AI Assistant
 
 Multi-layer Databricks app for AI-driven data exploration. Stack:
-- **Client** — React 19 + Mantine UI v7 + AG Charts/Grid Enterprise + JSON Render (split across `components/`, `hooks/`, `registry/`, `lib/`, `types/`)
+- **Client** — React 19 + Mantine UI v8 + AG Charts/Grid Enterprise + JSON Render (split across `components/`, `hooks/`, `registry/`, `lib/`, `types/`)
 - **Server** — Express.js + AppKit (`server/server.ts`, `plugins/controller-ai-agent/`)
 - **Semantic Layer API** — FastAPI + DSPy + MLflow (`semantic_layer_api/`)
 - **Shared** — `shared/genui-catalog.ts`
+
+### Python Semantic Layer Structure
+
+```
+semantic_layer_api/
+  main.py                          ← FastAPI app; /api/controller and /api/spec/generate endpoints
+  src/
+    modules/
+      controller_decision.py       ← ControllerDecision DSPy module (Reflexion pipeline)
+      genui_spec_generator.py      ← GenUiSpecGenerator DSPy module
+    signatures/
+      controller_decision/         ← ControllerDecisionSignature + developer prompt
+      controller_correction/       ← ControllerCorrectionSignature + developer prompt
+      controller_self_reflection/  ← ControllerSelfReflectionSignature + developer prompt
+      genui_spec/                  ← GenUiSpecSignature + developer prompt (incl. 18-component catalog)
+      query_analysis/              ← QueryAnalysisSignature + developer prompt
+      reasoning_summary/           ← ReasoningSummarySignature + developer prompt
+      rephrase_query/              ← RephraseQuerySignature + developer prompt
+      utils/
+        prompt_utils.py            ← Loads developer prompts from files
+    logger.py
+  catalogs/
+    genie_knowledge_store.json     ← Catalog index (tables/columns) used by ControllerDecision
+```
+
+Each `signatures/<name>/` directory contains the DSPy `Signature` class and its developer prompt file(s). The GenUI component catalog (18 components, JSONL patch rules, state/repeat/visibility docs) lives inside `signatures/genui_spec/` — **`catalogs/genui_catalog_prompt.txt` has been deleted**. Do not recreate it; the prompt is loaded via `prompt_utils.py` from `signatures/genui_spec/` at startup.
 
 ---
 
 ## Bugs Fixed (April 2026)
 
 ### Bug 1 — Duplicate `normalizeApiSpec` (client diverged from shared)
-`ai-chat-drawer.tsx` had a 140-line local copy of `normalizeApiSpec`. **This function and `shared/normalize-spec.ts` have since been deleted** — the spec pipeline was refactored so Python `/spec/generate` streams raw JSONL patches, `useUIStream` assembles them on the client, and no normalization layer is needed. Do not re-add `normalizeApiSpec` or `shared/normalize-spec.ts`.
+`ai-chat-drawer.tsx` had a 140-line local copy of `normalizeApiSpec`. **This function and `shared/normalize-spec.ts` have since been deleted** — the spec pipeline was refactored so Python `/api/spec/generate` streams raw JSONL patches, `useUIStream` assembles them on the client, and no normalization layer is needed. Do not re-add `normalizeApiSpec` or `shared/normalize-spec.ts`.
 
 ### Bug 2 — `activeYKeys`/`yOptions` created new arrays on every render
 In `InteractiveChart`, `yOptions` was computed inline (no `useMemo`), causing `activeYKeys` and `sortedData` to recompute every render → AG Charts re-rendered constantly. Fixed by wrapping `allColOptions`, `numColOptions`, `yOptions`, `sizeOptions`, and `activeYKeys` in `useMemo`.
@@ -50,10 +76,10 @@ Duplicate items (e.g., two "N/A" entries) caused React key conflicts. Fixed: use
 `plugins/controller-ai-agent/controller-ai-agent.ts` typed it as `Record<string, unknown>[] | null` (array). The client sends a **single object**. Fixed: `Record<string, unknown> | null`.
 
 ### Bug 7 — Phase 4 corrector JSON not validated as `dict`
-`semantic_layer_api/src/controller_decision.py`: after `json.loads(raw_correction.corrected_decision_json)`, the code immediately accessed dict keys. If the LLM returned an array/null, this caused `TypeError`. Added: `if not isinstance(corrected, dict): raise ValueError(...)`.
+`semantic_layer_api/src/modules/controller_decision.py`: after `json.loads(raw_correction.corrected_decision_json)`, the code immediately accessed dict keys. If the LLM returned an array/null, this caused `TypeError`. Added: `if not isinstance(corrected, dict): raise ValueError(...)`.
 
 ### Bug 8 — `generate_spec` was synchronous, blocking FastAPI threadpool
-`semantic_layer_api/main.py`: the `/spec/generate` endpoint was `def generate_spec(...)` — a sync FastAPI handler that blocks a threadpool worker for 10–30s per DSPy call. Fixed: made it `async def generate_spec(...)` with `result = await asyncio.to_thread(_run_genui)`.
+`semantic_layer_api/main.py`: the `/api/spec/generate` endpoint was `def generate_spec(...)` — a sync FastAPI handler that blocks a threadpool worker for 10–30s per DSPy call. Fixed: made it `async def generate_spec(...)` with `result = await asyncio.to_thread(_run_genui)`.
 
 ---
 
@@ -98,7 +124,7 @@ const resolvedSpec =
 
 ### `/api/spec-stream` endpoint (server.ts)
 
-Forwards raw JSONL RFC 6902 patches from Python `/spec/generate` directly to the client (`text/plain`). No normalization — `useUIStream` assembles patches into a spec on the client side. Example patch lines:
+Forwards raw JSONL RFC 6902 patches from Python `/api/spec/generate` directly to the client (`text/plain`). No normalization — `useUIStream` assembles patches into a spec on the client side. Example patch lines:
 ```
 {"op":"add","path":"/elements","value":{...}}
 {"op":"add","path":"/root","value":"stack-1"}
@@ -134,12 +160,12 @@ Forwards raw JSONL RFC 6902 patches from Python `/spec/generate` directly to the
   - Do NOT set `canSendDirectly: true` for low-confidence `proceed` — the controller signature allows `proceed` at 0.50–0.75 when "mapping requires assumptions"; the client must route these back through the controller.
 - **Reflexion pipeline**: enabled via `ENABLE_CONTROLLER_REFLECTION=true`. Adds 2 LLM calls (phases 3c + 4). Only fires when there is a real signal (`bool(removed) or bool(coherence_note)`). Disabled in dev. Non-fatal — errors fall back to Phase 3b output.
 - **Scope guardrail runs before Reflexion**: the scope guardrail block executes after Phase 3b validation and **before** the Reflexion block so a scope-forced `clarify` never wastes two extra LLM calls.
-- **`generate_spec` streaming**: `/spec/generate` uses `dspy.streamify()` with typed chunk dispatch (`StreamResponse`, `StatusMessage`, `Prediction`). Patches stream as JSONL lines; status updates stream as `# comment` lines. No server-side patch validation — `useUIStream` handles assembly on the client. Do not re-add `_parse_patches`, `_assemble_spec_from_patches`, or any intermediate parse layer.
+- **`generate_spec` streaming**: `/api/spec/generate` uses `dspy.streamify()` with typed chunk dispatch (`StreamResponse`, `StatusMessage`, `Prediction`). Patches stream as JSONL lines; status updates stream as `# comment` lines. No server-side patch validation — `useUIStream` handles assembly on the client. Do not re-add `_parse_patches`, `_assemble_spec_from_patches`, or any intermediate parse layer.
 - **`/chat/stream` DSPy streaming**: Controller endpoint also uses `dspy.streamify()`. Emits `event: status` (progress), `event: reasoning_token` (partial reasoning), and `event: controller_decision` (final) SSE events. Both endpoints use the FastAPI ≥ 0.134 `yield` pattern (`response_class=StreamingResponse`, `AsyncIterable[str]` return) — no manual `StreamingResponse(generator)` wrapping.
 - **`StatusMessageProvider` classes**: `ControllerStatusProvider` and `SpecStatusProvider` provide real-time observability into LM calls via DSPy's streaming infrastructure. They are registered once at startup via `dspy.streamify(..., status_message_provider=...)`.
 - **LM config DRY**: Both `lm` and `genui_lm` share `_LM_KWARGS` dict. Do not duplicate Azure config params.
 - **Config constants**: `SEMANTIC_LAYER_API_URL` and `REQUEST_TIMEOUT_MS` are defined once in `plugins/controller-ai-agent/controller-ai-agent.ts` and exported. `server.ts` imports them — do not redeclare locally.
-- **Single spec endpoint**: Only `/api/spec-stream` exists. Both `AiChatDrawer`'s main `useUIStream` and `QueryDataTable`'s internal `useUIStream` use this endpoint. The `/api/spec` endpoint and `handleSpecRequest`/`assembleSpecFromPatches` have been deleted (April 2026).
+- **Single spec endpoint**: Only `/api/spec-stream` exists (Node server), which proxies to Python `/api/spec/generate`. `AiChatDrawer`'s `useUIStream` (via `hooks/useSpecStreaming.ts`) is the sole consumer. `QueryDataTable` is now a simple placeholder (renders `props.caption` only) — it does NOT have its own `useUIStream` instance (Bug 28). The `/api/spec` endpoint and `handleSpecRequest`/`assembleSpecFromPatches` have been deleted (April 2026).
 - **React client split**: `ai-chat-drawer.tsx` was refactored from 3,568 lines into focused modules: `types/chat.ts`, `lib/{chart-utils,message-utils,spec-utils,genie-utils}.ts`, `components/{InteractiveChart,MessageContent,ClarificationPanel,TeamControlsPanel,SaveControlModal}.tsx`, `hooks/{useSpecStreaming,useControllerState,useSaveDialog}.ts`, `registry/chat-ui-registry.tsx`. The orchestration shell `ai-chat-drawer.tsx` is ~600 lines.
 
 ---
@@ -147,22 +173,22 @@ Forwards raw JSONL RFC 6902 patches from Python `/spec/generate` directly to the
 ## Bugs Fixed (April 2026 — Audit Pass)
 
 ### Bug 9 — `handleSpecRequest`/`/api/spec` made redundant by `useUIStream`
-`plugins/controller-ai-agent/controller-ai-agent.ts` had a `parseSpecFromSse()` parser and a `handleSpecRequest` handler serving `POST /api/spec`. Python `/spec/generate` switched to JSONL patches (`text/plain`), breaking `QueryDataTable`. Final resolution: deleted `handleSpecRequest`, `assembleSpecFromPatches`, `SpecRequest`, `SpecResponse`, and the `/api/spec` route entirely. `QueryDataTable` now uses `useUIStream({ api: '/api/spec-stream' })` directly — no intermediate server-side parse step needed. `parseSpecFromSse` also removed from `index.ts` barrel export.
+`plugins/controller-ai-agent/controller-ai-agent.ts` had a `parseSpecFromSse()` parser and a `handleSpecRequest` handler serving `POST /api/spec`. Python `/api/spec/generate` switched to JSONL patches (`text/plain`), breaking `QueryDataTable`. Final resolution: deleted `handleSpecRequest`, `assembleSpecFromPatches`, `SpecRequest`, `SpecResponse`, and the `/api/spec` route entirely. `QueryDataTable` now uses `useUIStream({ api: '/api/spec-stream' })` directly — no intermediate server-side parse step needed. `parseSpecFromSse` also removed from `index.ts` barrel export.
 
 ### Bug 10 — Reflexion Phase 3c fired even on clean decisions (wasted LLM calls)
-`semantic_layer_api/src/controller_decision.py`: Phase 3c (self-reflection) triggered for any `proceed`/`guide` decision regardless of whether catalog validation found hallucinations or a coherence issue. Fixed: added `_has_reflection_signal = bool(removed) or bool(coherence_note)` guard — Phase 3c+4 only runs when there is actual signal to reflect on.
+`semantic_layer_api/src/modules/controller_decision.py`: Phase 3c (self-reflection) triggered for any `proceed`/`guide` decision regardless of whether catalog validation found hallucinations or a coherence issue. Fixed: added `_has_reflection_signal = bool(removed) or bool(coherence_note)` guard — Phase 3c+4 only runs when there is actual signal to reflect on.
 
 ### Bug 11 — Scope guardrail ran after Reflexion, wasting 2 LLM calls for scope-less queries
-`semantic_layer_api/src/controller_decision.py`: the scope guardrail (which overrides decision to `clarify`) was placed after the Reflexion block. A scope-less `proceed` decision would run Phase 3c+4 and then be overridden to `clarify` anyway. Fixed: moved scope guardrail to before the Reflexion block.
+`semantic_layer_api/src/modules/controller_decision.py`: the scope guardrail (which overrides decision to `clarify`) was placed after the Reflexion block. A scope-less `proceed` decision would run Phase 3c+4 and then be overridden to `clarify` anyway. Fixed: moved scope guardrail to before the Reflexion block.
 
 ### Bug 12 — Phase 4 corrector JSON parse error had no diagnostic logging
-`semantic_layer_api/src/controller_decision.py`: `json.loads(raw_correction.corrected_decision_json)` on line ~325 had no targeted error handler. A JSONDecodeError would be caught by the outer `except Exception` with a generic message. Fixed: added inner `try/except json.JSONDecodeError` that logs the raw LLM output before re-raising.
+`semantic_layer_api/src/modules/controller_decision.py`: `json.loads(raw_correction.corrected_decision_json)` on line ~325 had no targeted error handler. A JSONDecodeError would be caught by the outer `except Exception` with a generic message. Fixed: added inner `try/except json.JSONDecodeError` that logs the raw LLM output before re-raising.
 
 ### Bug 13 — Dead expiry check in `controller-approval-store.ts`
 `server/controller-approval-store.ts`: `sweepExpiredApprovals(now)` on line 55 purges all tokens with `expiresAt <= now`. The subsequent check at lines 64–65 (`if (approval.expiresAt <= now)`) was unreachable dead code — expired tokens are already gone before `.get()` is called. Deleted lines 64–65.
 
 ### Bug 14 — `genui_spec_generator.py` had no error handling in `forward()`
-`semantic_layer_api/src/genui_spec_generator.py`: DSPy predict failures propagated silently with no log context. Fixed: wrapped `self.predict()` in try/except with `_logger.error()` before re-raising.
+`semantic_layer_api/src/modules/genui_spec_generator.py`: DSPy predict failures propagated silently with no log context. Fixed: wrapped `self.predict()` in try/except with `logger.error()` before re-raising.
 
 ### Bug 15 — Duplicate `system_prompt` in `main.py` `_run_genui()`
 `semantic_layer_api/main.py`: `system_prompt=default_genui_catalog_prompt` was passed both to the `genui_lm` LM constructor and again inside `dspy.settings.context()`. The context override was redundant. Removed from the context call.
@@ -196,13 +222,13 @@ Three signature classes (`QueryClassificationSignature`, `RequiredColumnsSignatu
 `client/src/components/MessageContent.tsx` and `ai-chat-drawer.tsx` used `specHasChartElement` to decide whether to render via `<Renderer>`. A valid spec containing only `DataTable` + `TextContent` returned `false` → fell through to Genie fallback → blank or duplicate display. Fixed: replaced `specHasChartElement` with `specIsValid` (checks `{ root, elements }` format correctness, not content type). New function added to `client/src/lib/genie-utils.ts`.
 
 ### Bug 24 — Python LLM generated wrong patch format (`/title`, `/layout`, `/children`)
-`semantic_layer_api/src/signatures/genui_spec_signature.py`: the `spec_patches` OutputField description was too weak — LLM generated patches at `/title`, `/layout`, `/children` instead of `/root` + `/elements/<key>`. Assembled spec had `root: undefined` → `Renderer` returned null. Fixed: rewrote the field description with explicit REQUIRED / OPTIONAL / FORBIDDEN path rules and an inline JSONL example enforcing the correct format.
+`semantic_layer_api/src/signatures/genui_spec/` (`GenUiSpecSignature`): the `spec_patches` OutputField description was too weak — LLM generated patches at `/title`, `/layout`, `/children` instead of `/root` + `/elements/<key>`. Assembled spec had `root: undefined` → `Renderer` returned null. Fixed: rewrote the field description with explicit REQUIRED / OPTIONAL / FORBIDDEN path rules and an inline JSONL example enforcing the correct format.
 
 ### Bug 25 — `AreaChartViz` missing from `genui_catalog_prompt.txt`
 `semantic_layer_api/catalogs/genui_catalog_prompt.txt`: the AVAILABLE COMPONENTS list had 17 entries but `shared/genui-catalog.ts` and `chat-ui-registry.tsx` both define 18 components. `AreaChartViz` was entirely absent from the LLM prompt — the model could never generate it. Fixed: added `AreaChartViz` entry (same props shape as `LineChartViz`; prefer it for cumulative totals or filled-volume data). Updated count 17 → 18.
 
 ### Bug 26 — `GenUiSpecSignature` description forbade `/state` patches (conflicted with catalog)
-`semantic_layer_api/src/signatures/genui_spec_signature.py`: the field description said "never use … any other top-level path", which excluded `/state` patches. But `genui_catalog_prompt.txt` (the LLM system prompt) explicitly teaches `/state`, `repeat`, `$bindState`, etc. for interactive components (`WorkflowRuleBuilder`, `FormPanel`, form inputs). The contradiction produced unpredictable behavior for state-driven specs. Fixed: updated the description to list `/state/<path>` as OPTIONAL and document the `repeat`, `on`, `visible`, `watch` element fields.
+`semantic_layer_api/src/signatures/genui_spec/` (`GenUiSpecSignature`): the field description said "never use … any other top-level path", which excluded `/state` patches. But `genui_catalog_prompt.txt` (the LLM system prompt) explicitly teaches `/state`, `repeat`, `$bindState`, etc. for interactive components (`WorkflowRuleBuilder`, `FormPanel`, form inputs). The contradiction produced unpredictable behavior for state-driven specs. Fixed: updated the description to list `/state/<path>` as OPTIONAL and document the `repeat`, `on`, `visible`, `watch` element fields.
 
 ### Bug 27 — `useMemo` / hooks inside `defineRegistry` components (anti-pattern)
 `client/src/registry/chat-ui-registry.tsx`: several registry components (`DataTable`, chart renderers) used `useMemo` internally. Because `defineRegistry` calls them as plain functions (not via JSX), hook calls attach to the outer registry-wrapper React fiber — violating rules of hooks and causing stale memoized values. Fixed: removed all `useMemo` calls from registry components; moved `VISIBLE_COLS` and `LARGE_TABLE_THRESHOLD` to module scope; all values are now computed inline per call.
@@ -211,7 +237,7 @@ Three signature classes (`QueryClassificationSignature`, `RequiredColumnsSignatu
 `client/src/registry/chat-ui-registry.tsx`: `QueryDataTable` had its own `useUIStream` instance. Same fiber-attachment anti-pattern as Bug 27 — hooks must not live in registry components. Fixed: `QueryDataTable` is now a simple placeholder that renders `props.caption` only; the single `useUIStream` instance lives exclusively in `hooks/useSpecStreaming.ts` (called from `ai-chat-drawer.tsx`).
 
 ### Bug 29 — Phase-3b over-stripped high-confidence table selections
-`semantic_layer_api/src/controller_decision.py`: `_validate_against_catalog` applied a hard Rule 1 penalty (override to `clarify` + confidence ≤ 0.45) whenever `suggestedTables` was stripped empty — even when Phase-3 had returned a very high confidence (e.g. 0.97) with a valid table the catalog index simply didn't know about (e.g. a materialized view). The correct, confident answer was discarded in favour of a `clarify` dead-end. Fixed: added `_HIGH_CONFIDENCE_THRESHOLD = 0.85`. When Phase-3 confidence ≥ 0.85 and stripping would empty `suggestedTables`, the strip is skipped entirely — the LLM's table choice is trusted, `removed` stays empty, and Reflexion (Phase 3c+4) does not fire unnecessarily. Low-confidence cases (< 0.85) are still subject to Rule 1 unchanged.
+`semantic_layer_api/src/modules/controller_decision.py`: `_validate_against_catalog` applied a hard Rule 1 penalty (override to `clarify` + confidence ≤ 0.45) whenever `suggestedTables` was stripped empty — even when Phase-3 had returned a very high confidence (e.g. 0.97) with a valid table the catalog index simply didn't know about (e.g. a materialized view). The correct, confident answer was discarded in favour of a `clarify` dead-end. Fixed: added `_HIGH_CONFIDENCE_THRESHOLD = 0.85`. When Phase-3 confidence ≥ 0.85 and stripping would empty `suggestedTables`, the strip is skipped entirely — the LLM's table choice is trusted, `removed` stays empty, and Reflexion (Phase 3c+4) does not fire unnecessarily. Low-confidence cases (< 0.85) are still subject to Rule 1 unchanged.
 
 ---
 
@@ -227,3 +253,45 @@ Three signature classes (`QueryClassificationSignature`, `RequiredColumnsSignatu
 
 - Use **`specIsValid`** as the gate for rendering via `<Renderer>`. It checks `{ root: string, elements: object }` format — correct for any spec type (table-only, text-only, chart, form, mixed).
 - `specHasChartElement` checks content type — do not use it as a render gate. It remains available for other feature-flag purposes only.
+
+---
+
+## Bugs Fixed (April 2026 — Code Quality & Chart Pass)
+
+### Bug 30 — `main.py` startup crash: `logger.info` format string had 3 specifiers, 2 arguments
+`semantic_layer_api/main.py`: when `default_genui_catalog_prompt` was deleted, the `logger.info` call that logged startup stats retained `genui-catalog=%d chars` in its format string but the corresponding `len(default_genui_catalog_prompt)` argument was not removed. Three `%` specifiers with two arguments → `TypeError` when the log record is emitted, crashing the server before it can accept requests. Fixed: removed `genui-catalog=%d chars` from the format string.
+
+### Bug 31 — Redundant `Object.keys` allocation in `specIsValid`
+`client/src/lib/genie-utils.ts`: `specIsValid` called `Object.keys(spec.elements).length > 0` immediately before `spec.root in spec.elements`. The `in` check already implies non-empty (if `root` is present as a key, the object has at least one entry), so the `Object.keys()` array allocation was pure overhead called on every render for every message. Removed.
+
+### Bug 32 — Unnecessary fragment wrapper in `MessageContent.tsx`
+`client/src/components/MessageContent.tsx`: the `specIsValid` render branch returned `<>…</>` wrapping a single `<JSONUIProvider>`. Fragments around a single root element add no value. Removed.
+
+### Bug 33 — `?? {}` in `JSONUIProvider initialState` created a new object on every render
+`client/src/components/MessageContent.tsx`: both `JSONUIProvider` usages (primary spec path and attachment fallback loop) used `(spec.state as Record<string, unknown>) ?? {}`. The `{}` literal allocates a new object reference on every render, giving `JSONUIProvider` an unstable `initialState` prop which may cause it to reset internal state unnecessarily. Fixed: extracted `const EMPTY_STATE: Record<string, unknown> = {}` at module scope and used it as the stable fallback in both sites.
+
+### Bug 34 — Duplicate `useIsMobile` implementation left in `components/ui/`
+`client/src/components/ui/use-mobile.tsx` (old `useState` + `useEffect` + `window.innerWidth` implementation) was not deleted after the canonical version was moved to `client/src/hooks/use-mobile.tsx` (refactored to `useSyncExternalStore` with a module-level `MediaQueryList` singleton). `sidebar.tsx` import was updated but the stale file remained, so any new code following the `ui/` import convention would silently get the old implementation. Deleted `client/src/components/ui/use-mobile.tsx`.
+
+### Bug 35 — `[...arr].reverse().find()` allocated full array copies with no early exit
+`client/src/components/ai-chat-drawer.tsx`: two locations used `[...genieMessages].reverse().find(...)` and `[...messages].reverse().find(...)` to locate the last matching element. Spreading the entire array creates a full O(N) copy just to reverse it, with no early exit once the match is found. Fixed: replaced both with reverse `for` loops that `break` on first match — O(1) space, guaranteed early exit.
+
+### Bug 36 — `InteractiveChart` rendered blank/empty charts when column data was null, zero, or uniform
+`client/src/components/InteractiveChart.tsx`: the `isReadyToRender` guard only checked whether key column names were set (truthy string), not whether those columns actually contained usable values. This produced visually broken charts:
+- **Pie / Donut**: solid white circle with no segments when `angleKey` had all-null, all-zero, or single-row data (e.g. a row-ID column used as the angle key produces equal slices indistinguishable from a blank disc)
+- **Bubble**: no visible bubbles when `sizeKey` values were all null or zero (AG Charts renders zero-radius bubbles)
+- **Line / Area / Bar**: empty axes when all Y-column values were null or non-numeric
+
+Fixed: replaced the single boolean expression with per-chart-type data validity checks using the already-memoized `sortedData` / `bubbleData`:
+- **Pie/Donut** — `sortedData.filter(d => Number(d[activeValueKey]) > 0).length >= 2` (≥ 2 positive values required; a single row or all-zero renders a blank circle)
+- **Radar** — at least one non-null numeric value across the selected Y keys
+- **Bubble** — at least one row where X is non-null, Y is a valid number, and `sizeKey > 0`
+- **Line/Area/Bar** — at least one row with a non-null, non-NaN value in any selected Y key
+
+When the check fails, the existing "Aucune donnée à afficher" placeholder renders instead of an empty chart shell.
+
+### Bug 37 — `InteractiveChart` description said "Évolution" for categorical X-axis line charts
+`client/src/components/InteractiveChart.tsx`: `chartDescription` always produced `Évolution de {Y} selon {X}` for line charts and `Tendance de {Y} selon {X}` for area charts regardless of whether the X-axis was a time dimension. When X was a categorical column (e.g. account codes `401110`, `411100`, …), the word "Évolution" was factually wrong — "évolution" implies change over time. Fixed: added `isIsoDateColumn(sortedData, xKey)` check inside the `chartDescription` `useMemo` (added `sortedData` to its deps). Date X-axis keeps "Évolution"/"Tendance"; non-date X-axis uses `Comparaison de {Y} par {X}` (the same wording as bar charts, which is correct for any categorical or numeric X dimension).
+
+### Bug 38 — No spacing between reasoning accordion and content card
+`client/src/components/ai-chat-drawer.tsx`: the `<Paper>` card containing `<MessageContent>` rendered flush against the reasoning `<Accordion>` directly above it with no top margin. Fixed: added `mt="xs"` to the `Paper`.

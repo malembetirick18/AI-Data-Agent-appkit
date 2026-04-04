@@ -39,6 +39,7 @@ export interface ControllerApiResponse {
   catalogSource?: 'payload' | 'env-json' | 'env-file' | 'empty'
   needsParams?: boolean
   reasoning?: string
+  periodOptions?: Array<{ label: string; value: string }>
 }
 
 export interface ControllerConversationContext {
@@ -72,6 +73,7 @@ export interface Message {
   queryResults?: Map<string, unknown>
   thinking?: boolean
   periodPrompt?: boolean
+  periodOptions?: Array<{ label: string; value: string }>
   loading?: boolean
   controlName?: string
   controlDescription?: string

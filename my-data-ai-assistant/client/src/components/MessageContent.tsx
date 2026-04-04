@@ -8,6 +8,7 @@ import { chatUiRegistry } from '../registry/chat-ui-registry'
 import {
   toGenieStatementResponse,
   buildSpecFromGenieStatement,
+  specIsValid,
 } from '../lib/genie-utils'
 import type { Message, ContentBlock, GenericUiSpec } from '../types/chat'
 
@@ -117,6 +118,8 @@ export function RenderBlock({ block }: { block: ContentBlock }) {
 /*  Memoised message content                                           */
 /* ------------------------------------------------------------------ */
 
+const EMPTY_STATE: Record<string, unknown> = {}
+
 const MessageContent = memo(function MessageContent({
   msg,
   messageId,
@@ -132,13 +135,15 @@ const MessageContent = memo(function MessageContent({
   hideText?: boolean
   isSpecStreaming?: boolean
 }) {
-  if (generatedSpec) {
+  if (specIsValid(generatedSpec)) {
     return (
-      <>
-        <JSONUIProvider key={messageId} registry={registry}>
-          <Renderer spec={generatedSpec} registry={registry} loading={isSpecStreaming} />
-        </JSONUIProvider>
-      </>
+      <JSONUIProvider
+        key={messageId}
+        registry={registry}
+        initialState={(generatedSpec.state as Record<string, unknown>) ?? EMPTY_STATE}
+      >
+        <Renderer spec={generatedSpec} registry={registry} loading={isSpecStreaming} />
+      </JSONUIProvider>
     )
   }
 
@@ -207,7 +212,11 @@ const MessageContent = memo(function MessageContent({
       )}
       {parsedAttachments.map(({ key, spec: attachmentSpec }) => (
         <Box key={key} mt="sm">
-          <JSONUIProvider key={`genie-${key}`} registry={registry}>
+          <JSONUIProvider
+            key={`genie-${key}`}
+            registry={registry}
+            initialState={(attachmentSpec.state as Record<string, unknown>) ?? EMPTY_STATE}
+          >
             <Renderer spec={attachmentSpec} registry={registry} />
           </JSONUIProvider>
         </Box>

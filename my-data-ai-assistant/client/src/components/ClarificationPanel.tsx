@@ -48,7 +48,7 @@ export function ClarificationPanel({
     if (question.inputType === 'number') {
       return (
         <NumberInput
-          value={clarificationAnswers[question.id] ? Number(clarificationAnswers[question.id]) : undefined}
+          value={clarificationAnswers[question.id] ?? ''}
           onChange={(value) => onAnswerChange(question.id, value == null || value === '' ? '' : String(value))}
           placeholder={question.placeholder || 'Ajoutez une valeur numérique'}
           min={question.min} max={question.max} step={question.step}
@@ -97,7 +97,7 @@ export function ClarificationPanel({
             }
           </Text>
           <Text size="xs" c="dimmed" mt={2} style={{ lineHeight: 1.55 }}>
-            {pendingClarification.message}
+            {pendingClarification.message.replace(/\s*Current choice:[^\n.]*\.?/gi, '').trim()}
           </Text>
         </Box>
       </Group>
@@ -107,7 +107,7 @@ export function ClarificationPanel({
       {pendingClarification.canSendDirectly && pendingClarification.questions.length > 0 && (
         <Alert icon={<IconInfoCircle size={14} />} color="blue" variant="light" mb="sm" p="xs"
           styles={{ message: { fontSize: 'var(--mantine-font-size-xs)' } }}>
-          Votre requête est valide et sera envoyée à Genie. Ces questions sont optionnelles mais nous vous recommandons fortement d&apos;y répondre pour affiner les résultats.
+          Votre requête est valide et sera envoyée à l\&apos;Agent IA pour analyse. Ces questions sont optionnelles mais nous vous recommandons fortement d&apos;y répondre pour affiner les résultats.
         </Alert>
       )}
 

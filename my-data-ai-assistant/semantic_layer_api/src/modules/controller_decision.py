@@ -12,17 +12,24 @@ from typing import Any
 import dspy
 
 from src.logger import Logger
-from src.signatures.controller_decision_signature import ControllerDecisionSignature
-from src.signatures.rephrase_query_signature import RephraseQuerySignature
-from src.signatures.query_analysis_signature import QueryAnalysisSignature
+from src.signatures.controller_decision.controller_decision_signature import ControllerDecisionSignature
+from src.signatures.rephrase_query.rephrase_query_signature import RephraseQuerySignature
+from src.signatures.query_analysis.query_analysis_signature import QueryAnalysisSignature
 
 # Reflexion signatures — imported unconditionally so type checkers can resolve them;
 # the DSPy modules are only instantiated when _REFLECTION_ENABLED is True.
-from src.signatures.controller_self_reflection_signature import ControllerSelfReflectionSignature
-from src.signatures.controller_correction_signature import ControllerCorrectionSignature
+from src.signatures.controller_self_reflection.controller_self_reflection_signature import ControllerSelfReflectionSignature
+from src.signatures.controller_correction.controller_correction_signature import ControllerCorrectionSignature
+from src.signatures.utils.prompt_utils import load_controller_self_reflection_developer_prompt, load_controller_correction_developer_prompt, load_query_analysis_developer_prompt, load_rephrase_query_developer_prompt, load_controller_decision_developer_prompt
 
 # Child of the root "semantic-layer-api" logger — propagates to its handler, no double output.
-_logger = Logger("semantic-layer-api").child("controller")
+logger = Logger("semantic-layer-api").child("controller")
+
+self_reflection_developer_prompt = load_controller_self_reflection_developer_prompt()
+controller_correction_developer_prompt = load_controller_correction_developer_prompt()
+query_analysis_developer_prompt = load_query_analysis_developer_prompt()
+rephrase_query_developer_prompt = load_rephrase_query_developer_prompt()
+controller_decision_developer_prompt = load_controller_decision_developer_prompt()
 
 # Self-reflection + correction passes are gated behind an env flag.
 # In dev they add two extra LLM calls per request; keeping them off avoids latency overhead.
@@ -198,14 +205,14 @@ class ControllerDecision(dspy.Module):
 
     def __init__(self):
         super().__init__()
-        self.analyze_query = dspy.ChainOfThought(QueryAnalysisSignature)
-        self.rephrase_query = dspy.ChainOfThought(RephraseQuerySignature)
-        self.controller_decision = dspy.ChainOfThought(ControllerDecisionSignature)
+        self.analyze_query = dspy.ChainOfThought(QueryAnalysisSignature.with_instructions(query_analysis_developer_prompt))
+        self.rephrase_query = dspy.ChainOfThought(RephraseQuerySignature.with_instructions(rephrase_query_developer_prompt))
+        self.controller_decision = dspy.ChainOfThought(ControllerDecisionSignature.with_instructions(controller_decision_developer_prompt))
         self.self_reflect: dspy.ChainOfThought | None = None
         self.correct_decision: dspy.ChainOfThought | None = None
         if _REFLECTION_ENABLED:
-            self.self_reflect = dspy.ChainOfThought(ControllerSelfReflectionSignature)
-            self.correct_decision = dspy.ChainOfThought(ControllerCorrectionSignature)
+            self.self_reflect = dspy.ChainOfThought(ControllerSelfReflectionSignature.with_instructions(self_reflection_developer_prompt))
+            self.correct_decision = dspy.ChainOfThought(ControllerCorrectionSignature.with_instructions(controller_correction_developer_prompt))
 
     def forward(
         self,
@@ -223,16 +230,16 @@ class ControllerDecision(dspy.Module):
         sql_functions_json: str = analysis.sql_functions_json or "[]"
         coherence_note: str = analysis.coherence_note or ""
 
-        _logger.info("Phase-1 classification=%r columns=%s functions=%s",
+        logger.info("Phase-1 classification=%r columns=%s functions=%s",
                      query_classification,
                      required_columns_json[:80],
                      sql_functions_json[:80])
         if coherence_note:
-            _logger.info("Phase-1 coherence note: %s", coherence_note[:120])
+            logger.info("Phase-1 coherence note: %s", coherence_note[:120])
 
         # Phase 2: conditional rephrase — skip for clear Normal SQL queries
         if query_classification in _REPHRASE_CLASSIFICATIONS:
-            _logger.info("Phase-2 rephrasing prompt for classification=%r", query_classification)
+            logger.info("Phase-2 rephrasing prompt for classification=%r", query_classification)
             rewritten = self.rephrase_query(
                 prompt=source_text, query_classification=query_classification
             )
@@ -257,7 +264,7 @@ class ControllerDecision(dspy.Module):
             if not isinstance(decision, dict):
                 raise ValueError(f"Expected dict, got {type(decision).__name__}")
         except (json.JSONDecodeError, ValueError) as exc:
-            _logger.error("Phase-3 decision_json parse failed: %s — raw=%r", exc, raw.decision_json)
+            logger.error("Phase-3 decision_json parse failed: %s — raw=%r", exc, raw.decision_json)
             decision = {"decision": "error", "confidence": 0.0, "message": "Réponse du contrôleur invalide."}
 
         # Enrich with pipeline metadata not always returned by the LLM
@@ -283,7 +290,7 @@ class ControllerDecision(dspy.Module):
             decision["predictiveFunctions"] = []
         decision.setdefault("coherenceNote", coherence_note)
 
-        _logger.info("Phase-3 decision=%r confidence=%.2f tables=%s needsParams=%s",
+        logger.info("Phase-3 decision=%r confidence=%.2f tables=%s needsParams=%s",
                      decision.get("decision"),
                      float(decision.get("confidence", 0.0)),
                      decision.get("suggestedTables", []),
@@ -301,7 +308,7 @@ class ControllerDecision(dspy.Module):
             decision, removed = _validate_against_catalog(decision, catalog_index, phase3_confidence)
             validation_feedback = _build_validation_feedback(removed, decision)
             if removed:
-                _logger.info(
+                logger.info(
                     "Phase-3b stripped %d hallucinated names from fields: %s → decision now=%r confidence=%.2f",
                     sum(len(v) for v in removed.values()),
                     list(removed.keys()),
@@ -309,7 +316,7 @@ class ControllerDecision(dspy.Module):
                     float(decision.get("confidence", 0.0)),
                 )
             else:
-                _logger.debug("Phase-3b catalog validation clean")
+                logger.debug("Phase-3b catalog validation clean")
 
         # ── Scope guardrail ──────────────────────────────────────────────────
         # Runs before Reflexion so scope-forced clarify decisions never enter
@@ -319,7 +326,7 @@ class ControllerDecision(dspy.Module):
             existing_questions: list[dict] = raw_questions if isinstance(raw_questions, list) else []
             has_scope = any(isinstance(q, dict) and q.get("id") == "scope_level" for q in existing_questions)
             if not has_scope:
-                _logger.info("Scope guardrail fired — overriding to 'clarify', injecting %d scope questions",
+                logger.info("Scope guardrail fired — overriding to 'clarify', injecting %d scope questions",
                              len(_SCOPE_QUESTIONS))
                 decision["decision"] = "clarify"
                 decision["questions"] = _SCOPE_QUESTIONS + existing_questions
@@ -346,7 +353,7 @@ class ControllerDecision(dspy.Module):
         ):
             try:
                 # Phase 3c — Self-Reflection: verbal diagnosis of the decision's flaws
-                _logger.info("Phase-3c self-reflection triggered for decision=%r", decision.get("decision"))
+                logger.info("Phase-3c self-reflection triggered for decision=%r", decision.get("decision"))
                 raw_reflection = self.self_reflect(
                     prompt=source_text,
                     coherence_note=coherence_note,
@@ -354,7 +361,7 @@ class ControllerDecision(dspy.Module):
                     validation_feedback=validation_feedback,
                 )
                 self_reflection_text: str = raw_reflection.self_reflection_text or ""
-                _logger.info("Phase-3c self-reflection: %s", self_reflection_text)
+                logger.info("Phase-3c self-reflection: %s", self_reflection_text)
 
                 # Phase 4 — Correction: apply evaluator feedback + verbal diagnosis
                 raw_correction = self.correct_decision(
@@ -368,7 +375,7 @@ class ControllerDecision(dspy.Module):
                 try:
                     corrected = json.loads(raw_correction.corrected_decision_json)
                 except json.JSONDecodeError as parse_exc:
-                    _logger.error(
+                    logger.error(
                         "Phase-4 corrected_decision_json parse failed: %s — raw=%r",
                         parse_exc,
                         raw_correction.corrected_decision_json[:200],
@@ -390,11 +397,11 @@ class ControllerDecision(dspy.Module):
                 # Second evaluation cycle: re-run programmatic validator on corrected output
                 if catalog_index:
                     corrected, _ = _validate_against_catalog(corrected, catalog_index)
-                _logger.info("Phase-4 corrected decision=%r confidence=%.2f",
+                logger.info("Phase-4 corrected decision=%r confidence=%.2f",
                              corrected.get("decision"), float(corrected.get("confidence", 0.0)))
                 decision = corrected
             except Exception as exc:
-                _logger.warning(
+                logger.warning(
                     "Reflexion cycle (3c+4) failed (non-fatal) — keeping Phase 3b decision. Error: %s",
                     exc,
                     exc_info=True,

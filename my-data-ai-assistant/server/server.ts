@@ -76,6 +76,22 @@ createApp({
   appKit.server.extend((app: Application) => {
     app.post('/api/controller', handleControllerRequest);
 
+    app.get('/api/suggestions', async (_req: Request, res: Response) => {
+      try {
+        const resp = await fetch(`${SEMANTIC_LAYER_API_URL}/suggestions`, {
+          signal: AbortSignal.timeout(Number(REQUEST_TIMEOUT_MS)),
+        });
+        if (!resp.ok) {
+          res.status(200).json({ suggestions: [] });
+          return;
+        }
+        const data = await resp.json() as { suggestions: string[] };
+        res.json(data);
+      } catch {
+        res.status(200).json({ suggestions: [] });
+      }
+    });
+
     app.post('/api/spec-stream', async (req: Request, res: Response) => {
       const body = req.body as { prompt?: unknown; genieResult?: unknown } | undefined;
       const prompt = typeof body?.prompt === 'string' ? body.prompt.trim() : '';

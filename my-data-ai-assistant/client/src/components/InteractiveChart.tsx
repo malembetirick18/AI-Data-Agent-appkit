@@ -104,9 +104,14 @@ const InteractiveChart = memo(function InteractiveChart({
     const f = formatColumnLabel
     const yk = activeYKeys.length > 0 ? activeYKeys.map(f).join(', ') : '–'
     const n = data.length
+    const xIsDate = isIsoDateColumn(data, xKey)
     switch (chartType) {
-      case 'line': return `Évolution de ${yk} selon ${f(xKey)} — ${n} enregistrements`
-      case 'area': return `Tendance de ${yk} selon ${f(xKey)} — ${n} enregistrements`
+      case 'line': return xIsDate
+        ? `Évolution de ${yk} selon ${f(xKey)} — ${n} enregistrements`
+        : `Comparaison de ${yk} par ${f(xKey)} — ${n} enregistrements`
+      case 'area': return xIsDate
+        ? `Tendance de ${yk} selon ${f(xKey)} — ${n} enregistrements`
+        : `Comparaison de ${yk} par ${f(xKey)} — ${n} enregistrements`
       case 'bar':  return `Comparaison de ${yk} par ${f(xKey)}`
       case 'pie':  return `Répartition de ${f(activeValueKey)} par ${f(activeLabelKey)}`
       case 'donut':return `Distribution de ${f(activeValueKey)} par ${f(activeLabelKey)}`
@@ -114,7 +119,7 @@ const InteractiveChart = memo(function InteractiveChart({
       case 'bubble':return `Corrélation ${f(xKey)} / ${yk} — taille : ${f(activeSizeKey)}`
       default: return ''
     }
-  }, [chartType, xKey, activeYKeys, activeLabelKey, activeValueKey, activeSizeKey, data.length])
+  }, [chartType, xKey, activeYKeys, activeLabelKey, activeValueKey, activeSizeKey, data])
 
   const handleTypeChange = (type: ChartVizType) => {
     setChartType(type)
@@ -259,9 +264,34 @@ const InteractiveChart = memo(function InteractiveChart({
     }
   }
 
-  const isReadyToRender = data.length > 0 && (
-    isRadial ? Boolean(activeValueKey) : activeYKeys.length > 0 && Boolean(xKey)
-  )
+  const isReadyToRender = (() => {
+    if (data.length === 0) return false
+    if (chartType === 'pie' || chartType === 'donut') {
+      // Needs ≥2 rows with a positive value — a single row or all-zero values renders a blank circle
+      if (!activeValueKey) return false
+      return sortedData.filter(d => Number(d[activeValueKey]) > 0).length >= 2
+    }
+    if (chartType === 'radar') {
+      const radarKeys = activeYKeys.length > 0 ? activeYKeys : [activeValueKey]
+      return Boolean(activeLabelKey) && radarKeys.some(rk =>
+        sortedData.some(d => d[rk] != null && !isNaN(Number(d[rk])))
+      )
+    }
+    if (chartType === 'bubble') {
+      if (activeYKeys.length === 0 || !xKey || !activeSizeKey) return false
+      const effectiveXKey = bubbleXIsNumeric ? xKey : '_xIdx'
+      return bubbleData.some(d =>
+        d[effectiveXKey] != null &&
+        d[activeYKeys[0]] != null && !isNaN(Number(d[activeYKeys[0]])) &&
+        Number(d[activeSizeKey]) > 0
+      )
+    }
+    // line / area / bar
+    if (activeYKeys.length === 0 || !xKey) return false
+    return sortedData.some(d =>
+      activeYKeys.some(k => d[k] != null && d[k] !== '' && !isNaN(Number(d[k])))
+    )
+  })()
   if (!isReadyToRender) {
     return (
       <Box mt="md" mb="sm" style={{ width: '100%' }}>

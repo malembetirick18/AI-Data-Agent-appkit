@@ -287,5 +287,5 @@ La classe `Logger` (`src/logger.py`) est un wrapper de `logging.Logger` avec :
 - Handler `FileHandler` optionnel
 - Format : `%(asctime)s - %(name)s - %(levelname)s - %(message)s`
 
-Instance dans `controller_decision.py` : `_logger = Logger("controller-decision")`
+Instance dans `controller_decision.py` : `logger = Logger("controller-decision")`
 Instance dans `main.py` : `logger = Logger()` (nom par défaut : `"semantic-layer-api"`)

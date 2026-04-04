@@ -168,6 +168,17 @@ export function _truncateStatementResult(value: unknown): unknown {
   }
 }
 
+export function specIsValid(spec: GenericUiSpec | undefined | null): spec is GenericUiSpec {
+  return (
+    spec != null &&
+    typeof spec.root === 'string' &&
+    spec.root.length > 0 &&
+    spec.elements != null &&
+    typeof spec.elements === 'object' &&
+    spec.root in spec.elements
+  )
+}
+
 export function buildGenieResultPayload(message: Message): unknown {
   const queryResults = message.queryResults
     ? Object.fromEntries(

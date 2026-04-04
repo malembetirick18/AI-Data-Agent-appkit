@@ -95,7 +95,6 @@ export function useControllerState({
       if (!ControllerResponse) {
         setPendingClarification(null)
         setClarificationAnswers({})
-        setGuideAccordionValue(null)
         setControllerHint({
           decision: 'error',
           message: "L'agent IA n'a pas répondu. La demande est bloquée tant qu'elle n'a pas été validée.",
@@ -108,7 +107,26 @@ export function useControllerState({
       if (ControllerResponse.decision === 'error') {
         setPendingClarification(null)
         setClarificationAnswers({})
-        setGuideAccordionValue(null)
+        return
+      }
+
+      if (ControllerResponse.decision === 'clarify' && ControllerResponse.periodOptions?.length) {
+        // Controller signals that the only missing context is a time period — show the period
+        // picker UI directly instead of routing through the standard clarification panel.
+        const now = Date.now()
+        setLocalUserMessages((prev) => [
+          ...prev,
+          {
+            id: `period-${now}`,
+            role: 'assistant' as const,
+            content: ControllerResponse.message,
+            periodPrompt: true,
+            periodOptions: ControllerResponse.periodOptions,
+            timestamp: new Date(now).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }),
+            epoch: now,
+          },
+        ])
+        setControllerLoading(false)
         return
       }
 
