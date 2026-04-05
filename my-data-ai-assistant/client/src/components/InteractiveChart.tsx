@@ -17,6 +17,10 @@ import {
 
 export { type ChartVizType }
 
+// Pie/donut: beyond these limits the chart renders as a visually blank circle
+const MAX_PIE_SLICES = 50       // max data rows → max slices
+const MAX_PIE_CATEGORIES = 20   // max unique label values → max legend items
+
 const InteractiveChart = memo(function InteractiveChart({
   data,
   initialXKey,
@@ -266,17 +270,29 @@ const InteractiveChart = memo(function InteractiveChart({
 
   const isReadyToRender = (() => {
     if (data.length === 0) return false
+
     if (chartType === 'pie' || chartType === 'donut') {
-      // Needs ≥2 rows with a positive value — a single row or all-zero values renders a blank circle
-      if (!activeValueKey) return false
+      if (!activeValueKey || !activeLabelKey) return false
+      // Too many rows → too many slices → visually indistinguishable from a blank circle
+      if (sortedData.length > MAX_PIE_SLICES) return false
+      // Too many unique label categories → unreadable legend, near-uniform arc widths
+      const uniqueLabels = new Set(sortedData.map(d => String((d[activeLabelKey] as string | number | null | undefined) ?? ''))).size
+      if (uniqueLabels > MAX_PIE_CATEGORIES) return false
+      // Need ≥2 rows with a positive angle value (0/null produces empty arcs)
       return sortedData.filter(d => Number(d[activeValueKey]) > 0).length >= 2
     }
+
     if (chartType === 'radar') {
       const radarKeys = activeYKeys.length > 0 ? activeYKeys : [activeValueKey]
-      return Boolean(activeLabelKey) && radarKeys.some(rk =>
+      if (!activeLabelKey) return false
+      // Radar needs ≥3 spokes — fewer produces a degenerate line or point, not a polygon
+      const uniqueSpokes = new Set(sortedData.slice(0, 10).map(d => String((d[activeLabelKey] as string | number | null | undefined) ?? ''))).size
+      if (uniqueSpokes < 3) return false
+      return radarKeys.some(rk =>
         sortedData.some(d => d[rk] != null && !isNaN(Number(d[rk])))
       )
     }
+
     if (chartType === 'bubble') {
       if (activeYKeys.length === 0 || !xKey || !activeSizeKey) return false
       const effectiveXKey = bubbleXIsNumeric ? xKey : '_xIdx'
@@ -286,22 +302,18 @@ const InteractiveChart = memo(function InteractiveChart({
         Number(d[activeSizeKey]) > 0
       )
     }
+
     // line / area / bar
     if (activeYKeys.length === 0 || !xKey) return false
+    // Line/area with a single distinct X value has no path to draw
+    if (chartType === 'line' || chartType === 'area') {
+      const distinctX = new Set(sortedData.map(d => String((d[xKey] as string | number | null | undefined) ?? ''))).size
+      if (distinctX < 2) return false
+    }
     return sortedData.some(d =>
       activeYKeys.some(k => d[k] != null && d[k] !== '' && !isNaN(Number(d[k])))
     )
   })()
-  if (!isReadyToRender) {
-    return (
-      <Box mt="md" mb="sm" style={{ width: '100%' }}>
-        <Paper p="xs" withBorder radius="sm" style={{ backgroundColor: '#fff' }}>
-          <Text size="sm" c="dimmed" ta="center" py="md">Aucune donnée à afficher</Text>
-        </Paper>
-      </Box>
-    )
-  }
-
   return (
     <Box mt="md" mb="sm" style={{ width: '100%' }}>
       <Paper p="xs" withBorder radius="sm" style={{ backgroundColor: '#fff' }}>
@@ -338,9 +350,21 @@ const InteractiveChart = memo(function InteractiveChart({
         </Group>
         <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start' }}>
           <div style={{ flex: 1, minWidth: 0, height: 'clamp(280px, 40vh, 420px)' }}>
-            <AgCharts options={options} />
+            {isReadyToRender ? (
+              <AgCharts options={options} />
+            ) : (
+              <Box style={{ height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 6 }}>
+                <Text size="xl" c="dimmed">⊘</Text>
+                <Text size="sm" c="dimmed" ta="center" style={{ lineHeight: 1.6 }}>
+                  Aucune donnée à afficher<br />pour ce type de graphique.
+                </Text>
+                <Text size="xs" c="dimmed" ta="center">
+                  Essayez un autre type ou sélectionnez d&apos;autres colonnes.
+                </Text>
+              </Box>
+            )}
           </div>
-          {chartDescription && (
+          {isReadyToRender && chartDescription && (
             <Box style={{ width: 160, flexShrink: 0, paddingLeft: 6, paddingTop: 4, borderLeft: '1px solid #e9ecef' }}>
               <Text size="xs" c="dimmed" fs="italic" style={{ lineHeight: 1.5 }}>
                 {chartDescription}

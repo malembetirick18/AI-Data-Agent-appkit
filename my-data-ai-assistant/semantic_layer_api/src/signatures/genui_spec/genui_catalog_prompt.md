@@ -69,12 +69,30 @@ The element itself renders once (as the container), and its children are expande
 ```
 
 Inside children of a repeated element:
-- `{ "$item": "field" }` — read a field from the current item
+- `{ "$item": "field" }` — read a **single** field from the current item
 - `{ "$index": true }` — get the current array index
 - `{ "$bindItem": "completed" }` — two-way binding to an item field
 
 > **IMPORTANT:** `"repeat"` is a **top-level field** on the element (sibling of `type`/`props`/`children`), NOT inside `props`.
 > **ALWAYS** use the `repeat` field for lists backed by state arrays. **NEVER** hardcode individual elements for each array item.
+
+#### Displaying item fields — correct patterns
+
+**Single field:**
+```json
+{"type":"TextContent","props":{"content":{"$item":"title"}},"children":[]}
+```
+
+**Compound string (multiple fields in one label):**  
+`$template` uses **absolute state paths** and cannot access repeat-item fields by bare name.  
+The ONLY correct approach is to pre-format the full string as a dedicated field in each state item, then read it with `$item`:
+
+```jsonl
+{"op":"add","path":"/elements/item","value":{"type":"TextContent","props":{"content":{"$item":"label"}},"children":[]}}
+{"op":"add","path":"/state/items/0","value":{"id":"1","title":"First","amount":"1 234,56","label":"• First: 1 234,56"}}
+```
+
+> **NEVER** write `{"$template":"• ${fieldName}: ${other}"}` inside a `repeat` — `${fieldName}` is not a valid state path and resolves to an empty string. Pre-format compound labels in Python before emitting the state patch.
 
 ---
 
@@ -129,9 +147,21 @@ Values inside `pushState` can contain `{ "$state": "/statePath" }` references to
 | `TextInputField` | `label, placeholder?, value?: { "$bindState": "/path" }, required?, disabled?` | Mantine text input. **Always** bind `value` with `$bindState`. |
 | `NumberInputField` | `label, placeholder?, value?: { "$bindState": "/path" }, min?, max?, step?, required?, disabled?` | Mantine numeric input. **Always** bind `value` with `$bindState`. |
 | `ToggleField` | `label, description?, checked?: { "$bindState": "/path" }, disabled?` | Mantine toggle. **Always** bind `checked` with `$bindState`. |
+| `SubmitButton` | `label?: string` | Teal action button that re-runs the analysis with the current form state. **ALWAYS** include as the last child of any `FormPanel` that contains form inputs. |
 | `WorkflowRuleBuilder` | `title?, description?, fields[], operators?, rules[]` | Workflow input builder for conditions (equals, contains, greater than, etc.). |
 | `AccordionGroup` | `variant?: "default" \| "contained" \| "separated"` | Accordion container. Defaults to `"separated"`. Accepts `AccordionSection` children. |
 | `AccordionSection` | `title: string, value: string` | Single accordion item. `value` must be unique within its parent. Accepts children. |
+
+### SubmitButton — REQUIRED for any FormPanel with user inputs
+
+Every `FormPanel` that contains at least one form input (`SelectInputField`, `TextInputField`, `NumberInputField`, `ToggleField`) **MUST** include a `SubmitButton` as its last child. Without it, the user has no way to re-run the analysis with their new selections.
+
+```jsonl
+{"op":"add","path":"/elements/form","value":{"type":"FormPanel","props":{"title":"Paramètres"},"children":["mode-select","submit-btn"]}}
+{"op":"add","path":"/elements/mode-select","value":{"type":"SelectInputField","props":{"label":"Mode","value":{"$bindState":"/mode"},"options":[{"value":"all","label":"Tous"},{"value":"pos","label":"Positifs"}]},"children":[]}}
+{"op":"add","path":"/elements/submit-btn","value":{"type":"SubmitButton","props":{"label":"Relancer l'analyse"},"children":[]}}
+{"op":"add","path":"/state/mode","value":"all"}
+```
 
 ### Interactive form pattern (REQUIRED for any FormPanel with user inputs)
 
@@ -228,7 +258,7 @@ Any prop value can be a dynamic expression:
 | Two-way binding | `{ "$bindState": "/statePath" }` | Reads AND writes back. Use on form input props (`value`, `checked`, etc.). |
 | Item binding | `{ "$bindItem": "field" }` | Inside `repeat` scope — binds to the current item's field. |
 | Conditional | `{ "$cond": <condition>, "$then": <value>, "$else": <value> }` | Evaluates condition and picks the matching value. |
-| Template | `{ "$template": "Hello, ${/name}!" }` | Interpolates `${/path}` references with values from state. |
+| Template | `{ "$template": "Hello, ${/name}!" }` | Interpolates `${/path}` references with values from **global state only**. Paths MUST start with `/`. Does NOT work inside `repeat` — use `$item` for item fields there. |
 
 Use `$bindState` for form inputs and `$state` for read-only display. Inside repeat scopes, use `$bindItem` for form inputs bound to the current item.
 

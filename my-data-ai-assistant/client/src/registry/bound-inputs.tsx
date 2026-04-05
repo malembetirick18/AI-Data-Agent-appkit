@@ -1,5 +1,6 @@
 import { useState } from 'react'
-import { Select, TextInput, NumberInput, Switch } from '@mantine/core'
+import { Select, TextInput, NumberInput, Switch, Button } from '@mantine/core'
+import { IconRefresh } from '@tabler/icons-react'
 import { useStateStore } from '@json-render/react'
 
 /* ------------------------------------------------------------------
@@ -104,5 +105,25 @@ export function BoundToggle({ label, description, checked, bindingPath, disabled
       checked={localChecked} onChange={handleChange}
       disabled={Boolean(disabled)} color="teal" size="md"
     />
+  )
+}
+
+/**
+ * Signals form submission by setting `/submitRequested = true` in the
+ * JSONUIProvider state. MessageContent detects this flag via onStateChange
+ * and calls onSpecSubmit with the current form state.
+ */
+export function BoundSubmitButton({ label }: { label?: unknown }) {
+  const { set } = useStateStore()
+  return (
+    <Button
+      size="sm"
+      variant="light"
+      color="teal"
+      leftSection={<IconRefresh size={14} />}
+      onClick={() => set('/submitRequested', true)}
+    >
+      {typeof label === 'string' && label.length > 0 ? label : 'Relancer l\'analyse'}
+    </Button>
   )
 }

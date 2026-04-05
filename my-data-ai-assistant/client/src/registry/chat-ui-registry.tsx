@@ -7,7 +7,7 @@ import { AllEnterpriseModule, ModuleRegistry, themeQuartz } from 'ag-grid-enterp
 import { defineRegistry } from '@json-render/react'
 import { chatUiCatalog } from '../../../shared/genui-catalog'
 import InteractiveChart from '../components/InteractiveChart'
-import { BoundSelectInput, BoundNumberInput, BoundTextInput, BoundToggle } from './bound-inputs'
+import { BoundSelectInput, BoundNumberInput, BoundTextInput, BoundToggle, BoundSubmitButton } from './bound-inputs'
 
 ModuleRegistry.registerModules([AllEnterpriseModule])
 
@@ -194,6 +194,10 @@ const { registry: chatUiRegistry } = defineRegistry(chatUiCatalog, {
         disabled={props.disabled}
       />
     ),
+
+    SubmitButton: function SubmitButtonRenderer({ props }: { props: Record<string, unknown> }) {
+      return <BoundSubmitButton label={props.label} />
+    },
 
     WorkflowRuleBuilder: ({ props }) => {
       const operators = props.operators ?? ['is equal to', 'is not equal', 'contains', 'superior to', 'inferior to', 'strictly inferior']

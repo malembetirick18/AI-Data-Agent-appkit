@@ -318,6 +318,20 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
     }
   }, [controller, enrichedToOriginal, sendMessage, setLocalUserMessages])
 
+  const handleSpecSubmit = useCallback((specState: Record<string, unknown>) => {
+    const params = Object.entries(specState)
+      .filter(([, v]) => v !== null && v !== undefined && v !== '')
+      .map(([k, v]) => `${k} = ${String(v)}`)
+      .join(', ')
+    const prompt = params
+      ? `Relance l'analyse avec ces paramètres : ${params}`
+      : `Relance l'analyse`
+    // Route through the controller so a fresh approval token is issued before
+    // sending to Genie — calling sendMessage() directly would 403 (single-use token
+    // was already consumed by the original proceed → sendMessage call).
+    void controller.submitPromptThroughController(prompt)
+  }, [controller])
+
   const handlePublishTeamControls = useCallback((controls: TeamControl[]) => {
     if (onSaveControl) {
       controls.forEach((tc) => onSaveControl({ id: `team-${tc.id}-${Date.now()}`, name: tc.name, description: tc.description, results: tc.results, rubriqueId: tc.rubriqueId }))
@@ -492,7 +506,7 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
                           hasSpecFailed
                         ) && (
                           <Paper mt="xs" p="sm" radius="md" style={{ backgroundColor: '#f8f9fa', border: '1px solid #e9ecef', borderLeft: '3px solid #0c8599' }}>
-                            <MessageContent msg={msg} messageId={msgId} generatedSpec={resolvedSpec} registry={chatUiRegistry} hideText={Boolean(msg.thinking)} isSpecStreaming={isStreaming} />
+                            <MessageContent msg={msg} messageId={msgId} generatedSpec={resolvedSpec} registry={chatUiRegistry} hideText={Boolean(msg.thinking)} isSpecStreaming={isStreaming} onSpecSubmit={handleSpecSubmit} />
                           </Paper>
                         )
                       })()}

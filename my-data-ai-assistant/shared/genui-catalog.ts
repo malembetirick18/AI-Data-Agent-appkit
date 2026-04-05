@@ -204,6 +204,11 @@ export const chatUiCatalog = defineCatalog(jsonRenderSchema, {
       slots: [],
       description: 'Mantine toggle switch for binary workflow choices.',
     },
+    SubmitButton: {
+      props: z.object({ label: z.string().optional() }),
+      slots: [],
+      description: 'Teal action button that re-runs the analysis with the current form state. Always include as the last child of a FormPanel that contains form inputs.',
+    },
     WorkflowRuleBuilder: {
       props: z.object({
         title: z.string().optional(),

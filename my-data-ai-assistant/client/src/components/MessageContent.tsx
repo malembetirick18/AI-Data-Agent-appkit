@@ -1,4 +1,4 @@
-import { memo, useMemo, useState, Component } from 'react'
+import { memo, useMemo, useState, useRef, useCallback, Component } from 'react'
 import type { ReactNode } from 'react'
 import { Text, Box, List, Loader, Group, ActionIcon, Tooltip } from '@mantine/core'
 import { AgGridReact } from 'ag-grid-react'
@@ -155,6 +155,7 @@ const MessageContent = memo(function MessageContent({
   registry,
   hideText,
   isSpecStreaming,
+  onSpecSubmit,
 }: {
   msg: Message
   messageId: string
@@ -162,7 +163,26 @@ const MessageContent = memo(function MessageContent({
   registry: typeof chatUiRegistry
   hideText?: boolean
   isSpecStreaming?: boolean
+  onSpecSubmit?: (state: Record<string, unknown>) => void
 }) {
+  // Tracks the latest form-input state so the submit button can read it.
+  const specStateRef = useRef<Record<string, unknown>>(
+    (generatedSpec?.state as Record<string, unknown>) ?? {}
+  )
+  const handleSpecStateChange = useCallback(
+    (changes: Array<{ path: string; value: unknown }>) => {
+      for (const { path, value } of changes) {
+        const key = (path.startsWith('/') ? path.slice(1) : path)
+          .replace(/~1/g, '/').replace(/~0/g, '~')
+        if (key === 'submitRequested' && value === true) {
+          onSpecSubmit?.({ ...specStateRef.current })
+        } else {
+          specStateRef.current[key] = value
+        }
+      }
+    },
+    [onSpecSubmit]
+  )
   if (specIsValid(generatedSpec)) {
     return (
       <RenderErrorBoundary>
@@ -170,6 +190,7 @@ const MessageContent = memo(function MessageContent({
           key={messageId}
           registry={registry}
           initialState={(generatedSpec.state as Record<string, unknown>) ?? EMPTY_STATE}
+          onStateChange={handleSpecStateChange}
         >
           <Renderer spec={generatedSpec} registry={registry} loading={isSpecStreaming} />
         </JSONUIProvider>

@@ -182,6 +182,17 @@ export function specIsValid(spec: GenericUiSpec | undefined | null): spec is Gen
   )
 }
 
+const FORM_INPUT_TYPES = new Set(['SelectInputField', 'TextInputField', 'NumberInputField', 'ToggleField'])
+
+/** Returns true when the spec contains at least one interactive form input. */
+export function specHasFormInputs(spec: GenericUiSpec | undefined | null): boolean {
+  if (!specIsValid(spec)) return false
+  return Object.values(spec.elements as Record<string, unknown>).some((el) => {
+    if (!el || typeof el !== 'object') return false
+    return FORM_INPUT_TYPES.has((el as Record<string, string>).type)
+  })
+}
+
 export function buildGenieResultPayload(message: Message): unknown {
   const queryResults = message.queryResults
     ? Object.fromEntries(
