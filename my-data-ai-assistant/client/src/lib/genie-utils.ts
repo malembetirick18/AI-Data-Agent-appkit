@@ -175,7 +175,10 @@ export function specIsValid(spec: GenericUiSpec | undefined | null): spec is Gen
     spec.root.length > 0 &&
     spec.elements != null &&
     typeof spec.elements === 'object' &&
-    spec.root in spec.elements
+    spec.root in spec.elements &&
+    // Guard: root element must be a non-null object (LLM can emit null values)
+    (spec.elements as Record<string, unknown>)[spec.root] != null &&
+    typeof (spec.elements as Record<string, unknown>)[spec.root] === 'object'
   )
 }
 

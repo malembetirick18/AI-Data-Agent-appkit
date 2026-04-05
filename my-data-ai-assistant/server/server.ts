@@ -87,14 +87,18 @@ createApp({
         }
         const data = await resp.json() as { suggestions: string[] };
         res.json(data);
+        return;
       } catch {
         res.status(200).json({ suggestions: [] });
       }
     });
 
     app.post('/api/spec-stream', async (req: Request, res: Response) => {
-      const body = req.body as { prompt?: unknown; genieResult?: unknown } | undefined;
+      // useUIStream.send(prompt, context) wraps the second argument under a 'context' key.
+      // The request body shape is: { prompt, context: { genieResult, questions }, currentSpec }
+      const body = req.body as { prompt?: unknown; context?: { genieResult?: unknown; questions?: unknown } } | undefined;
       const prompt = typeof body?.prompt === 'string' ? body.prompt.trim() : '';
+      const context = body?.context;
 
       if (!prompt) {
         res.status(400).json({ error: 'prompt is required' });
@@ -105,7 +109,11 @@ createApp({
         const specResp = await fetch(`${SEMANTIC_LAYER_API_URL}/spec/generate`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ prompt, genie_result: body?.genieResult ?? null }),
+          body: JSON.stringify({
+            prompt,
+            genie_result: context?.genieResult ?? null,
+            questions: Array.isArray(context?.questions) ? context.questions : null,
+          }),
           signal: AbortSignal.timeout(Number(REQUEST_TIMEOUT_MS)),
         });
 
@@ -115,12 +123,24 @@ createApp({
           return;
         }
 
-        // Python returns JSONL patches directly — forward as-is for useUIStream
-        const patches = await specResp.text();
+        // Stream JSONL patches directly to the client instead of buffering the full response.
+        // This avoids OOM on large specs and lets useUIStream parse patches incrementally.
         res.setHeader('Content-Type', 'text/plain; charset=utf-8');
         res.setHeader('Cache-Control', 'no-cache, no-transform');
         res.status(200);
-        res.write(patches);
+
+        if (specResp.body) {
+          const reader = specResp.body.getReader() as ReadableStreamDefaultReader<Uint8Array>;
+          try {
+            for (;;) {
+              const chunk = await reader.read();
+              if (chunk.done) break;
+              res.write(chunk.value);
+            }
+          } finally {
+            reader.releaseLock();
+          }
+        }
         res.end();
       } catch (error) {
         if (!res.headersSent) {

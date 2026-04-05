@@ -30,7 +30,7 @@ export function useControllerState({
   const [ControllerLoading, setControllerLoading] = useState(false)
   const [ControllerHint, setControllerHint] = useState<ControllerApiResponse | null>(null)
   const [pendingClarification, setPendingClarification] = useState<PendingClarification | null>(null)
-  const [clarificationAnswers, setClarificationAnswers] = useState<Record<string, string>>({})
+  const [_clarificationAnswers, setClarificationAnswers] = useState<Record<string, string>>({})
   const [clarificationRetryCount, setClarificationRetryCount] = useState(0)
   const activeAbortRef = useRef<AbortController | null>(null)
 
@@ -61,6 +61,11 @@ export function useControllerState({
   ) => {
     const trimmedPrompt = rawPrompt.trim()
     if (!trimmedPrompt) return
+
+    // Reset the clarification counter on every fresh user request (not on clarification re-runs).
+    if (!options?.suppressControllerBubble) {
+      setClarificationRetryCount(0)
+    }
 
     // Cancel any previous in-flight request before starting a new one.
     activeAbortRef.current?.abort()
@@ -137,10 +142,17 @@ export function useControllerState({
         if (newRetryCount >= 3) {
           setPendingClarification(null)
           setClarificationAnswers({})
-          setControllerHint({
-            decision: 'error',
-            message: 'Après plusieurs tentatives de clarification, je ne suis pas en mesure de traiter cette demande. Veuillez contacter l\'équipe support pour obtenir de l\'aide.',
-          })
+          const now = Date.now()
+          setLocalUserMessages((prev) => [
+            ...prev,
+            {
+              id: `clarify-exhaust-${now}`,
+              role: 'assistant' as const,
+              content: 'Désolé, nous n\'avons pas pu traiter votre demande après plusieurs tentatives de clarification. Veuillez reformuler votre demande ou contacter le support pour obtenir de l\'aide.',
+              timestamp: new Date(now).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }),
+              epoch: now,
+            },
+          ])
           return
         }
 
@@ -167,6 +179,7 @@ export function useControllerState({
         setPendingClarification(null)
         setClarificationAnswers({})
         setClarificationRetryCount(0)
+        setControllerHint(null)
         latestReasoningRef.current = ControllerResponse.reasoning ?? ''
         setLatestReasoning(ControllerResponse.reasoning ?? '')
         const promptToSend = ControllerResponse.enrichedPrompt || ControllerResponse.rewrittenPrompt?.trim() || trimmedPrompt
@@ -230,8 +243,7 @@ export function useControllerState({
     setControllerHint,
     pendingClarification,
     setPendingClarification,
-    clarificationAnswers,
-    setClarificationAnswers,
+    clarificationRetryCount,
     submitPromptThroughController,
     resetControllerState,
   }

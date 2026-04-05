@@ -125,13 +125,32 @@ Values inside `pushState` can contain `{ "$state": "/statePath" }` references to
 | `RadarChartViz` | `title, data, angleKey, radiusKey` | Radar/spider chart (AgCharts). `angleKey` = categorical, `radiusKey` = numeric. |
 | `QueryDataTable` | `queryKey, parameters?, filterColumn?, filterPlaceholder?, pageSize?, caption?` | Query-driven data table powered by Databricks Analytics plugin. |
 | `FormPanel` | `title?, description?` | Form container for interactive Controller inputs. Accepts children. |
-| `SelectInputField` | `label, placeholder?, value?, required?, disabled?, options[]{value,label}` | Mantine select input for categorical choices. |
-| `TextInputField` | `label, placeholder?, value?, required?, disabled?` | Mantine text input for free-form user clarification. |
-| `NumberInputField` | `label, placeholder?, value?, min?, max?, step?, required?, disabled?` | Mantine numeric input for thresholds and tolerances. |
-| `ToggleField` | `label, description?, checked?, disabled?` | Mantine toggle switch for binary workflow choices. |
+| `SelectInputField` | `label, placeholder?, value?: { "$bindState": "/path" }, required?, disabled?, options[]{value,label}` | Mantine select input. **Always** bind `value` with `$bindState` so the selection is reactive. |
+| `TextInputField` | `label, placeholder?, value?: { "$bindState": "/path" }, required?, disabled?` | Mantine text input. **Always** bind `value` with `$bindState`. |
+| `NumberInputField` | `label, placeholder?, value?: { "$bindState": "/path" }, min?, max?, step?, required?, disabled?` | Mantine numeric input. **Always** bind `value` with `$bindState`. |
+| `ToggleField` | `label, description?, checked?: { "$bindState": "/path" }, disabled?` | Mantine toggle. **Always** bind `checked` with `$bindState`. |
 | `WorkflowRuleBuilder` | `title?, description?, fields[], operators?, rules[]` | Workflow input builder for conditions (equals, contains, greater than, etc.). |
 | `AccordionGroup` | `variant?: "default" \| "contained" \| "separated"` | Accordion container. Defaults to `"separated"`. Accepts `AccordionSection` children. |
 | `AccordionSection` | `title: string, value: string` | Single accordion item. `value` must be unique within its parent. Accepts children. |
+
+### Interactive form pattern (REQUIRED for any FormPanel with user inputs)
+
+Form inputs **MUST** use `$bindState` so the UI reacts when the user changes a value. Static `value` props are display-only and cannot be changed by the user.
+
+**JSONL example — threshold selector with live display:**
+
+```jsonl
+{"op":"add","path":"/root","value":"form"}
+{"op":"add","path":"/elements/form","value":{"type":"FormPanel","props":{"title":"Adjust threshold"},"children":["pct-select","current-label"]}}
+{"op":"add","path":"/elements/pct-select","value":{"type":"SelectInputField","props":{"label":"Percentile","value":{"$bindState":"/threshold"},"options":[{"label":"50th percentile","value":"50"},{"label":"75th percentile","value":"75"},{"label":"90th percentile","value":"90"}]},"children":[]}}
+{"op":"add","path":"/elements/current-label","value":{"type":"TextContent","props":{"content":{"$template":"Current choice: ${/threshold}"}},"children":[]}}
+{"op":"add","path":"/state/threshold","value":"75"}
+```
+
+Key rules:
+- `value` / `checked` on any form input **must** be `{ "$bindState": "/statePath" }` — never a plain string or number.
+- Add a matching `/state/<key>` patch with the initial value right after the element.
+- Display elements that show the current selection must use `{ "$state": "/statePath" }` or `{ "$template": "…${/path}…" }`, NOT hardcode the initial value.
 
 ---
 

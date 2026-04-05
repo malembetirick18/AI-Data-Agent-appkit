@@ -1,4 +1,5 @@
-import { memo, useMemo, useState } from 'react'
+import { memo, useMemo, useState, Component } from 'react'
+import type { ReactNode } from 'react'
 import { Text, Box, List, Loader, Group, ActionIcon, Tooltip } from '@mantine/core'
 import { AgGridReact } from 'ag-grid-react'
 import { themeQuartz } from 'ag-grid-enterprise'
@@ -11,6 +12,33 @@ import {
   specIsValid,
 } from '../lib/genie-utils'
 import type { Message, ContentBlock, GenericUiSpec } from '../types/chat'
+
+/* ------------------------------------------------------------------ */
+/*  Inline render error boundary (French fallback)                    */
+/* ------------------------------------------------------------------ */
+
+class RenderErrorBoundary extends Component<
+  { children: ReactNode },
+  { hasError: boolean }
+> {
+  constructor(props: { children: ReactNode }) {
+    super(props)
+    this.state = { hasError: false }
+  }
+  static getDerivedStateFromError() {
+    return { hasError: true }
+  }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <Text size="sm" c="dimmed" fs="italic">
+          Une erreur est survenue lors de l&apos;affichage de ce contenu.
+        </Text>
+      )
+    }
+    return this.props.children
+  }
+}
 
 /* ------------------------------------------------------------------ */
 /*  Copy button                                                        */
@@ -137,13 +165,15 @@ const MessageContent = memo(function MessageContent({
 }) {
   if (specIsValid(generatedSpec)) {
     return (
-      <JSONUIProvider
-        key={messageId}
-        registry={registry}
-        initialState={(generatedSpec.state as Record<string, unknown>) ?? EMPTY_STATE}
-      >
-        <Renderer spec={generatedSpec} registry={registry} loading={isSpecStreaming} />
-      </JSONUIProvider>
+      <RenderErrorBoundary>
+        <JSONUIProvider
+          key={messageId}
+          registry={registry}
+          initialState={(generatedSpec.state as Record<string, unknown>) ?? EMPTY_STATE}
+        >
+          <Renderer spec={generatedSpec} registry={registry} loading={isSpecStreaming} />
+        </JSONUIProvider>
+      </RenderErrorBoundary>
     )
   }
 
@@ -212,13 +242,15 @@ const MessageContent = memo(function MessageContent({
       )}
       {parsedAttachments.map(({ key, spec: attachmentSpec }) => (
         <Box key={key} mt="sm">
-          <JSONUIProvider
-            key={`genie-${key}`}
-            registry={registry}
-            initialState={(attachmentSpec.state as Record<string, unknown>) ?? EMPTY_STATE}
-          >
-            <Renderer spec={attachmentSpec} registry={registry} />
-          </JSONUIProvider>
+          <RenderErrorBoundary>
+            <JSONUIProvider
+              key={`genie-${key}`}
+              registry={registry}
+              initialState={(attachmentSpec.state as Record<string, unknown>) ?? EMPTY_STATE}
+            >
+              <Renderer spec={attachmentSpec} registry={registry} />
+            </JSONUIProvider>
+          </RenderErrorBoundary>
         </Box>
       ))}
     </>

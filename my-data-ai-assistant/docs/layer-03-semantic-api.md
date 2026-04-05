@@ -219,10 +219,30 @@ La constante `_HIGH_CONFIDENCE_THRESHOLD = 0.85` est définie en tête de `contr
 
 ## Génération de specs GenUI
 
-Module : `src/genui_spec_generator.py`  
-Signature : `src/signatures/genui_spec_signature.py`
+Module : `src/modules/genui_spec_generator.py`  
+Signature : `src/signatures/genui_spec/`
 
 Le LLM génère du **JSONL RFC 6902** (une opération `add` par ligne). Le client (`useUIStream`) assemble les patches côté navigateur — aucune validation ou assemblage côté serveur.
+
+### Schéma `SpecRequest`
+
+```python
+class SpecRequest(BaseModel):
+    prompt: str
+    genie_result: Union[dict, list, str, None] = None
+    questions: list[dict] | None = None   # ControllerQuestion[] from client
+```
+
+Quand `questions` est fourni, `_build_spec_prompt()` sérialise les questions via `_serialize_questions()` et les ajoute au prompt LLM. Cela donne au modèle le contexte structuré pour générer un spec `FormPanel` avec les bons `$bindState` bindings, types d'inputs, et contraintes.
+
+Format serialisé (exemple) :
+```
+Required user inputs — generate a FormPanel spec with $bindState bindings for each:
+1. [id=scope_level, type=select (single-choice dropdown)] Périmètre (required)
+   options: filiale, groupe
+2. [id=sp_folder_id, type=text input] Identifiant SP (optional)
+   visibility: only show when scope_level = 'filiale'
+```
 
 ### Streaming `/spec/generate`
 
@@ -231,17 +251,18 @@ L'endpoint utilise `dspy.streamify()` avec `StreamListener(signature_field_name=
 | Type de chunk | Format émis | Consommation client |
 |---------------|-------------|--------------------|
 | `StatusMessage` | `# Generating UI spec…\n` (commentaire JSONL) | Ignoré par les parsers JSONL, affiché par les clients compatibles |
-| `StreamResponse` | Ligne JSONL brute (`{"op":"add",...}\n`) | `useUIStream` assemble les patches en spec |
-| `Prediction` | *(non émis au client)* | Signal de fin interne, log uniquement |
+| `StreamResponse` | Token partiel (non-JSONL complet) | Non émis — seule la `Prediction` est autoritative |
+| `Prediction` | Lignes JSONL complètes (`{"op":"add",...}\n`) | `useUIStream` assemble les patches en spec |
 
 **Invariants :**
 - Pas de `_parse_patches`, `_assemble_spec_from_patches`, ni de couche de validation côté serveur. Ne pas les ré-ajouter.
 - Pas de fallback JSON objet — seul le format JSONL patches est supporté.
 - Le `developer_prompt` (catalogue GenUI) est passé via l'input DSPy, pas via `system_prompt` du LM.
+- Le fallback si `/spec/generate` échoue est **côté client uniquement** (`questionsToSpec()` dans `lib/clarification-spec.ts`) — ne pas ajouter de génération de spec déterministe côté Python.
 
 ### Endpoint `/spec/generate` — async streaming (important)
 
-L'endpoint est `async def generate_spec(...)` avec `async for chunk in _stream_spec(...)`. Les chunks sont émis au fur et à mesure via `yield`. **Ne jamais revenir à un pattern `asyncio.to_thread` + itération post-hoc.** Le streaming temps réel permet au client de commencer l'assemblage avant la fin de la génération LLM.
+L'endpoint est `async def generate_spec(...)` avec `async for chunk in stream_spec(...)`. Les chunks sont émis au fur et à mesure via `yield`. **Ne jamais revenir à un pattern `asyncio.to_thread` + itération post-hoc.** Le streaming temps réel permet au client de commencer l'assemblage avant la fin de la génération LLM.
 
 ---
 
@@ -255,28 +276,30 @@ L'endpoint est `async def generate_spec(...)` avec `async for chunk in _stream_s
 | `MLFLOW_TRACKING_URI` | URI MLflow (défaut : `databricks`) |
 | `MLFLOW_SEMANTIC_LAYER_TRACING_EXPERIMENT` | Nom expérience MLflow |
 | `MLFLOW_LOG_TRACES` | Active le log de traces (`true`) |
+| `SUGGESTIONS` | JSON array de strings pour remplacer les suggestions par défaut (optionnel) |
+
+`SUGGESTIONS` est parsé via `json.loads()` avec `try/except (json.JSONDecodeError, ValueError)` — un JSON invalide log un warning et tombe sur `DEFAULT_SUGGESTIONS`.
 
 ---
 
 ## Signatures DSPy — fichiers de référence
 
-| Fichier | Phase | Rôle |
+Chaque signature vit dans son propre sous-dossier `signatures/<name>/` avec la classe DSPy et son fichier de prompt développeur.
+
+| Dossier | Phase | Rôle |
 |---------|-------|------|
-| `signatures/query_analysis_signature.py` | Phase 1 | Classification + cohérence |
-| `signatures/rephrase_query_signature.py` | Phase 2 | Réécriture conditionnelle |
-| `signatures/controller_decision_signature.py` | Phase 3 | Décision contrôleur |
-| `signatures/controller_self_reflection_signature.py` | Phase 3c | Auto-réflexion LLM — diagnostic verbal (POURQUOI c'est faux) |
-| `signatures/controller_correction_signature.py` | Phase 4 | Correcteur LLM — applique validation_feedback + self_reflection_text |
-| `signatures/genui_spec_signature.py` | Spec | Génération JSONL patches |
-| `signatures/reasoning_summary_signature.py` | — | Résumé de raisonnement (support interne au pipeline) |
+| `signatures/query_analysis/` | Phase 1 | Classification + cohérence |
+| `signatures/rephrase_query/` | Phase 2 | Réécriture conditionnelle |
+| `signatures/controller_decision/` | Phase 3 | Décision contrôleur |
+| `signatures/controller_self_reflection/` | Phase 3c | Auto-réflexion LLM — diagnostic verbal (POURQUOI c'est faux) |
+| `signatures/controller_correction/` | Phase 4 | Correcteur LLM — applique validation_feedback + self_reflection_text |
+| `signatures/genui_spec/` | Spec | Génération JSONL patches + catalogue 20 composants |
+| `signatures/reasoning_summary/` | — | Résumé de raisonnement (support interne au pipeline) |
+| `signatures/utils/` | — | `prompt_utils.py` — chargement des prompts développeur depuis fichiers |
 
-### Fichiers legacy (non utilisés — peuvent être supprimés)
-
-| Fichier | Remplacé par |
-|---------|-------------|
-| `signatures/query_classification_signature.py` | `QueryAnalysisSignature` (Phase 1) |
-| `signatures/required_columns_signature.py` | `QueryAnalysisSignature` (Phase 1) |
-| `signatures/sql_function_signature.py` | `QueryAnalysisSignature` (Phase 1) |
+Les modules DSPy (pipeline complet) sont dans `src/modules/` :
+- `modules/controller_decision.py` — pipeline Reflexion 4 phases
+- `modules/genui_spec_generator.py` — génération spec GenUI avec error handling
 
 ---
 

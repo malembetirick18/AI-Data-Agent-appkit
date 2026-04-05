@@ -1,12 +1,13 @@
 import {
   Text, Box, List, Paper, Stack, Accordion,
-  Select, TextInput, NumberInput, Switch,
+  Select, TextInput, NumberInput,
 } from '@mantine/core'
 import { AgGridReact } from 'ag-grid-react'
 import { AllEnterpriseModule, ModuleRegistry, themeQuartz } from 'ag-grid-enterprise'
 import { defineRegistry } from '@json-render/react'
 import { chatUiCatalog } from '../../../shared/genui-catalog'
 import InteractiveChart from '../components/InteractiveChart'
+import { BoundSelectInput, BoundNumberInput, BoundTextInput, BoundToggle } from './bound-inputs'
 
 ModuleRegistry.registerModules([AllEnterpriseModule])
 
@@ -161,34 +162,36 @@ const { registry: chatUiRegistry } = defineRegistry(chatUiCatalog, {
       </Paper>
     ),
 
-    SelectInputField: ({ props }) => (
-      <Select
+    SelectInputField: ({ props, bindings }) => (
+      <BoundSelectInput
         label={props.label} placeholder={props.placeholder} data={props.options}
-        value={props.value ?? null} required={props.required} disabled={props.disabled}
-        readOnly size="sm" radius="sm"
+        value={props.value} bindingPath={bindings?.value}
+        required={props.required} disabled={props.disabled}
       />
     ),
 
-    TextInputField: ({ props }) => (
-      <TextInput
-        label={props.label} placeholder={props.placeholder} value={props.value ?? ''}
-        required={props.required} disabled={props.disabled} readOnly size="sm" radius="sm"
+    TextInputField: ({ props, bindings }) => (
+      <BoundTextInput
+        label={props.label} placeholder={props.placeholder} value={props.value}
+        bindingPath={bindings?.value}
+        required={props.required} disabled={props.disabled}
       />
     ),
 
-    NumberInputField: ({ props }) => (
-      <NumberInput
+    NumberInputField: ({ props, bindings }) => (
+      <BoundNumberInput
         label={props.label} placeholder={props.placeholder} value={props.value}
         min={props.min} max={props.max} step={props.step}
-        required={props.required} disabled={props.disabled} readOnly size="sm" radius="sm"
+        bindingPath={bindings?.value}
+        required={props.required} disabled={props.disabled}
       />
     ),
 
-    ToggleField: ({ props }) => (
-      <Switch
+    ToggleField: ({ props, bindings }) => (
+      <BoundToggle
         label={props.label} description={props.description}
-        checked={Boolean(props.checked)} disabled={props.disabled ?? true}
-        readOnly color="teal" size="md"
+        checked={props.checked} bindingPath={bindings?.checked}
+        disabled={props.disabled}
       />
     ),
 

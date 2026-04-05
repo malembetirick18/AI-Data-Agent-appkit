@@ -63,26 +63,93 @@ class ControllerRequest(BaseModel):
 class SpecRequest(BaseModel):
     prompt: str
     genie_result: Union[dict, list, str, None] = None
+    questions: list[dict] | None = None  # ControllerQuestion[] from client (for clarification specs)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
+_INPUT_TYPE_LABELS = {
+    "select": "select (single-choice dropdown)",
+    "number": "number (numeric input)",
+    "toggle": "boolean toggle (true/false)",
+    "text": "text input",
+}
+
+
+def _serialize_questions(questions: list[dict]) -> str:
+    """Format a ControllerQuestion[] list as a structured prompt section."""
+    lines = [
+        "Generate a FormPanel spec with one input per question listed below.",
+        "CRITICAL RULES:",
+        "  • Use the question id VERBATIM as the top-level $bindState path: id='foo' → \"$bindState\": \"/foo\"",
+        "  • NEVER nest state under a parent key (e.g. /analysis/foo is FORBIDDEN — use /foo directly)",
+        "  • NEVER rename or merge question ids",
+        "  • Add a /state/<id> patch for every question with its default value (use first option value for select, \"\" for text, 0 for number, false for toggle)",
+        "",
+        "Questions:",
+    ]
+    for i, q in enumerate(questions, 1):
+        q_id = q.get("id", "")
+        q_label = q.get("label", "")
+        q_type = _INPUT_TYPE_LABELS.get(q.get("inputType", "text"), "text input")
+        q_required = " (required)" if q.get("required") else " (optional)"
+        parts = [f"{i}. [id={q_id}, type={q_type}, $bindState=/{q_id}] {q_label}{q_required}"]
+        if q.get("options"):
+            opts = ", ".join(o.get("label", o.get("value", "")) for o in q["options"])
+            parts.append(f"   options: {opts}")
+        if q.get("min") is not None or q.get("max") is not None:
+            bounds = f"   bounds: min={q.get('min', 'none')} max={q.get('max', 'none')}"
+            if q.get("step") is not None:
+                bounds += f" step={q['step']}"
+            parts.append(bounds)
+        if q_id == "sp_folder_id":
+            parts.append("   visibility: only show when scope_level = 'filiale'")
+        lines.extend(parts)
+    return "\n".join(lines)
+
+
 def _build_spec_prompt(request: SpecRequest) -> str:
-    """Combine prompt text with optional Genie result data."""
-    if not request.genie_result:
-        return request.prompt
-    try:
-        genie_data = (
-            json.dumps(request.genie_result)
-            if not isinstance(request.genie_result, str)
-            else request.genie_result
-        )
-    except (TypeError, ValueError) as exc:
-        raise HTTPException(
-            status_code=400,
-            detail="genie_result contains non-serializable data",
-        ) from exc
-    return f"{request.prompt}\n\nData:\n{genie_data}"
+    """Combine prompt text with optional Genie result data and/or clarification questions.
+
+    When questions are present the form instruction leads the prompt so the LLM treats
+    the task as 'build a FormPanel' rather than 'display this message as text'.
+    """
+    if request.questions:
+        # Lead with the explicit form-generation instruction so it anchors the task.
+        # The context message follows as supplementary information only.
+        parts = [_serialize_questions(request.questions)]
+        parts.append(f"Context (do NOT render as TextContent — render only the FormPanel above): {request.prompt}")
+        if request.genie_result:
+            try:
+                genie_data = (
+                    json.dumps(request.genie_result)
+                    if not isinstance(request.genie_result, str)
+                    else request.genie_result
+                )
+            except (TypeError, ValueError) as exc:
+                raise HTTPException(
+                    status_code=400,
+                    detail="genie_result contains non-serializable data",
+                ) from exc
+            parts.append(f"Data:\n{genie_data}")
+        return "\n\n".join(parts)
+
+    # No questions — standard data-viz spec generation
+    parts = [request.prompt]
+    if request.genie_result:
+        try:
+            genie_data = (
+                json.dumps(request.genie_result)
+                if not isinstance(request.genie_result, str)
+                else request.genie_result
+            )
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(
+                status_code=400,
+                detail="genie_result contains non-serializable data",
+            ) from exc
+        parts.append(f"Data:\n{genie_data}")
+    return "\n\n".join(parts)
 
 
 def _prediction_to_controller_response(result: dspy.Prediction) -> ControllerResponse:
@@ -230,11 +297,15 @@ async def get_suggestions():
     """Return the configured accounting analysis suggestion questions."""
     # Allow operators to override the default suggestions via a JSON array env var.
     # Example: SUGGESTIONS='["Question 1", "Question 2", ...]'
-    suggestions = os.getenv("SUGGESTIONS", "")
-    suggestions: list[str] = json.loads(suggestions) if suggestions else []
-    if not isinstance(suggestions, list):
-        suggestions = DEFAULT_SUGGESTIONS
-    suggestions: list[str] = [str(q) for q in suggestions if str(q).strip()] or DEFAULT_SUGGESTIONS
+    raw = os.getenv("SUGGESTIONS", "")
+    suggestions: list[str] = DEFAULT_SUGGESTIONS
+    if raw:
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, list):
+                suggestions = [str(q) for q in parsed if str(q).strip()] or DEFAULT_SUGGESTIONS
+        except (json.JSONDecodeError, ValueError):
+            logger.warning("SUGGESTIONS env var contains invalid JSON — using defaults")
         
     return {"suggestions": suggestions}
 
@@ -318,9 +389,10 @@ async def generate_spec(request: SpecRequest) -> AsyncIterable[str]:
 
     user_content = _build_spec_prompt(request)
     logger.info(
-        "[spec/generate] prompt=%r has_data=%s",
+        "[spec/generate] prompt=%r has_data=%s has_questions=%s",
         request.prompt[:80],
         bool(request.genie_result),
+        bool(request.questions),
     )
 
     try:

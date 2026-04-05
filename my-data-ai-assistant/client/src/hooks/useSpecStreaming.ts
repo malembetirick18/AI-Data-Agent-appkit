@@ -1,6 +1,6 @@
-import { useState, useRef } from 'react'
+import { useState, useRef, useCallback } from 'react'
 import { useUIStream } from '@json-render/react'
-import type { GenericUiSpec } from '../types/chat'
+import type { GenericUiSpec, PendingClarification } from '../types/chat'
 
 export function useSpecStreaming() {
   const [generatedSpecs, setGeneratedSpecs] = useState<Record<string, GenericUiSpec>>({})
@@ -12,6 +12,7 @@ export function useSpecStreaming() {
   const attemptedSpecIdsRef = useRef<Set<string>>(new Set())
   const lastSpecCandidateIdRef = useRef<string | null>(null)
 
+  // ── Genie result spec stream ──────────────────────────────────────────────
   const uiStream = useUIStream({
     api: '/api/spec-stream',
     onComplete: (spec) => {
@@ -50,7 +51,39 @@ export function useSpecStreaming() {
     clearStreaming()
   }
 
+  // ── Clarification form spec stream ────────────────────────────────────────
+  const [clarificationSpec, setClarificationSpec] = useState<GenericUiSpec | null>(null)
+  const [clarificationError, setClarificationError] = useState(false)
+
+  const clarificationStream = useUIStream({
+    api: '/api/spec-stream',
+    onComplete: (spec) => {
+      setClarificationSpec(spec)
+    },
+    onError: () => {
+      setClarificationError(true)
+    },
+  })
+
+  const triggerClarificationSpec = useCallback((pendingClarification: PendingClarification) => {
+    // Abort any in-flight clarification stream before starting a new one (rapid retry guard)
+    clarificationStream.clear()
+    setClarificationSpec(null)
+    setClarificationError(false)
+    void clarificationStream.send(pendingClarification.message, {
+      genieResult: null,
+      questions: pendingClarification.questions,
+    })
+  }, [clarificationStream])
+
+  const clearClarificationSpec = useCallback(() => {
+    clarificationStream.clear()
+    setClarificationSpec(null)
+    setClarificationError(false)
+  }, [clarificationStream])
+
   return {
+    // Genie result specs
     generatedSpecs,
     failedSpecIds,
     streamingSpecMessageId,
@@ -62,5 +95,11 @@ export function useSpecStreaming() {
     lastSpecCandidateIdRef,
     triggerSpec,
     clearSpecs,
+    // Clarification form specs
+    clarificationSpec,
+    clarificationIsStreaming: clarificationStream.isStreaming,
+    clarificationError,
+    triggerClarificationSpec,
+    clearClarificationSpec,
   }
 }

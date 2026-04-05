@@ -4,7 +4,7 @@ import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
 import {
   Drawer, Text, TextInput, ActionIcon, Group, Box, ScrollArea,
   Paper, ThemeIcon, Stack, Divider, List, Accordion, UnstyledButton,
-  Tooltip, Badge, Loader, Alert,
+  Tooltip, Badge, Alert, Skeleton,
 } from '@mantine/core'
 import {
   IconSparkles, IconSend, IconArrowsMaximize, IconTrash, IconX,
@@ -37,12 +37,8 @@ const suggestions = [
   'Y a-t-il des écarts significatifs entre les soldes comptables fournisseurs et les balances auxiliaires ?',
 ]
 
-const periodOptions = [
-  { label: '3 derniers mois (Jul - Sep 2020)', value: '3m' },
-  { label: '6 derniers mois (Avr - Sep 2020)', value: '6m' },
-  { label: '12 derniers mois (Oct 2019 - Sep 2020)', value: '12m' },
-  { label: 'Exercice complet (01/10/2019 - 30/09/2020)', value: 'full' },
-]
+/** Appended to every controller-provided period list so the dossier's fiscal period is always selectable. */
+const FOLDER_PERIOD_OPTION = { label: 'Période du dossier (exercice complet)', value: 'folder_period' }
 
 export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerProps) {
   const { messages: genieMessages, status: chatStatus, error: genieError, sendMessage, reset } = useGenieChat({
@@ -73,8 +69,16 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
       if (!genieTimestamps.has(key)) {
         // eslint-disable-next-line react-hooks/purity -- intentional: Maps are stable external state; guard prevents re-stamping
         const now = Date.now()
-        genieTimestamps.set(key, new Date(now).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }))
-        genieEpochs.set(key, now)
+        // For user messages echoed by Genie, reuse the original local message's epoch so
+        // the initial user question always sorts before the QR-summary clarification bubble.
+        let epoch = now
+        if (gm.role === 'user') {
+          const originalContent = enrichedToOriginal.get(gm.content.trim()) ?? gm.content.trim()
+          const localMatch = localUserMessages.find((lm) => lm.content.trim() === originalContent)
+          if (localMatch?.epoch != null) epoch = localMatch.epoch
+        }
+        genieTimestamps.set(key, new Date(epoch).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }))
+        genieEpochs.set(key, epoch)
       }
     }
 
@@ -144,7 +148,12 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
   const viewport = useRef<HTMLDivElement>(null)
 
   const specStreaming = useSpecStreaming()
-  const { generatedSpecs, failedSpecIds, streamingSpecMessageId, isStreaming, hasPartialSpec, lastSpecCandidateIdRef, attemptedSpecIdsRef } = specStreaming
+  const {
+    generatedSpecs, failedSpecIds, streamingSpecMessageId, isStreaming,
+    lastSpecCandidateIdRef, attemptedSpecIdsRef,
+    clarificationSpec, clarificationIsStreaming, clarificationError,
+    triggerClarificationSpec, clearClarificationSpec,
+  } = specStreaming
 
   const messagesRef = useRef(messages)
   messagesRef.current = messages
@@ -173,10 +182,12 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
 
   // Fetch dynamic suggestions from the server once on mount; fall back to static list on error.
   useEffect(() => {
-    fetch('/api/suggestions')
+    const ac = new AbortController()
+    fetch('/api/suggestions', { signal: ac.signal })
       .then((r) => (r.ok ? (r.json() as Promise<{ suggestions: string[] }>) : null))
       .then((data) => { if (data?.suggestions?.length) setDynamicSuggestions(data.suggestions) })
       .catch(() => { /* keep static fallback */ })
+    return () => ac.abort()
   }, [])  
 
   // Trigger spec stream when Genie finishes streaming with query data
@@ -215,6 +226,16 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
     }
   }, [chatStatus, messages]) // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Trigger clarification spec generation when a new clarification is needed.
+  // Uses clarificationRetryCount as the key so each retry triggers a fresh spec.
+  useEffect(() => {
+    if (controller.pendingClarification) {
+      triggerClarificationSpec(controller.pendingClarification)
+    } else {
+      clearClarificationSpec()
+    }
+  }, [controller.clarificationRetryCount, controller.pendingClarification]) // eslint-disable-line react-hooks/exhaustive-deps
+
   const handlePeriodConfirm = useCallback((periodLabel: string) => {
     void controller.submitPromptThroughController(`Période confirmée : ${periodLabel}`)
   }, [controller])
@@ -229,7 +250,6 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
       setShowSuggestions(false)
       controller.setControllerHint(null)
       controller.setPendingClarification(null)
-      controller.setClarificationAnswers({})
       setLocalUserMessages((prev) => [...prev, {
         id: `local-${Date.now()}`, role: 'user' as const, content: msgText,
         timestamp: new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }),
@@ -260,17 +280,17 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
     controller.resetControllerState()
   }, [reset, specStreaming, setLocalUserMessages, enrichedToOriginal, genieTimestamps, genieEpochs, controller, lastSuggestionIndexRef])
 
-  const handleClarificationSubmit = useCallback(() => {
+  const handleClarificationSubmit = useCallback((answers: Record<string, string>) => {
     const { pendingClarification } = controller
     if (!pendingClarification) return
 
     const questionLines = pendingClarification.questions
-      .map((q) => { const v = controller.clarificationAnswers[q.id]?.trim(); return v ? `- ${q.label}: ${v}` : null })
+      .map((q) => { const v = answers[q.id]?.trim(); return v ? `- ${q.label}: ${v}` : null })
       .filter((v): v is string => Boolean(v))
 
     const basePrompt = pendingClarification.rewrittenPrompt?.trim() || pendingClarification.originalPrompt
     const clarifiedPrompt = questionLines.length > 0 ? `${basePrompt}\nClarifications:\n${questionLines.join('\n')}` : basePrompt
-    const qrSummary = formatQRAnswers(pendingClarification.questions, controller.clarificationAnswers)
+    const qrSummary = formatQRAnswers(pendingClarification.questions, answers)
 
     controller.setPendingClarification(null)
 
@@ -404,12 +424,23 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
                       <IconSparkles size={12} color="#fff" />
                     </ThemeIcon>
                     <Box style={{ flex: 1, minWidth: 0 }}>
-                      {msg.loading && <Group gap="xs"><Loader size="xs" color="teal" type="dots" /><Text size="sm" c="dimmed">Analyse en cours...</Text></Group>}
+                      {msg.loading && (
+                        <Stack gap={7} py={2}>
+                          <Skeleton height={10} radius="sm" width="72%" />
+                          <Skeleton height={10} radius="sm" width="88%" />
+                          <Skeleton height={10} radius="sm" width="55%" />
+                        </Stack>
+                      )}
 
                       {msg.periodPrompt && !msg.loading && (
                         <PeriodPickerPanel
                           message={msg.content}
-                          options={msg.periodOptions ?? periodOptions}
+                          options={(() => {
+                            const opts = msg.periodOptions ?? []
+                            return opts.some((o: { value: string }) => o.value === 'folder_period')
+                              ? opts
+                              : [...opts, FOLDER_PERIOD_OPTION]
+                          })()}
                           onConfirm={handlePeriodConfirm}
                         />
                       )}
@@ -430,18 +461,13 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
                       )}
 
                       {streamingSpecMessageId === String(msg.id) && isStreaming && (
-                        <Stack gap={4} mt="xs" mb={4}>
-                          <Group gap="xs">
-                            <ThemeIcon size={16} variant="light" color="teal" radius="xl">
-                              <IconSparkles size={10} />
-                            </ThemeIcon>
-                            <Text size="xs" c="dimmed">Analyse des données complète</Text>
-                          </Group>
-                          <Group gap="xs">
-                            <Loader size="xs" color="teal" type="dots" />
-                            <Text size="xs" c="dimmed">
-                              {hasPartialSpec ? 'Assemblage des composants visuels...' : 'Génération de la visualisation...'}
-                            </Text>
+                        <Stack gap={8} mt="xs" mb={4}>
+                          <Skeleton height={10} radius="sm" width="45%" />
+                          <Skeleton height={160} radius="md" />
+                          <Group gap={8}>
+                            <Skeleton height={8} radius="sm" width="18%" />
+                            <Skeleton height={8} radius="sm" width="18%" />
+                            <Skeleton height={8} radius="sm" width="18%" />
                           </Group>
                         </Stack>
                       )}
@@ -501,7 +527,11 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
                 <IconSparkles size={12} color="#fff" />
               </ThemeIcon>
               <Paper p="sm" radius="md" style={{ flex: 1, backgroundColor: '#f8f9fa', border: '1px solid #e9ecef', borderLeft: '3px solid #0c8599' }}>
-                <Group gap="xs"><Loader size="xs" color="teal" type="dots" /><Text size="sm" c="dimmed">{"L'agent IA analyse votre demande..."}</Text></Group>
+                <Stack gap={7}>
+                  <Skeleton height={10} radius="sm" width="62%" />
+                  <Skeleton height={10} radius="sm" width="80%" />
+                  <Skeleton height={10} radius="sm" width="42%" />
+                </Stack>
               </Paper>
             </Group>
           )}
@@ -520,9 +550,11 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
               </ThemeIcon>
               <Box style={{ flex: 1, minWidth: 0 }}>
                 <ClarificationPanel
+                  key={controller.clarificationRetryCount}
                   pendingClarification={controller.pendingClarification}
-                  clarificationAnswers={controller.clarificationAnswers}
-                  onAnswerChange={(id, value) => controller.setClarificationAnswers((prev) => ({ ...prev, [id]: value }))}
+                  spec={clarificationSpec}
+                  isStreaming={clarificationIsStreaming}
+                  hasStreamError={clarificationError}
                   onSubmit={handleClarificationSubmit}
                 />
               </Box>
@@ -567,7 +599,10 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
                   <IconSparkles size={12} color="#fff" />
                 </ThemeIcon>
                 <Paper p="sm" radius="md" style={{ backgroundColor: '#f8f9fa', flex: 1 }}>
-                  <Group gap="xs"><Loader size="xs" color="teal" type="dots" /><Text size="sm" c="dimmed">Analyse en cours...</Text></Group>
+                  <Stack gap={7}>
+                    <Skeleton height={10} radius="sm" width="70%" />
+                    <Skeleton height={10} radius="sm" width="50%" />
+                  </Stack>
                 </Paper>
               </Group>
             </Box>

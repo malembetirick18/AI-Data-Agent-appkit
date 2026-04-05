@@ -40,7 +40,7 @@ semantic_layer_api/
       controller_decision/         ← ControllerDecisionSignature + developer prompt
       controller_correction/       ← ControllerCorrectionSignature + developer prompt
       controller_self_reflection/  ← ControllerSelfReflectionSignature + developer prompt
-      genui_spec/                  ← GenUiSpecSignature + developer prompt (incl. 18-component catalog)
+      genui_spec/                  ← GenUiSpecSignature + developer prompt (incl. 20-component catalog)
       query_analysis/              ← QueryAnalysisSignature + developer prompt
       reasoning_summary/           ← ReasoningSummarySignature + developer prompt
       rephrase_query/              ← RephraseQuerySignature + developer prompt
@@ -163,10 +163,13 @@ Forwards raw JSONL RFC 6902 patches from Python `/api/spec/generate` directly to
 - **`generate_spec` streaming**: `/api/spec/generate` uses `dspy.streamify()` with typed chunk dispatch (`StreamResponse`, `StatusMessage`, `Prediction`). Patches stream as JSONL lines; status updates stream as `# comment` lines. No server-side patch validation — `useUIStream` handles assembly on the client. Do not re-add `_parse_patches`, `_assemble_spec_from_patches`, or any intermediate parse layer.
 - **`/chat/stream` DSPy streaming**: Controller endpoint also uses `dspy.streamify()`. Emits `event: status` (progress), `event: reasoning_token` (partial reasoning), and `event: controller_decision` (final) SSE events. Both endpoints use the FastAPI ≥ 0.134 `yield` pattern (`response_class=StreamingResponse`, `AsyncIterable[str]` return) — no manual `StreamingResponse(generator)` wrapping.
 - **`StatusMessageProvider` classes**: `ControllerStatusProvider` and `SpecStatusProvider` provide real-time observability into LM calls via DSPy's streaming infrastructure. They are registered once at startup via `dspy.streamify(..., status_message_provider=...)`.
-- **LM config DRY**: Both `lm` and `genui_lm` share `_LM_KWARGS` dict. Do not duplicate Azure config params.
+- **LM config**: Single `lm` instance shared by both `stream_controller` and `stream_spec`. Do not duplicate Azure config params.
 - **Config constants**: `SEMANTIC_LAYER_API_URL` and `REQUEST_TIMEOUT_MS` are defined once in `plugins/controller-ai-agent/controller-ai-agent.ts` and exported. `server.ts` imports them — do not redeclare locally.
 - **Single spec endpoint**: Only `/api/spec-stream` exists (Node server), which proxies to Python `/api/spec/generate`. `AiChatDrawer`'s `useUIStream` (via `hooks/useSpecStreaming.ts`) is the sole consumer. `QueryDataTable` is now a simple placeholder (renders `props.caption` only) — it does NOT have its own `useUIStream` instance (Bug 28). The `/api/spec` endpoint and `handleSpecRequest`/`assembleSpecFromPatches` have been deleted (April 2026).
 - **React client split**: `ai-chat-drawer.tsx` was refactored from 3,568 lines into focused modules: `types/chat.ts`, `lib/{chart-utils,message-utils,spec-utils,genie-utils}.ts`, `components/{InteractiveChart,MessageContent,ClarificationPanel,TeamControlsPanel,SaveControlModal}.tsx`, `hooks/{useSpecStreaming,useControllerState,useSaveDialog}.ts`, `registry/chat-ui-registry.tsx`. The orchestration shell `ai-chat-drawer.tsx` is ~600 lines.
+- **Clarification loop max-3 behavior**: After 3 consecutive `clarify` decisions the loop terminates by emitting a plain assistant message via `setLocalUserMessages` (not `setControllerHint`). No form, no badge, no "Fermer et réessayer" link is shown. The exhaustion message is: *"Désolé, nous n'avons pas pu traiter votre demande après plusieurs tentatives de clarification. Veuillez reformuler votre demande ou contacter le support pour obtenir de l'aide."* (`useControllerState.ts`).
+- **Clarification counter resets on new request**: `clarificationRetryCount` is reset to 0 at the start of every `submitPromptThroughController` call where `options.suppressControllerBubble` is falsy (i.e., every fresh user prompt). Counter only stays non-zero across re-runs triggered by clarification form submission (`suppressControllerBubble: true`). Do not remove this reset.
+- **`RenderErrorBoundary` in `MessageContent.tsx`**: A class-based `RenderErrorBoundary` wraps each `JSONUIProvider` + `Renderer` block. On render error it shows an inline French fallback: *"Une erreur est survenue lors de l'affichage de ce contenu."* — prevents a single bad spec from crashing the chat. The global `ErrorBoundary` remains at app root for catastrophic failures only.
 
 ---
 
@@ -295,3 +298,134 @@ When the check fails, the existing "Aucune donnée à afficher" placeholder rend
 
 ### Bug 38 — No spacing between reasoning accordion and content card
 `client/src/components/ai-chat-drawer.tsx`: the `<Paper>` card containing `<MessageContent>` rendered flush against the reasoning `<Accordion>` directly above it with no top margin. Fixed: added `mt="xs"` to the `Paper`.
+
+---
+
+## Feature: Unified GenUI Clarification Pipeline (April 2026)
+
+Replaced the bespoke Mantine form rendering in `ClarificationPanel` with the same json-render pipeline used for Genie result specs. Both the primary (LLM-generated) spec and the fallback (client-side deterministic) spec render via `JSONUIProvider` + `Renderer`. No raw Mantine form inputs remain in `ClarificationPanel`.
+
+### Architecture
+
+```
+ClarificationPanel appears
+  → useEffect in ai-chat-drawer triggers triggerClarificationSpec(pendingClarification)
+  → POST /api/spec-stream { prompt, questions[] }   ← questions forwarded to Python
+  → Python /spec/generate: LLM generates FormPanel JSONL (rich, context-aware)
+  → streams JSONL patches → JSONUIProvider + Renderer → form inputs
+  → BoundInput components write to json-render state via onStateChange
+  → onStateChange → answersRef → submit / auto-submit
+
+LLM/API failure:
+  → clarificationSpec stays null / useUIStream error
+  → ClarificationPanel falls back to questionsToSpec(pendingClarification)
+  → deterministic FormPanel spec (client-side, no LLM)
+  → same JSONUIProvider + Renderer pipeline
+  → all controller decision logic preserved:
+      needsParams / canSendDirectly / required / sp_folder_id visibility
+```
+
+**Key principle:** Both primary and fallback paths are json-render compatible. Python either succeeds (streams valid JSONL) or fails cleanly (log + 500). The fallback is purely client-side — do not add server-side deterministic spec generation.
+
+### New File: `client/src/lib/clarification-spec.ts`
+
+Pure function — no side effects, no React imports.
+
+```typescript
+export function questionsToSpec(pc: PendingClarification): GenericUiSpec | null
+```
+
+- Filters questions: `isValidQuestion(q)` + NOT `isDisplayOnlyLabel` + select must have non-empty options
+- Returns `null` if no valid renderable questions (caller skips `JSONUIProvider` rendering)
+- RFC 6901 JSON Pointer escaping for `$bindState` paths: `~` → `~0`, `/` → `~1`
+- State object keys use **raw** question IDs (no escaping — plain JS properties)
+- `sp_folder_id` gets `visible: { $state: '/scope_level', eq: 'filiale' }` rule
+
+### `useSpecStreaming.ts` — dual `useUIStream`
+
+Two `useUIStream` instances, both live in `hooks/useSpecStreaming.ts`:
+1. **`uiStream`** — Genie result specs (unchanged)
+2. **`clarificationStream`** — clarification form specs (new)
+
+`triggerClarificationSpec` calls `clarificationStream.clear()` before each `.send()` — prevents race condition on rapid retries.
+
+### `ClarificationPanel.tsx` props
+
+Old props removed: `clarificationAnswers`, `onAnswerChange`, `onAutoSubmit`  
+New props added: `spec?: GenericUiSpec | null`, `isStreaming?: boolean`, `hasStreamError?: boolean`  
+`onSubmit(answers: Record<string, string>)` — always receives answers directly (no stale-state fallback)
+
+The submit button and all outer wrapper Mantine UI (header, icon, message, Divider, Alert, button labels) are **unchanged**. Only form inputs moved into the json-render spec.
+
+### `answersRef` + `onStateChange` pattern
+
+```typescript
+const answersRef = useRef<Record<string, string>>({})
+useEffect(() => { answersRef.current = {} }, [])  // reset on remount (clarificationRetryCount key)
+
+const handleStateChange = (changes) => {
+  for (const { path, value } of changes) {
+    // RFC 6901 unescape: incoming paths use escaped IDs, state object uses raw IDs
+    const key = (path.startsWith('/') ? path.slice(1) : path)
+      .replace(/~1/g, '/').replace(/~0/g, '~')
+    answersRef.current[key] = value == null ? '' : String(value)
+  }
+  // Auto-submit only for discrete inputs (select / toggle) — not mid-typing
+  if (!missing && changedType !== 'text' && changedType !== 'number') {
+    onSubmit({ ...answersRef.current })
+  }
+}
+```
+
+### Python `SpecRequest` schema change
+
+`questions: list[dict] | None = None` field added to `SpecRequest`. When present, `_build_spec_prompt()` appends serialized question context via `_serialize_questions()`. Gives the LLM structured input to generate a proper FormPanel spec.
+
+### `/api/spec-stream` proxy — streaming instead of buffering
+
+Node proxy now pipes `ReadableStreamDefaultReader<Uint8Array>` chunks directly to `res.write()` instead of `await specResp.text()`. Avoids memory buffering of large JSONL responses.
+
+### `clarificationAnswers` / `setClarificationAnswers` no longer exported
+
+`useControllerState` still manages `clarificationAnswers` internally (all internal calls preserved), but it is no longer in the return object. Answers flow through `answersRef` in `ClarificationPanel` and are passed to `handleClarificationSubmit` as a parameter.
+
+---
+
+## Bugs Fixed (April 2026 — Unified Clarification Pipeline Pass)
+
+### Bug 39 — `specIsValid` did not check root element value type
+`client/src/lib/genie-utils.ts`: `specIsValid` checked `spec.root in spec.elements` but did not verify that `spec.elements[spec.root]` was a non-null object. A spec where the root element was `null` or a primitive would pass validation but cause `Renderer` to fail silently. Fixed: added `spec.elements[spec.root] != null && typeof spec.elements[spec.root] === 'object'` guard.
+
+### Bug 40 — RFC 6901 path/key mismatch in `ClarificationPanel` `handleStateChange`
+`client/src/components/ClarificationPanel.tsx`: `questionsToSpec()` escapes question IDs using RFC 6901 (`/` → `~1`, `~` → `~0`) for `$bindState` paths. `handleStateChange` stripped the leading `/` but did not unescape the RFC 6901 tokens, producing keys like `scope~1level` instead of `scope/level`. `computeMissingRequired` looks up `answers[question.id]` (raw ID), so no required-field check ever matched. Fixed: added `.replace(/~1/g, '/').replace(/~0/g, '~')` after the leading-slash strip.
+
+### Bug 41 — Stale `answersRef` surviving retry in `ClarificationPanel`
+`client/src/components/ClarificationPanel.tsx`: `answersRef.current` was never cleared on remount. When `clarificationRetryCount` changed (causing a React `key` remount), the old answers from the previous attempt persisted — `computeMissingRequired` could wrongly compute "no required fields missing" on a fresh form. Fixed: added `useEffect(() => { answersRef.current = {} }, [])` to reset the snapshot on every mount.
+
+### Bug 42 — `clarificationStream` race condition on rapid retry
+`client/src/hooks/useSpecStreaming.ts`: calling `triggerClarificationSpec()` while a previous stream was in-flight would leave the previous stream running concurrently — two `.send()` calls racing to `setClarificationSpec`. Fixed: `clarificationStream.clear()` is called at the start of every `triggerClarificationSpec()` invocation before `.send()`.
+
+### Bug 43 — `SUGGESTIONS` env var crash on invalid JSON
+`semantic_layer_api/main.py`: `json.loads(os.getenv("SUGGESTIONS", ""))` had no error handling. A misconfigured env var containing invalid JSON would crash the startup path or silently return `None`. Fixed: wrapped in `try/except (json.JSONDecodeError, ValueError)` with a `logger.warning` fallback to `DEFAULT_SUGGESTIONS`.
+
+### Bug 44 — `/api/spec-stream` proxy buffered entire response body
+`server/server.ts`: the `/api/spec-stream` proxy used `await specResp.text()` to read the full Python response before forwarding. For large JSONL streams this buffers the entire payload in Node.js memory, blocking `useUIStream` from starting incremental assembly. Fixed: replaced with `ReadableStreamDefaultReader<Uint8Array>` pipe loop — each chunk is written to `res.write()` as received.
+
+### Bug 45 — Missing `return` after `res.json(data)` in `/api/suggestions`
+`server/server.ts`: the success branch of the `/api/suggestions` handler called `res.json(data)` without returning, allowing execution to fall into the `catch` block and call `res.status(200).json({ suggestions: [] })` on an already-sent response — triggering Express "headers already sent" error. Fixed: added `return` after `res.json(data)`.
+
+### Bug 46 — Suggestions fetch in `ai-chat-drawer` missing AbortController cleanup
+`client/src/components/ai-chat-drawer.tsx`: the `useEffect` that fetches suggestions on mount had no cleanup function. If the component unmounted before the fetch completed (fast navigation), the `setSuggestions` call on the stale closure caused a React state-update-after-unmount warning. Fixed: added `AbortController` with `signal` passed to `fetch`, and `controller.abort()` in the cleanup return.
+
+---
+
+## Bugs Fixed (April 2026 — Clarification Loop & Render Safety Pass)
+
+### Bug 47 — Max-3 clarification rendered a hint card, not a plain chat message
+`client/src/hooks/useControllerState.ts`: when `clarificationRetryCount` reached 3, the code called `setControllerHint({ decision: 'error', message: '…' })`. This rendered as a styled "Pré-analyse par un agent IA" card with a decision badge and a "Fermer et réessayer" link — not a plain chat message. Fixed: replaced with `setLocalUserMessages(prev => [...prev, { role: 'assistant', content: 'Désolé…', … }])`. The exhausted message now appears as a regular assistant bubble with no UI chrome.
+
+### Bug 48 — `clarificationRetryCount` not reset on new distinct user request
+`client/src/hooks/useControllerState.ts`: the counter only reset when the controller returned an approved decision (lines 169, 194). A user who hit the 3-iteration wall and then typed a completely new prompt would immediately see the exhaustion message again (counter still at 3). Fixed: added `if (!options?.suppressControllerBubble) setClarificationRetryCount(0)` at the start of `submitPromptThroughController`. Since `suppressControllerBubble` is `true` only for clarification re-runs, every fresh user prompt resets the counter.
+
+### Bug 49 — No render error boundary around `JSONUIProvider`/`Renderer` in `MessageContent.tsx`
+`client/src/components/MessageContent.tsx`: render errors inside `JSONUIProvider` or `Renderer` (e.g. malformed spec, registry component crash) propagated to the global `ErrorBoundary`, replacing the entire app with a full-page English error card. Fixed: added `RenderErrorBoundary` class component wrapping both `JSONUIProvider`+`Renderer` sites (primary spec and attachment loop). On error it renders inline: *"Une erreur est survenue lors de l'affichage de ce contenu."* — only the affected message block is replaced, the rest of the chat remains usable.
