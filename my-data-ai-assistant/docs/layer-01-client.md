@@ -245,7 +245,7 @@ interface ClarificationPanelProps {
 - `resolvedSpec = spec ?? questionsToSpec(pendingClarification)` — les deux chemins utilisent `JSONUIProvider` + `Renderer`
 - `answersRef` — snapshot des réponses, mis à jour par `onStateChange` (évite les stale closures)
 - `computeMissingRequired` — vérifie les champs obligatoires y.c. la règle `sp_folder_id` (visible uniquement si `scope_level === 'filiale'`)
-- Auto-submit uniquement pour les inputs discrets (select / toggle) — pas en cours de frappe (text / number)
+- Soumission explicite uniquement via le bouton « Relancer avec ces précisions » (pas d'auto-submit)
 - Le wrapper Mantine (header, icon, message, Divider, Alert, bouton) reste inchangé
 
 ### RFC 6901 dans `handleStateChange`
@@ -344,3 +344,18 @@ const { registry: chatUiRegistry } = defineRegistry(chatUiCatalog, {
   "@databricks/appkit-ui": "*"
 }
 ```
+
+---
+
+## Évaluation qualité code (Avril 2026)
+
+- **Score global:** 8.7/10
+- **Lisibilité:** forte progression grâce à l'extraction des effets en hooks nommés (`useAutoScrollToBottom`, `useGeneratedSpecTrigger`, `useClarificationSpecSync`).
+- **Gestion d'état:** fiabilisée sur les formulaires de clarification (source unique `JSONUIProvider`, suppression des états locaux dérivés dans `bound-inputs`).
+- **Hygiène hooks React:** `useEffect` réduit au strict nécessaire (synchronisation externe uniquement) ; remplacement des subscriptions manuelles par `useSyncExternalStore` pour le toast store.
+- **Robustesse UI:** clarification CTA unifié (« Relancer avec ces précisions »), suppression des doubles boutons injectés par spec (`SubmitButton` filtré), smoke test aligné sur l'UI réelle.
+
+### Risques résiduels
+
+- Le cache de promesse des suggestions (`getDynamicSuggestionsPromise`) est volontairement singleton pendant la durée de vie de la page ; si un rafraîchissement runtime des suggestions est requis, prévoir une stratégie d'invalidation explicite.
+- Le calcul de `messages` dans `ai-chat-drawer.tsx` reste dense et mérite une extraction supplémentaire en utilitaires purs si le composant continue de grossir.

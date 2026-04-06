@@ -5,7 +5,7 @@
 
 ## Responsabilités
 
-- Exposition des endpoints `/api/controller` et `/api/spec` dans AppKit
+- Exposition de l'endpoint `/api/controller` dans AppKit
 - Proxy SSE vers l'API Sémantique Python
 - Calcul du flag `canSendDirectly` et gestion du cookie d'approbation
 - Timeout et gestion des erreurs de l'API Sémantique
@@ -18,8 +18,6 @@
 export class ControllerAiAgent { ... }
 export function controllerAiAgent(): Plugin  // factory
 export function handleControllerRequest(req, res): Promise<void>
-export function handleSpecRequest(req, res): Promise<void>
-export function parseSpecFromSse(text: string): unknown  // helper partagé
 ```
 
 ### Type `ControllerRequest`
@@ -91,23 +89,10 @@ type ControllerApiResponse = {
 
 ---
 
-## Endpoint `/api/spec`
+## Endpoint spec streaming
 
-**Handler :** `handleSpecRequest()`
-
-```
-Entrée  : { prompt, genieResult? }
-          (SpecRequest)
-
-Traitement :
-  1. Appel SSE vers SEMANTIC_LAYER_API_URL/spec/generate
-     timeout = 45 secondes
-  2. Parsing de l'événement SSE : event: spec
-     data: { root, elements, state }  (GenericUiSpec)
-
-Sortie  : { spec: GenericUiSpec, model?: string }
-          (SpecResponse)
-```
+La génération de spec n'est plus exposée via `/api/spec` dans le plugin.
+Le flux JSONL de spec passe par la route serveur `/api/spec-stream` (dans `server/server.ts`), consommée par `useUIStream` côté client.
 
 ---
 

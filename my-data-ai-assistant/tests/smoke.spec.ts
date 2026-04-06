@@ -12,19 +12,17 @@ test('smoke test - app loads and displays data', async ({ page }) => {
   // Navigate to the app
   await page.goto('/');
 
-  // ⚠️ UPDATE THESE SELECTORS after customizing App.tsx:
-  // - Change heading name to match your app title
-  // - Change data selector to match your primary data display
-  await expect(page.getByRole('heading', { name: 'Minimal Databricks App' })).toBeVisible();
-  await expect(page.getByText('hello world', { exact: true })).toBeVisible({ timeout: 30000 });
-
-  // Wait for health check to complete (wait for "OK" status)
-  await expect(page.getByText('OK')).toBeVisible({ timeout: 30000 });
+  // App shell and key dashboard controls should be visible.
+  await expect(page.getByText('Geoficiency')).toBeVisible({ timeout: 30000 });
+  await expect(page.getByText('Synthèse des contrôles pour le module', { exact: false })).toBeVisible({ timeout: 30000 });
+  await expect(page.getByRole('button', { name: 'Générer un contrôle personnalisé' })).toBeVisible({ timeout: 30000 });
+  await expect(page.getByText('01. CARTOGRAPHIES GÉNÉRALES')).toBeVisible({ timeout: 30000 });
 
   // Verify console logs were captured
   expect(consoleLogs.length).toBeGreaterThan(0);
   expect(consoleErrors.length).toBe(0);
   expect(pageErrors.length).toBe(0);
+  expect(failedRequests.length).toBe(0);
 });
 
 test.beforeEach(async ({ page }) => {

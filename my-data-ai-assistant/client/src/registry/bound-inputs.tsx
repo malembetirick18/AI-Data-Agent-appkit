@@ -1,4 +1,3 @@
-import { useState } from 'react'
 import { Select, TextInput, NumberInput, Switch, Button } from '@mantine/core'
 import { IconRefresh } from '@tabler/icons-react'
 import { useStateStore } from '@json-render/react'
@@ -24,17 +23,13 @@ export function BoundSelectInput({ label, placeholder, data, value, bindingPath,
   bindingPath?: string; required?: unknown; disabled?: unknown
 }) {
   const { set } = useStateStore()
-  const [localValue, setLocalValue] = useState<string | null>(
-    value != null && value !== '' ? toStr(value) : null
-  )
   const handleChange = (v: string | null) => {
-    setLocalValue(v)
     if (bindingPath) set(bindingPath, v ?? '')
   }
   return (
     <Select
       label={label as string} placeholder={placeholder as string} data={data as never}
-      value={localValue} onChange={handleChange}
+      value={value != null && value !== '' ? toStr(value) : null} onChange={handleChange}
       required={Boolean(required)} disabled={Boolean(disabled)}
       size="sm" radius="sm"
     />
@@ -47,19 +42,15 @@ export function BoundNumberInput({ label, placeholder, value, min, max, step, bi
   bindingPath?: string; required?: unknown; disabled?: unknown
 }) {
   const { set } = useStateStore()
-  const [localValue, setLocalValue] = useState<number | ''>(
-    value != null && value !== '' ? Number(value) : ''
-  )
   const handleChange = (v: number | string) => {
     const next: number | '' = v === '' ? '' : Number(v)
-    setLocalValue(next)
     if (bindingPath) set(bindingPath, next === '' ? null : next)
   }
   const hasBounds = min != null || max != null
   return (
     <NumberInput
       label={label as string} placeholder={placeholder as string}
-      value={localValue} onChange={handleChange}
+      value={value != null && value !== '' ? Number(value) : ''} onChange={handleChange}
       min={min as number} max={max as number} step={step as number}
       clampBehavior={hasBounds ? 'strict' : 'none'}
       allowNegative={min != null ? (min as number) < 0 : true}
@@ -74,15 +65,13 @@ export function BoundTextInput({ label, placeholder, value, bindingPath, require
   bindingPath?: string; required?: unknown; disabled?: unknown
 }) {
   const { set } = useStateStore()
-  const [localValue, setLocalValue] = useState(value != null ? toStr(value) : '')
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    setLocalValue(e.currentTarget.value)
     if (bindingPath) set(bindingPath, e.currentTarget.value)
   }
   return (
     <TextInput
       label={label as string} placeholder={placeholder as string}
-      value={localValue} onChange={handleChange}
+      value={value != null ? toStr(value) : ''} onChange={handleChange}
       required={Boolean(required)} disabled={Boolean(disabled)}
       size="sm" radius="sm"
     />
@@ -94,15 +83,13 @@ export function BoundToggle({ label, description, checked, bindingPath, disabled
   bindingPath?: string; disabled?: unknown
 }) {
   const { set } = useStateStore()
-  const [localChecked, setLocalChecked] = useState(Boolean(checked))
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    setLocalChecked(e.currentTarget.checked)
     if (bindingPath) set(bindingPath, e.currentTarget.checked)
   }
   return (
     <Switch
       label={label as string} description={description as string}
-      checked={localChecked} onChange={handleChange}
+      checked={Boolean(checked)} onChange={handleChange}
       disabled={Boolean(disabled)} color="teal" size="md"
     />
   )

@@ -44,6 +44,23 @@ type SidebarContextProps = {
 
 const SidebarContext = React.createContext<SidebarContextProps | null>(null)
 
+function useSidebarKeyboardShortcut(toggleSidebar: () => void) {
+  const handleShortcut = React.useEffectEvent((event: KeyboardEvent) => {
+    if (
+      event.key === SIDEBAR_KEYBOARD_SHORTCUT &&
+      (event.metaKey || event.ctrlKey)
+    ) {
+      event.preventDefault()
+      toggleSidebar()
+    }
+  })
+
+  React.useEffect(() => {
+    window.addEventListener('keydown', handleShortcut)
+    return () => window.removeEventListener('keydown', handleShortcut)
+  }, [])
+}
+
 function useSidebar() {
   const context = React.useContext(SidebarContext)
   if (!context) {
@@ -93,21 +110,7 @@ function SidebarProvider({
     return isMobile ? setOpenMobile((open) => !open) : setOpen((open) => !open)
   }, [isMobile, setOpen, setOpenMobile])
 
-  // Adds a keyboard shortcut to toggle the sidebar.
-  React.useEffect(() => {
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (
-        event.key === SIDEBAR_KEYBOARD_SHORTCUT &&
-        (event.metaKey || event.ctrlKey)
-      ) {
-        event.preventDefault()
-        toggleSidebar()
-      }
-    }
-
-    window.addEventListener('keydown', handleKeyDown)
-    return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [toggleSidebar])
+  useSidebarKeyboardShortcut(toggleSidebar)
 
   // We add a state so that we can do data-state="expanded" or "collapsed".
   // This makes it easier to style the sidebar with Tailwind classes.

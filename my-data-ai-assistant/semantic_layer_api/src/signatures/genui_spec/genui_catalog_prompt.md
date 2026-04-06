@@ -182,6 +182,13 @@ Key rules:
 - Add a matching `/state/<key>` patch with the initial value right after the element.
 - Display elements that show the current selection must use `{ "$state": "/statePath" }` or `{ "$template": "…${/path}…" }`, NOT hardcode the initial value.
 
+### Clarification forms — anti-duplication rules (MANDATORY)
+
+- For clarification questions, create **exactly one input element per question id**.
+- Never create two elements bound to the same state path (for example two inputs with `{"$bindState":"/scope_level"}`).
+- In `FormPanel.children`, each child key must be unique (no duplicate child references).
+- If duplicate questions are present in input context, keep only the first one and ignore the rest.
+
 ---
 
 ## Available Actions

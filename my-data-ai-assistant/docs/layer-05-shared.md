@@ -1,35 +1,15 @@
 # Couche 5 — Partagé (shared/)
 
 **Dossier :** `shared/`  
-**Fichiers :** `shared/genui-catalog.ts`, `shared/normalize-spec.ts`
+**Fichier principal :** `shared/genui-catalog.ts`
 
 ## Responsabilités
 
 - Définition du catalogue de composants JSON Render (schémas Zod)
-- Normalisation des specs GenUI — source unique partagée entre serveur et client
 - Contrats TypeScript partagés entre client et serveur
 - Source de vérité pour la génération de specs GenUI côté LLM
 
----
-
-## Module `normalize-spec.ts`
-
-Exporte `normalizeApiSpec(raw: unknown): NormalizedSpec | null`.
-
-Utilisé par :
-- `server/server.ts` — normalise la spec avant d'émettre les patches JSONL sur `/api/spec-stream`
-- Anciennement par le client (copie locale supprimée — ne **pas** refork)
-
-```typescript
-export type NormalizedSpec = {
-  root: string
-  elements: Record<string, unknown>
-}
-
-export function normalizeApiSpec(raw: unknown): NormalizedSpec | null
-```
-
-**Invariant :** `shared/normalize-spec.ts` est la source unique. Tout changement de logique de normalisation doit être fait ici — pas dans une copie locale dans le client ou le serveur.
+**Invariant :** `shared/normalize-spec.ts` a été supprimé. Le client assemble directement les patches RFC 6902 via `useUIStream`; ne pas reintroduire une couche de normalisation partagée.
 
 ---
 
@@ -91,7 +71,7 @@ Tous les graphiques utilisent `data: Array<Record<string, string | number>>`.
 
 ## Utilisation du catalogue dans le prompt LLM
 
-Le fichier `semantic_layer_api/catalogs/genui_catalog_prompt.txt` est le **system prompt** du LLM GenUI. Il contient :
+Le prompt GenUI est chargé depuis `semantic_layer_api/src/signatures/genui_spec/` via `prompt_utils.py`. Il contient :
 
 1. La liste des composants disponibles avec leurs props
 2. Les règles de génération de specs (RFC 6902 JSONL)

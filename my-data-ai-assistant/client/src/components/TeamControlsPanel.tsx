@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useEffectEvent } from 'react'
 import {
   Box, Text, Group, Button, TextInput, Select, ScrollArea,
   Table, Checkbox, Badge, Tooltip, ThemeIcon, Transition, Paper,
@@ -9,6 +9,18 @@ import {
 } from '@tabler/icons-react'
 import type { TeamControl } from '../types/chat'
 import { RUBRIQUES } from '../lib/spec-utils'
+
+function usePublishedTimerCleanup(publishedTimerRef: React.MutableRefObject<ReturnType<typeof setTimeout> | null>) {
+  const clearPublishedTimer = useEffectEvent(() => {
+    if (publishedTimerRef.current !== null) clearTimeout(publishedTimerRef.current)
+  })
+
+  useEffect(() => {
+    return () => {
+      clearPublishedTimer()
+    }
+  }, [])
+}
 
 const statusColors: Record<string, string> = {
   brouillon: 'gray',
@@ -30,6 +42,8 @@ export function TeamControlsPanel({
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [published, setPublished] = useState(false)
   const publishedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  usePublishedTimerCleanup(publishedTimerRef)
 
   const filtered = teamControls.filter((tc) => {
     const matchSearch =
@@ -59,12 +73,6 @@ export function TeamControlsPanel({
       setSelected(new Set(filtered.map((tc) => tc.id)))
     }
   }
-
-  useEffect(() => {
-    return () => {
-      if (publishedTimerRef.current !== null) clearTimeout(publishedTimerRef.current)
-    }
-  }, [])
 
   const handlePublish = () => {
     const toPublish = teamControls.filter((tc) => selected.has(tc.id))

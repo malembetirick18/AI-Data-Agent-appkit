@@ -8,8 +8,14 @@ import {
 import { JSONUIProvider, Renderer } from '@json-render/react'
 import { sanitizeLabel, isDisplayOnlyLabel } from '../lib/message-utils'
 import { questionsToSpec } from '../lib/clarification-spec'
+import { normalizeClarificationQuestions } from '../lib/clarification-questions'
 import { chatUiRegistry } from '../registry/chat-ui-registry'
 import type { PendingClarification, GenericUiSpec } from '../types/chat'
+
+interface SpecElement {
+  type?: string
+  children?: unknown
+}
 
 /** Guard against LLM-generated questions with missing id/label fields. */
 function isValidQuestion(q: { id?: unknown; label?: unknown }): q is { id: string; label: string } {
@@ -18,11 +24,12 @@ function isValidQuestion(q: { id?: unknown; label?: unknown }): q is { id: strin
 
 /** Returns true when at least one required field is still empty. */
 function computeMissingRequired(
-  pc: PendingClarification,
+  questions: PendingClarification['questions'],
+  canSendDirectly: boolean | undefined,
   answers: Record<string, string>,
 ): boolean {
-  if (pc.canSendDirectly) return false
-  return pc.questions.some((q) => {
+  if (canSendDirectly) return false
+  return questions.some((q) => {
     if (!isValidQuestion(q)) return false
     if (!q.required) return false
     if (q.id === 'sp_folder_id' && answers['scope_level'] !== 'filiale') return false
@@ -33,6 +40,31 @@ function computeMissingRequired(
 function toStringValue(val: unknown): string {
   if (val == null || typeof val === 'object') return ''
   return String(val as string | number | boolean)
+}
+
+function stripClarificationSubmitButtons(spec: GenericUiSpec): GenericUiSpec {
+  const sourceElements = spec.elements as Record<string, SpecElement>
+  const filteredEntries = Object.entries(sourceElements).filter(([, element]) => element?.type !== 'SubmitButton')
+  const allowedKeys = new Set(filteredEntries.map(([key]) => key))
+
+  if (!allowedKeys.has(spec.root)) return spec
+
+  const elements = Object.fromEntries(
+    filteredEntries.map(([key, element]) => {
+      const nextElement: Record<string, unknown> = { ...element }
+      if (Array.isArray(element.children)) {
+        nextElement.children = element.children.filter(
+          (child): child is string => typeof child === 'string' && allowedKeys.has(child)
+        )
+      }
+      return [key, nextElement]
+    })
+  )
+
+  return {
+    ...spec,
+    elements,
+  } as unknown as GenericUiSpec
 }
 
 const EMPTY_STATE: Record<string, unknown> = {}
@@ -54,16 +86,28 @@ export function ClarificationPanel({
   hasStreamError: _hasStreamError,
   onSubmit,
 }: ClarificationPanelProps) {
+  const normalizedQuestions = useMemo(
+    () => normalizeClarificationQuestions(pendingClarification.questions),
+    [pendingClarification.questions],
+  )
+
+  const questionIds = useMemo(
+    () => new Set(normalizedQuestions.filter(isValidQuestion).map((q) => q.id)),
+    [normalizedQuestions],
+  )
+
   // Resolve spec: primary (LLM) → fallback (deterministic) → null
   // If the LLM spec exists but contains no form inputs (e.g. generated TextContent instead of
   // FormPanel), treat it as absent so questionsToSpec() deterministic fallback kicks in.
   const resolvedSpec = useMemo<GenericUiSpec | null>(() => {
-    if (spec && pendingClarification.questions.length > 0) {
+    if (spec && normalizedQuestions.length > 0) {
+      const cleanedSpec = stripClarificationSubmitButtons(spec)
+
       // Check 1: spec must contain at least one form input element type.
       const FORM_INPUT_TYPES = new Set([
         'FormPanel', 'SelectInputField', 'TextInputField', 'NumberInputField', 'ToggleField',
       ])
-      const hasFormInputs = Object.values(spec.elements as Record<string, { type?: string }>)
+      const hasFormInputs = Object.values(cleanedSpec.elements as Record<string, { type?: string }>)
         .some((el) => FORM_INPUT_TYPES.has(el.type ?? ''))
       if (!hasFormInputs) return questionsToSpec(pendingClarification)
 
@@ -71,15 +115,17 @@ export function ClarificationPanel({
       // If the LLM invented its own field names (e.g. /analysis/method instead of
       // /high_activity_rule), computeMissingRequired will never see those answers and
       // the submit button stays permanently disabled.
-      const specStateKeys = new Set(Object.keys(spec.state ?? {}))
-      const requiredIds = pendingClarification.questions.filter(
+      const specStateKeys = new Set(Object.keys(cleanedSpec.state ?? {}))
+      const requiredIds = normalizedQuestions.filter(
         (q) => isValidQuestion(q) && q.required,
       )
       const allRequiredMapped = requiredIds.every((q) => specStateKeys.has(q.id))
       if (!allRequiredMapped) return questionsToSpec(pendingClarification)
+
+      return cleanedSpec
     }
-    return spec ?? questionsToSpec(pendingClarification)
-  }, [spec, pendingClarification])
+    return spec ?? questionsToSpec({ ...pendingClarification, questions: normalizedQuestions })
+  }, [spec, pendingClarification, normalizedQuestions])
 
   // Seed initial answers from the spec's state.
   // json-render never fires onStateChange for initialState values — only user interactions.
@@ -103,12 +149,11 @@ export function ClarificationPanel({
     [specInitialAnswers, userOverrides],
   )
 
-  // Button is disabled until the user has explicitly set every required field.
-  // specInitialAnswers pre-fills the form visually but must not count towards validation —
-  // the user must interact with each required input before submitting.
+  // The visible form state drives validation. Defaults provided by the controller or
+  // streamed spec count immediately, and user edits override them.
   const missingRequired = useMemo(
-    () => computeMissingRequired(pendingClarification, userOverrides),
-    [pendingClarification, userOverrides],
+    () => computeMissingRequired(normalizedQuestions, pendingClarification.canSendDirectly, answers),
+    [normalizedQuestions, pendingClarification.canSendDirectly, answers],
   )
 
   const handleStateChange = useCallback(
@@ -118,19 +163,17 @@ export function ClarificationPanel({
         // Strip leading '/' then unescape RFC 6901 JSON Pointer tokens (~1 → /, ~0 → ~)
         const key = (path.startsWith('/') ? path.slice(1) : path)
           .replace(/~1/g, '/').replace(/~0/g, '~')
+        if (key === 'submitRequested' || !questionIds.has(key)) continue
         overrides[key] = toStringValue(value)
       }
+      if (Object.keys(overrides).length === 0) return
       setUserOverrides((prev) => ({ ...prev, ...overrides }))
       // No auto-submit — submission requires explicit button click only.
     },
-    [],
+    [questionIds],
   )
 
-  const buttonLabel = pendingClarification.canSendDirectly
-    ? 'Confirmer et envoyer'
-    : pendingClarification.needsParams
-      ? 'Appliquer les filtres'
-      : 'Relancer avec ces précisions'
+  const buttonLabel = 'Relancer avec ces précisions'
 
   return (
     <Paper p="md" radius="md" style={{ backgroundColor: '#f8f9fa', border: '1px solid #e9ecef', borderLeft: '3px solid #0c8599' }}>
@@ -191,7 +234,7 @@ export function ClarificationPanel({
       {!resolvedSpec && !isStreaming && pendingClarification.questions.length > 0 && (
         // Minimal text fallback when questionsToSpec returns null (empty/invalid question list)
         <Box mb="sm">
-          {pendingClarification.questions
+          {normalizedQuestions
             .filter((q) => isValidQuestion(q) && !isDisplayOnlyLabel(q.label))
             .map((q) => (
               <Text key={q.id} size="xs" c="dimmed">{sanitizeLabel(q.label)}</Text>

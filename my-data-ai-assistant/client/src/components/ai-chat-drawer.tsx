@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
+import { Suspense, use, useState, useRef, useEffect, useCallback, useMemo, useEffectEvent } from 'react'
 import {
   Drawer, Text, TextInput, ActionIcon, Group, Box, ScrollArea,
   Paper, ThemeIcon, Stack, Divider, List, Accordion, UnstyledButton,
@@ -25,7 +25,7 @@ import { useControllerState } from '../hooks/useControllerState'
 import { useSaveDialog } from '../hooks/useSaveDialog'
 import { blocksToPlainText, formatQRAnswers } from '../lib/message-utils'
 import { buildGenieResultPayload } from '../lib/genie-utils'
-import type { Message, AiChatDrawerProps, TeamControl, SavedControl } from '../types/chat'
+import type { Message, AiChatDrawerProps, TeamControl, SavedControl, ControllerApiResponse, PendingClarification } from '../types/chat'
 
 export type { SavedControl }
 
@@ -39,6 +39,170 @@ const suggestions = [
 
 /** Appended to every controller-provided period list so the dossier's fiscal period is always selectable. */
 const FOLDER_PERIOD_OPTION = { label: 'Période du dossier (exercice complet)', value: 'folder_period' }
+
+let dynamicSuggestionsPromise: Promise<string[]> | null = null
+
+function loadDynamicSuggestions(): Promise<string[]> {
+  if (typeof window === 'undefined') return Promise.resolve(suggestions)
+  return fetch('/api/suggestions')
+    .then((response) => (response.ok ? (response.json() as Promise<{ suggestions: string[] }>) : null))
+    .then((data) => (data?.suggestions?.length ? data.suggestions : suggestions))
+    .catch(() => suggestions)
+}
+
+function getDynamicSuggestionsPromise(): Promise<string[]> {
+  dynamicSuggestionsPromise ??= loadDynamicSuggestions()
+  return dynamicSuggestionsPromise
+}
+
+function SuggestionsListContent({
+  suggestionItems,
+  onSelect,
+}: {
+  suggestionItems: string[]
+  onSelect: (suggestion: string, index: number) => void
+}) {
+  return (
+    <Stack gap={6}>
+      {suggestionItems.map((suggestion, suggestionIndex) => (
+        <UnstyledButton
+          key={suggestion}
+          onClick={() => onSelect(suggestion, suggestionIndex)}
+          style={{ padding: '8px 12px', borderRadius: 8, border: '1px solid #e9ecef', backgroundColor: '#fff', transition: 'all 150ms ease', cursor: 'pointer' }}
+          onMouseEnter={(e: React.MouseEvent<HTMLButtonElement>) => {
+            const target = e.currentTarget
+            target.style.borderColor = '#0c8599'
+            target.style.backgroundColor = '#f0fdf9'
+          }}
+          onMouseLeave={(e: React.MouseEvent<HTMLButtonElement>) => {
+            const target = e.currentTarget
+            target.style.borderColor = '#e9ecef'
+            target.style.backgroundColor = '#fff'
+          }}
+        >
+          <Text size="xs" c="dark" style={{ lineHeight: 1.5 }}>{suggestion}</Text>
+        </UnstyledButton>
+      ))}
+    </Stack>
+  )
+}
+
+function DynamicSuggestionsList({
+  onSelect,
+}: {
+  onSelect: (suggestion: string, index: number) => void
+}) {
+  const dynamicSuggestions = use(getDynamicSuggestionsPromise())
+  return <SuggestionsListContent suggestionItems={dynamicSuggestions} onSelect={onSelect} />
+}
+
+function useAutoScrollToBottom({
+  viewport,
+  messages,
+  pendingClarification,
+  controllerHint,
+  controllerLoading,
+}: {
+  viewport: React.RefObject<HTMLDivElement | null>
+  messages: Message[]
+  pendingClarification: PendingClarification | null
+  controllerHint: ControllerApiResponse | null
+  controllerLoading: boolean
+}) {
+  const scrollToBottom = useEffectEvent(() => {
+    if (viewport.current) {
+      viewport.current.scrollTo({ top: viewport.current.scrollHeight, behavior: 'smooth' })
+    }
+  })
+
+  useEffect(() => {
+    scrollToBottom()
+  }, [messages, pendingClarification, controllerHint, controllerLoading])
+}
+
+function useGeneratedSpecTrigger({
+  chatStatus,
+  messages,
+  setControllerHint,
+  genieFollowUpRef,
+  attemptedSpecIdsRef,
+  lastSpecCandidateIdRef,
+  triggerSpec,
+}: {
+  chatStatus: string
+  messages: Message[]
+  setControllerHint: React.Dispatch<React.SetStateAction<ControllerApiResponse | null>>
+  genieFollowUpRef: React.MutableRefObject<boolean>
+  attemptedSpecIdsRef: React.MutableRefObject<Set<string>>
+  lastSpecCandidateIdRef: React.MutableRefObject<string | null>
+  triggerSpec: (messageId: string, promptText: string, genieResult: unknown) => void
+}) {
+  const syncGeneratedSpec = useEffectEvent(() => {
+    setControllerHint((prev) => (prev?.decision !== 'error' ? null : prev))
+
+    let latestAssistantMessage: Message | undefined
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const message = messages[i]
+      if (message.role === 'assistant' && !message.loading && !message.periodPrompt &&
+          (Boolean(message.content?.trim()) || Boolean(message.blocks?.length) || Boolean(message.attachments?.length))) {
+        latestAssistantMessage = message
+        break
+      }
+    }
+    if (!latestAssistantMessage) return
+
+    const hasGenieData = Boolean(latestAssistantMessage.blocks?.length || latestAssistantMessage.attachments?.length)
+    if (!hasGenieData) {
+      genieFollowUpRef.current = true
+      return
+    }
+    genieFollowUpRef.current = false
+
+    const messageId = String(latestAssistantMessage.id)
+    if (attemptedSpecIdsRef.current.has(messageId)) return
+    if (lastSpecCandidateIdRef.current === messageId) return
+
+    lastSpecCandidateIdRef.current = messageId
+    attemptedSpecIdsRef.current.add(messageId)
+
+    if (latestAssistantMessage.attachments?.length) {
+      triggerSpec(
+        messageId,
+        latestAssistantMessage.content || blocksToPlainText(latestAssistantMessage.blocks ?? []),
+        buildGenieResultPayload(latestAssistantMessage),
+      )
+    }
+  })
+
+  useEffect(() => {
+    if (chatStatus !== 'idle') return
+    syncGeneratedSpec()
+  }, [chatStatus, messages])
+}
+
+function useClarificationSpecSync({
+  clarificationRetryCount,
+  pendingClarification,
+  triggerClarificationSpec,
+  clearClarificationSpec,
+}: {
+  clarificationRetryCount: number
+  pendingClarification: PendingClarification | null
+  triggerClarificationSpec: (pendingClarification: PendingClarification) => void
+  clearClarificationSpec: () => void
+}) {
+  const syncClarificationSpec = useEffectEvent(() => {
+    if (pendingClarification) {
+      triggerClarificationSpec(pendingClarification)
+    } else {
+      clearClarificationSpec()
+    }
+  })
+
+  useEffect(() => {
+    syncClarificationSpec()
+  }, [clarificationRetryCount, pendingClarification])
+}
 
 export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerProps) {
   const { messages: genieMessages, status: chatStatus, error: genieError, sendMessage, reset } = useGenieChat({
@@ -144,7 +308,6 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
   const [input, setInput] = useState('')
   const [showSuggestions, setShowSuggestions] = useState(true)
   const [showTeamControls, setShowTeamControls] = useState(false)
-  const [dynamicSuggestions, setDynamicSuggestions] = useState<string[]>(suggestions)
   const viewport = useRef<HTMLDivElement>(null)
 
   const specStreaming = useSpecStreaming()
@@ -174,71 +337,34 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
   const saveDialog = useSaveDialog(onSaveControl)
   const { lastSuggestionIndexRef } = saveDialog
 
-  useEffect(() => {
-    if (viewport.current) {
-      viewport.current.scrollTo({ top: viewport.current.scrollHeight, behavior: 'smooth' })
-    }
-  }, [messages, controller.pendingClarification, controller.ControllerHint, controller.ControllerLoading])
+  useAutoScrollToBottom({
+    viewport,
+    messages,
+    pendingClarification: controller.pendingClarification,
+    controllerHint: controller.ControllerHint,
+    controllerLoading: controller.ControllerLoading,
+  })
 
-  // Fetch dynamic suggestions from the server once on mount; fall back to static list on error.
-  useEffect(() => {
-    const ac = new AbortController()
-    fetch('/api/suggestions', { signal: ac.signal })
-      .then((r) => (r.ok ? (r.json() as Promise<{ suggestions: string[] }>) : null))
-      .then((data) => { if (data?.suggestions?.length) setDynamicSuggestions(data.suggestions) })
-      .catch(() => { /* keep static fallback */ })
-    return () => ac.abort()
-  }, [])  
+  useGeneratedSpecTrigger({
+    chatStatus,
+    messages,
+    setControllerHint: controller.setControllerHint,
+    genieFollowUpRef,
+    attemptedSpecIdsRef,
+    lastSpecCandidateIdRef,
+    triggerSpec: specStreaming.triggerSpec,
+  })
 
-  // Trigger spec stream when Genie finishes streaming with query data
-  useEffect(() => {
-    if (chatStatus !== 'idle') return
-    controller.setControllerHint((prev) => (prev?.decision !== 'error' ? null : prev))
+  useClarificationSpecSync({
+    clarificationRetryCount: controller.clarificationRetryCount,
+    pendingClarification: controller.pendingClarification,
+    triggerClarificationSpec,
+    clearClarificationSpec,
+  })
 
-    let latestAssistantMessage: Message | undefined
-    for (let i = messages.length - 1; i >= 0; i--) {
-      const m = messages[i]
-      if (m.role === 'assistant' && !m.loading && !m.periodPrompt &&
-          (Boolean(m.content?.trim()) || Boolean(m.blocks?.length) || Boolean(m.attachments?.length))) {
-        latestAssistantMessage = m
-        break
-      }
-    }
-    if (!latestAssistantMessage) return
-
-    const hasGenieData = Boolean(latestAssistantMessage.blocks?.length || latestAssistantMessage.attachments?.length)
-    if (!hasGenieData) { genieFollowUpRef.current = true; return }
-    genieFollowUpRef.current = false
-
-    const messageId = String(latestAssistantMessage.id)
-    if (attemptedSpecIdsRef.current.has(messageId)) return
-    if (lastSpecCandidateIdRef.current === messageId) return
-
-    lastSpecCandidateIdRef.current = messageId
-    attemptedSpecIdsRef.current.add(messageId)
-
-    if (latestAssistantMessage.attachments?.length) {
-      specStreaming.triggerSpec(
-        messageId,
-        latestAssistantMessage.content || blocksToPlainText(latestAssistantMessage.blocks ?? []),
-        buildGenieResultPayload(latestAssistantMessage),
-      )
-    }
-  }, [chatStatus, messages]) // eslint-disable-line react-hooks/exhaustive-deps
-
-  // Trigger clarification spec generation when a new clarification is needed.
-  // Uses clarificationRetryCount as the key so each retry triggers a fresh spec.
-  useEffect(() => {
-    if (controller.pendingClarification) {
-      triggerClarificationSpec(controller.pendingClarification)
-    } else {
-      clearClarificationSpec()
-    }
-  }, [controller.clarificationRetryCount, controller.pendingClarification]) // eslint-disable-line react-hooks/exhaustive-deps
-
-  const handlePeriodConfirm = useCallback((periodLabel: string) => {
+  const handlePeriodConfirm = (periodLabel: string) => {
     void controller.submitPromptThroughController(`Période confirmée : ${periodLabel}`)
-  }, [controller])
+  }
 
   const handleSend = useCallback((text?: string) => {
     const msgText = text || input.trim()
@@ -261,9 +387,9 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
     void controller.submitPromptThroughController(msgText)
   }, [input, sendMessage, controller, setLocalUserMessages])
 
-  const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
+  const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend() }
-  }, [handleSend])
+  }
 
   const handleClear = useCallback(() => {
     reset()
@@ -338,11 +464,11 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
     }
   }, [onSaveControl])
 
-  const getCopyText = useCallback((msg: Message): string => {
+  const getCopyText = (msg: Message): string => {
     let text = msg.content || ''
     if (msg.blocks && msg.blocks.length > 0) text += (text ? '\n' : '') + blocksToPlainText(msg.blocks)
     return text.trim()
-  }, [])
+  }
 
   return (
     <>
@@ -407,17 +533,9 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
               </Paper>
               <Box>
                 <Text size="xs" fw={600} c="dimmed" mb="xs">{'Exemples de questions d\'analyse et de contrôle'}</Text>
-                <Stack gap={6}>
-                  {dynamicSuggestions.map((s, suggestionIndex) => (
-                    <UnstyledButton key={s} onClick={() => { lastSuggestionIndexRef.current = suggestionIndex; handleSend(s) }}
-                      style={{ padding: '8px 12px', borderRadius: 8, border: '1px solid #e9ecef', backgroundColor: '#fff', transition: 'all 150ms ease', cursor: 'pointer' }}
-                      onMouseEnter={(e: React.MouseEvent<HTMLButtonElement>) => { const t = e.currentTarget; t.style.borderColor = '#0c8599'; t.style.backgroundColor = '#f0fdf9' }}
-                      onMouseLeave={(e: React.MouseEvent<HTMLButtonElement>) => { const t = e.currentTarget; t.style.borderColor = '#e9ecef'; t.style.backgroundColor = '#fff' }}
-                    >
-                      <Text size="xs" c="dark" style={{ lineHeight: 1.5 }}>{s}</Text>
-                    </UnstyledButton>
-                  ))}
-                </Stack>
+                <Suspense fallback={<SuggestionsListContent suggestionItems={suggestions} onSelect={(suggestion, suggestionIndex) => { lastSuggestionIndexRef.current = suggestionIndex; handleSend(suggestion) }} />}>
+                  <DynamicSuggestionsList onSelect={(suggestion, suggestionIndex) => { lastSuggestionIndexRef.current = suggestionIndex; handleSend(suggestion) }} />
+                </Suspense>
               </Box>
             </Stack>
           )}

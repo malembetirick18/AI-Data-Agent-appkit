@@ -1,5 +1,6 @@
 import type { GenericUiSpec, PendingClarification, ControllerQuestion } from '../types/chat'
 import { sanitizeLabel, isDisplayOnlyLabel } from './message-utils'
+import { normalizeClarificationQuestions } from './clarification-questions'
 
 /** Guard against LLM-generated questions with missing id/label fields. */
 function isValidQuestion(q: ControllerQuestion): boolean {
@@ -17,7 +18,9 @@ function isValidQuestion(q: ControllerQuestion): boolean {
  * is unavailable (network error, API 500, or empty spec).
  */
 export function questionsToSpec(pc: PendingClarification): GenericUiSpec | null {
-  const validQuestions = pc.questions.filter((q) => {
+  const normalizedQuestions = normalizeClarificationQuestions(pc.questions)
+
+  const validQuestions = normalizedQuestions.filter((q) => {
     if (!isValidQuestion(q)) return false
     if (isDisplayOnlyLabel(q.label)) return false
     if (q.inputType === 'select' && (!q.options || q.options.length === 0)) return false

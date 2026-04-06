@@ -435,3 +435,53 @@ Node proxy now pipes `ReadableStreamDefaultReader<Uint8Array>` chunks directly t
 
 ### Bug 49 — No render error boundary around `JSONUIProvider`/`Renderer` in `MessageContent.tsx`
 `client/src/components/MessageContent.tsx`: render errors inside `JSONUIProvider` or `Renderer` (e.g. malformed spec, registry component crash) propagated to the global `ErrorBoundary`, replacing the entire app with a full-page English error card. Fixed: added `RenderErrorBoundary` class component wrapping both `JSONUIProvider`+`Renderer` sites (primary spec and attachment loop). On error it renders inline: *"Une erreur est survenue lors de l'affichage de ce contenu."* — only the affected message block is replaced, the rest of the chat remains usable.
+
+---
+
+## Bugs Fixed (April 2026 — React Effect Reduction & Quality Pass)
+
+### Bug 52 — Clarification panel showed inconsistent action labels and duplicate submit affordances
+`client/src/components/ClarificationPanel.tsx`: the action label switched between "Confirmer et envoyer", "Appliquer les filtres", and "Relancer avec ces précisions" depending on controller mode, and streamed specs could inject a second submit control via `SubmitButton`. Fixed by (1) normalizing the panel CTA label to **"Relancer avec ces précisions"**, and (2) stripping any `SubmitButton` elements from streamed clarification specs before rendering.
+
+### Bug 53 — Clarification validation used only user overrides, not visible merged state
+`client/src/components/ClarificationPanel.tsx`: required-field validation evaluated `userOverrides` only, so defaults from spec state did not count and the action button could remain disabled incorrectly. Fixed by validating against merged `answers` (`specInitialAnswers + userOverrides`) and filtering `onStateChange` updates to known question IDs.
+
+### Bug 54 — Bound form controls in registry drifted from JSONUIProvider state
+`client/src/registry/bound-inputs.tsx`: `BoundSelectInput`, `BoundNumberInput`, `BoundTextInput`, and `BoundToggle` kept local React state in addition to JSON Render state. This created potential desync for defaults, visibility-driven updates, and external state writes. Fixed by removing local component state and making all bound inputs controlled directly by JSONUIProvider values.
+
+### Bug 55 — Mount-time suggestions fetch effect was avoidable orchestration
+`client/src/components/ai-chat-drawer.tsx`: suggestions used `useEffect + useState + AbortController` for mount fetch. Refactored to React 19 `use()` + `Suspense` with cached promise (`getDynamicSuggestionsPromise()`), preserving static fallback and reducing effect orchestration.
+
+### Bug 56 — Effect bodies in `ai-chat-drawer` had high cognitive load
+`client/src/components/ai-chat-drawer.tsx`: three large effects (auto-scroll, spec trigger, clarification spec sync) mixed orchestration with side effects. Refactored into explicit hooks: `useAutoScrollToBottom`, `useGeneratedSpecTrigger`, and `useClarificationSpecSync`, each using `useEffectEvent` where appropriate.
+
+### Bug 57 — Toast store used manual listener effect instead of external-store hook
+`client/src/hooks/use-toast.tsx`: `useToast` managed subscriptions with `useEffect + useState`. Refactored to `useSyncExternalStore(subscribeToToastStore, getToastSnapshot, getToastSnapshot)`.
+
+### Bug 58 — Duplicate toast implementation drift risk in `components/ui/`
+`client/src/components/ui/use-toast.tsx`: duplicated full toast store logic. Replaced with a thin re-export of `@/hooks/use-toast` to keep a single source of truth.
+
+### Bug 59 — Calendar day focus effect could be expressed as callback ref
+`client/src/components/ui/calendar.tsx`: replaced `useEffect`-driven focus sync with `setFocusedDayButtonRef` callback ref keyed by `modifiers.focused`.
+
+### Bug 60 — Carousel used two effects for API wiring and selection sync
+`client/src/components/ui/carousel.tsx`: merged separate effects (`setApi` + `onSelect` subscriptions) into `useCarouselApiSync`, with a stable `useEffectEvent` handler and complete cleanup for both `reInit` and `select`.
+
+### Bug 61 — Sidebar keyboard shortcut listener rebind churn risk
+`client/src/components/ui/sidebar.tsx`: extracted keyboard listener into `useSidebarKeyboardShortcut` and moved event logic to `useEffectEvent` for stable behavior with minimal effect deps.
+
+### Bug 62 — Smoke test used template selectors unrelated to production UI
+`tests/smoke.spec.ts`: assertions expected "Minimal Databricks App" / "hello world", causing false negatives despite healthy app render. Updated selectors to real UI anchors (`Geoficiency`, module synthesis text, custom-control button, first control row) and added failed-request assertion.
+
+### Bug 63 — Cosmetic callback overuse in chat drawer
+`client/src/components/ai-chat-drawer.tsx`: removed non-critical `useCallback` wrappers (`handlePeriodConfirm`, `handleKeyDown`, `getCopyText`) to reduce cognitive overhead while keeping behavior unchanged.
+
+---
+
+## Code Quality Evaluation (April 2026 Snapshot)
+
+- **Hook hygiene:** improved — effect count reduced from 12 to 7 in `client/src`, all remaining effects correspond to external synchronization (DOM, listeners, timers, abort cleanup, third-party subscriptions).
+- **State modeling:** improved — clarification form state is now single-source (`JSONUIProvider`) with filtered state-change ingestion.
+- **Readability:** improved — side-effect orchestration extracted into named hooks in `ai-chat-drawer`.
+- **Reliability:** improved — smoke test assertions now target real UI and catch failed requests.
+- **Residual risk:** dynamic suggestion loading currently caches one promise per page lifetime; if runtime suggestion refresh is later required, this cache strategy should be revisited.

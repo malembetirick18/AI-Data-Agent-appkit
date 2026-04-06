@@ -40,7 +40,7 @@ npm run dev
 - **Signatures legacy :** `query_classification_signature.py`, `required_columns_signature.py`, `sql_function_signature.py` sont inutilisées et peuvent être supprimées
 - **Graphiques multi-séries :** Line, Area et Radar supportent jusqu'à 5 séries simultanées via MultiSelect (2 pré-sélectionnées par défaut)
 - **Spec GenUI streaming :** la génération de specs utilise `/api/spec-stream` (JSONL RFC 6902) + `useUIStream` — ne pas utiliser `/api/spec` directement depuis le client
-- **`normalize-spec.ts` :** source unique de normalisation des specs — partagée entre `server.ts` et le client ; ne pas dupliquer
+- **Assemblage de spec :** les patches JSONL sont assemblés directement côté client par `useUIStream`; ne pas réintroduire `shared/normalize-spec.ts`
 
 ## Changements notables (Semaine du 31 mars 2026)
 
@@ -48,7 +48,7 @@ npm run dev
 
 | ID | Fichier | Description |
 |----|---------|-------------|
-| B1 | `ai-chat-drawer.tsx` | Suppression de la copie locale de `normalizeApiSpec` (140 lignes) — import depuis `shared/normalize-spec.ts` |
+| B1 | `ai-chat-drawer.tsx` | Suppression de la copie locale de `normalizeApiSpec` (140 lignes) — la normalisation a été retirée du pipeline |
 | B2 | `ai-chat-drawer.tsx` | `InteractiveChart` : memoïsation de `yOptions`, `sizeOptions`, `activeYKeys` — suppression des re-renders AG Charts |
 | B3 | `ai-chat-drawer.tsx` | `DataTable` : memoïsation de `headers`/`rows` — suppression des réinitialisations AG Grid |
 | B4 | `ai-chat-drawer.tsx` | `RenderBlock` : clé React `blockIndex` au lieu de `JSON.stringify(block)` |

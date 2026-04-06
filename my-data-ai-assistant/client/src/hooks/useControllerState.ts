@@ -1,6 +1,17 @@
-import { useState, useCallback, useRef, useEffect } from 'react'
+import { useState, useCallback, useRef, useEffect, useEffectEvent } from 'react'
 import { runControllerPreflight, isControllerApproved } from '../lib/spec-utils'
+import { normalizeClarificationQuestions } from '../lib/clarification-questions'
 import type { ControllerApiResponse, PendingClarification, Message } from '../types/chat'
+
+function useAbortOnUnmount(activeAbortRef: React.MutableRefObject<AbortController | null>) {
+  const abortLatestRequest = useEffectEvent(() => {
+    activeAbortRef.current?.abort()
+  })
+
+  useEffect(() => {
+    return () => { abortLatestRequest() }
+  }, [])
+}
 
 interface UseControllerStateParams {
   enrichedToOriginal: Map<string, string>
@@ -34,10 +45,7 @@ export function useControllerState({
   const [clarificationRetryCount, setClarificationRetryCount] = useState(0)
   const activeAbortRef = useRef<AbortController | null>(null)
 
-  // Abort any in-flight controller request when the hook unmounts.
-  useEffect(() => {
-    return () => { activeAbortRef.current?.abort() }
-  }, [])
+  useAbortOnUnmount(activeAbortRef)
 
   const buildConversationContext = useCallback((currentUserMessage?: string) => {
     const pastMessages = messagesRef.current
@@ -156,7 +164,7 @@ export function useControllerState({
           return
         }
 
-        const questions = ControllerResponse.questions ?? []
+        const questions = normalizeClarificationQuestions(ControllerResponse.questions ?? [])
         setPendingClarification({
           originalPrompt: trimmedPrompt,
           message: ControllerResponse.message,
@@ -207,7 +215,7 @@ export function useControllerState({
       setClarificationRetryCount(0)
       latestReasoningRef.current = ControllerResponse.reasoning ?? ''
       setLatestReasoning(ControllerResponse.reasoning ?? '')
-      const questions = ControllerResponse.questions ?? []
+      const questions = normalizeClarificationQuestions(ControllerResponse.questions ?? [])
       setPendingClarification({
         originalPrompt: trimmedPrompt,
         message: ControllerResponse.message || "L'agent IA recommande de vérifier la reformulation avant envoi à l'agent IA.",

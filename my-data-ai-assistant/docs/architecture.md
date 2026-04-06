@@ -15,7 +15,7 @@
 │  Routes API, injection de plugins, proxy Genie                   │
 └──────────┬──────────────────────────────┬────────────────────────┘
            │ POST /api/controller          │ POST /api/chat-controller
-           │ POST /api/spec                │ (flux Genie SSE)
+           │ POST /api/spec-stream         │ (flux Genie SSE)
 ┌──────────▼──────────────┐  ┌────────────▼────────────────────────┐
 │  COUCHE 4 — PLUGIN       │  │  DATABRICKS GENIE                   │
 │  ControllerAiAgent       │  │  Exécution SQL + retour résultats   │
@@ -78,10 +78,10 @@
 | Client | `client/src/components/ai-chat-drawer.tsx` | Interface chat, rendu charts, GenUI |
 | Serveur | `server/server.ts` | Routes Express, proxy SSE Genie |
 | Serveur | `server/controller-approval-store.ts` | Gestion cookies d'approbation |
-| Plugin | `plugins/controller-ai-agent/controller-ai-agent.ts` | Endpoints `/api/controller` et `/api/spec` |
+| Plugin | `plugins/controller-ai-agent/controller-ai-agent.ts` | Endpoint `/api/controller` + constantes API partagées |
 | API Sém. | `semantic_layer_api/main.py` | Application FastAPI, bootstrap DSPy |
 | API Sém. | `semantic_layer_api/src/controller_decision.py` | Pipeline agent multi-étapes |
 | API Sém. | `semantic_layer_api/src/genui_spec_generator.py` | Génération specs GenUI |
 | Partagé | `shared/genui-catalog.ts` | Catalogue de composants JSON Render |
-| Partagé | `shared/normalize-spec.ts` | Normalisation des specs GenUI — source unique partagée entre serveur et client |
+| Partagé | `shared/genui-catalog.ts` | Catalogue GenUI partagé (schémas et composants JSON Render) |
 | Données | `catalog_schemas_description/genie_knowledge_store.json` | Métadonnées Genie (tables, colonnes, fonctions) |
