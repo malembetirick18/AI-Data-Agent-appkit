@@ -69,6 +69,10 @@ function stripClarificationSubmitButtons(spec: GenericUiSpec): GenericUiSpec {
 
 const EMPTY_STATE: Record<string, unknown> = {}
 
+// ClarificationPanel provides its own submit button — suppress any SubmitButton
+// the LLM may have generated inside the spec to avoid rendering two buttons.
+const clarificationRegistry = { ...chatUiRegistry, SubmitButton: (): null => null }
+
 interface ClarificationPanelProps {
   pendingClarification: PendingClarification
   /** LLM-generated spec from clarificationStream — primary rendering path. */
@@ -223,11 +227,11 @@ export function ClarificationPanel({
 
       {resolvedSpec && !isStreaming && (
         <JSONUIProvider
-          registry={chatUiRegistry}
+          registry={clarificationRegistry}
           initialState={resolvedSpec.state ?? EMPTY_STATE}
           onStateChange={handleStateChange}
         >
-          <Renderer spec={resolvedSpec} registry={chatUiRegistry} />
+          <Renderer spec={resolvedSpec} registry={clarificationRegistry} />
         </JSONUIProvider>
       )}
 
