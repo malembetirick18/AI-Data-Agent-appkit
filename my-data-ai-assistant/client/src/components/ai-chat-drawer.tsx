@@ -1,6 +1,6 @@
 'use client'
 
-import { Suspense, use, useState, useRef, useEffect, useCallback, useMemo, useEffectEvent } from 'react'
+import { Suspense, use, useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo, useEffectEvent } from 'react'
 import {
   Drawer, Text, TextInput, ActionIcon, Group, Box, ScrollArea,
   Paper, ThemeIcon, Stack, Divider, List, Accordion, UnstyledButton,
@@ -245,6 +245,10 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
           const originalContent = enrichedToOriginal.get(gm.content.trim()) ?? gm.content.trim()
           const localMatch = localUserMessages.find((lm) => lm.content.trim() === originalContent)
           if (localMatch?.epoch != null) epoch = localMatch.epoch
+        } else {
+          // Assistant messages sort after local messages that share the same baseEpoch
+          // (e.g. the QR-summary bubble added in handleClarificationSubmit).
+          epoch = baseEpoch + 1
         }
         genieTimestamps.set(key, new Date(epoch).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }))
         genieEpochs.set(key, epoch)
@@ -324,7 +328,7 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
   } = specStreaming
 
   const messagesRef = useRef(messages)
-  useEffect(() => { messagesRef.current = messages }, [messages])
+  useLayoutEffect(() => { messagesRef.current = messages }, [messages])
 
   const controller = useControllerState({
     enrichedToOriginal,

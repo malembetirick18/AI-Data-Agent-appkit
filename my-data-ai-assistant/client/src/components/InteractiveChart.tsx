@@ -66,18 +66,18 @@ const InteractiveChart = memo(function InteractiveChart({
   })
   const [yKeys, setYKeys] = useState<string[]>(() => {
     const defaultX = (initialXKey && allColumns.includes(initialXKey)) ? initialXKey : (stringColumns[0] || allColumns[0] || '')
-    const fromInitial = initialYKeys.filter(k => k !== defaultX && allColumns.includes(k))
+    const fromInitial = initialYKeys.filter(k => k !== defaultX && numericColumns.includes(k))
     const avail = numericColumns.filter(c => c !== defaultX)
     return fromInitial.length > 0 ? fromInitial.slice(0, 2) : (avail[0] ? [avail[0]] : [])
   })
-  const [sizeKey, setSizeKey] = useState(initialSizeKey ?? '')
+  const [sizeKey, setSizeKey] = useState(() => (initialSizeKey && numericColumns.includes(initialSizeKey)) ? initialSizeKey : '')
   const [labelKey, setLabelKey] = useState(() => {
     if (initialLabelKey && allColumns.includes(initialLabelKey)) return initialLabelKey
     if (RADIAL_TYPES.has(initialType)) return stringColumns[0] || allColumns[0] || ''
     return ''
   })
   const [valueKey, setValueKey] = useState(() => {
-    if (initialValueKey && allColumns.includes(initialValueKey)) return initialValueKey
+    if (initialValueKey && numericColumns.includes(initialValueKey)) return initialValueKey
     if (RADIAL_TYPES.has(initialType)) return numericColumns[0] || ''
     return ''
   })
@@ -86,8 +86,8 @@ const InteractiveChart = memo(function InteractiveChart({
   const isBubble = chartType === 'bubble'
 
   const activeLabelKey = labelKey || stringColumns[0] || allColumns[0] || ''
-  const activeValueKey = valueKey || numericColumns.find(c => c !== activeLabelKey) || ''
-  const activeSizeKey = sizeKey || numericColumns.find(c => c !== xKey && !yKeys.includes(c)) || ''
+  const activeValueKey = (numericColumns.includes(valueKey) ? valueKey : '') || numericColumns.find(c => c !== activeLabelKey) || ''
+  const activeSizeKey = (numericColumns.includes(sizeKey) ? sizeKey : '') || numericColumns.find(c => c !== xKey && !yKeys.includes(c)) || ''
 
   const allColOptions = useMemo(() => allColumns.map(col => ({ value: col, label: formatColumnLabel(col) })), [allColumns])
   const numColOptions = useMemo(() => numericColumns.map(col => ({ value: col, label: formatColumnLabel(col) })), [numericColumns])
@@ -129,7 +129,7 @@ const InteractiveChart = memo(function InteractiveChart({
     setChartType(type)
     if (RADIAL_TYPES.has(type)) {
       if (!labelKey) setLabelKey(stringColumns[0] || allColumns[0] || '')
-      if (!valueKey) setValueKey(numericColumns.find(c => c !== (labelKey || stringColumns[0] || allColumns[0] || '')) || '')
+      if (!valueKey || !numericColumns.includes(valueKey)) setValueKey(numericColumns.find(c => c !== (labelKey || stringColumns[0] || allColumns[0] || '')) || '')
     } else {
       // Switching to cartesian — ensure yKeys are populated (pie/donut don't use them)
       if (yKeys.length === 0) {
