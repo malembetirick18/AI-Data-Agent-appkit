@@ -1,4 +1,4 @@
-import { memo, useMemo, useState, useRef, useCallback, Component } from 'react'
+import { memo, useMemo, useState, useEffect, useRef, useCallback, Component } from 'react'
 import type { ReactNode } from 'react'
 import { Text, Box, List, Loader, Group, ActionIcon, Tooltip } from '@mantine/core'
 import { AgGridReact } from 'ag-grid-react'
@@ -18,15 +18,28 @@ import type { Message, ContentBlock, GenericUiSpec } from '../types/chat'
 /* ------------------------------------------------------------------ */
 
 class RenderErrorBoundary extends Component<
-  { children: ReactNode },
+  { children: ReactNode; resetKey?: string | number },
   { hasError: boolean }
 > {
-  constructor(props: { children: ReactNode }) {
+  constructor(props: { children: ReactNode; resetKey?: string | number }) {
     super(props)
     this.state = { hasError: false }
   }
   static getDerivedStateFromError() {
     return { hasError: true }
+  }
+  static getDerivedStateFromProps(
+    props: { resetKey?: string | number },
+    state: { hasError: boolean; prevResetKey?: string | number },
+  ) {
+    // Reset error state when the resetKey changes (e.g. spec updated)
+    if (state.hasError && props.resetKey !== state.prevResetKey) {
+      return { hasError: false, prevResetKey: props.resetKey }
+    }
+    return { prevResetKey: props.resetKey }
+  }
+  componentDidCatch(error: unknown) {
+    console.error('[RenderErrorBoundary] render error caught:', error)
   }
   render() {
     if (this.state.hasError) {
@@ -47,11 +60,16 @@ class RenderErrorBoundary extends Component<
 export function CopyButton({ text }: { text: string }) {
   const [copied, setCopied] = useState(false)
 
+  useEffect(() => {
+    if (!copied) return
+    const id = setTimeout(() => setCopied(false), 2000)
+    return () => clearTimeout(id)
+  }, [copied])
+
   const handleCopy = async () => {
     try {
       await navigator.clipboard.writeText(text)
       setCopied(true)
-      setTimeout(() => setCopied(false), 2000)
     } catch {
       /* clipboard not available */
     }
@@ -185,7 +203,7 @@ const MessageContent = memo(function MessageContent({
   )
   if (specIsValid(generatedSpec)) {
     return (
-      <RenderErrorBoundary>
+      <RenderErrorBoundary resetKey={messageId}>
         <JSONUIProvider
           key={messageId}
           registry={registry}
@@ -263,7 +281,7 @@ const MessageContent = memo(function MessageContent({
       )}
       {parsedAttachments.map(({ key, spec: attachmentSpec }) => (
         <Box key={key} mt="sm">
-          <RenderErrorBoundary>
+          <RenderErrorBoundary resetKey={key}>
             <JSONUIProvider
               key={`genie-${key}`}
               registry={registry}

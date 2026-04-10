@@ -1,12 +1,7 @@
 {
   "source": "catalog_schemas_description",
-  "generated_from": [
-    "catalog_schemas_description/mv_table_description_csv.csv",
-    "catalog_schemas_description/mv_table_columns_description_csv.csv",
-    "catalog_schemas_description/functions_defined.csv"
-  ],
   "table_count": 15,
-  "function_count": 2,
+  "function_count": 5,
   "tables": [
     {
       "catalog": "jxpeehqyifuv",
@@ -2382,10 +2377,56 @@
       "type": "FUNCTION",
       "return_type": "TABLE_TYPE",
       "language": "SQL",
-      "definition": "SELECT\n  aux_account_number,\n  aux_account_label,\n  sp_folder_id,\n  COUNT(*) AS nb_entries,\n  COUNT(DISTINCT sp_accounting_entry_id) AS nb_accounting_entries,\n  SUM(ABS(amount)) AS volume,\n  SUM(amount) AS balance\nFROM jxpeehqyifuv.geoficiency.mv_gl_core\nWHERE sp_folder_id = p_sp_folder_id\n  AND param_acc_bs_customers = 1\n  AND aux_account_number IS NOT NULL\n  AND accounting_entry_date BETWEEN CAST(p_start_date AS DATE) AND CAST(p_end_date AS DATE)\nGROUP BY aux_account_number, aux_account_label, sp_folder_id",
-      "description": "null",
-      "created": "2026-03-18T12:14:27.484Z",
-      "last_altered": "2026-03-18T12:14:27.484Z"
+      "definition": "WITH\nparams AS (\n  SELECT\n    CAST(p_start_date AS DATE) AS start_date,\n    CAST(p_end_date AS DATE) AS end_date,\n    CAST(last_days AS INT) AS last_days_int\n),\nflagged AS (\n  SELECT\n    aux_account_number,\n    aux_account_label,\n    sp_folder_id,\n    sp_accounting_entry_id,\n    amount,\n    accounting_entry_date,\n    CASE\n      WHEN accounting_entry_date >= date_add(DAY, -params.last_days_int, params.end_date) THEN ABS(amount)\n      ELSE CAST(0 AS DECIMAL(30,2))\n    END AS recent_amount\n  FROM jxpeehqyifuv.geoficiency.mv_gl_core\n  CROSS JOIN params\n  WHERE sp_folder_id = p_sp_folder_id\n    AND param_acc_bs_customers = 1\n    AND aux_account_number IS NOT NULL\n    AND accounting_entry_date BETWEEN params.start_date AND params.end_date\n),\naggregated AS (\n  SELECT\n    aux_account_number,\n    aux_account_label,\n    sp_folder_id,\n    COUNT(*) AS nb_entries,\n    COUNT(DISTINCT sp_accounting_entry_id) AS nb_accounting_entries,\n    SUM(ABS(amount)) AS volume,\n    SUM(recent_amount) AS recent_volume,\n    MAX(accounting_entry_date) AS last_activity_date,\n    SUM(amount) AS balance\n  FROM flagged\n  GROUP BY aux_account_number, aux_account_label, sp_folder_id\n)\nSELECT\n  aux_account_number,\n  aux_account_label,\n  aggregated.sp_folder_id,\n  nb_entries,\n  nb_accounting_entries,\n  volume,\n  recent_volume,\n  months_between(params.end_date, last_activity_date) AS last_activity_months,\n  balance,\n  SUM(volume) OVER () AS type_total_volume,\n  last_activity_date\nFROM aggregated\nCROSS JOIN params",
+      "description": "For each customer account, returns: number of entries, number of accounting entries, total transaction volume, recent transaction volume (last N days), months since last activity, last activity date, account balance, and total volume for the account type. Used to identify inactive customers, customers with open balances, and concentration risks. One row per customer account.",
+      "created": "2026-04-06T19:38:13.573Z",
+      "last_altered": "2026-04-06T19:38:13.573Z",
+      "return_columns": [
+        {
+          "name": "aux_account_number",
+          "data_type": "STRING"
+        },
+        {
+          "name": "aux_account_label",
+          "data_type": "STRING"
+        },
+        {
+          "name": "sp_folder_id",
+          "data_type": "STRING"
+        },
+        {
+          "name": "nb_entries",
+          "data_type": "BIGINT"
+        },
+        {
+          "name": "nb_accounting_entries",
+          "data_type": "BIGINT"
+        },
+        {
+          "name": "volume",
+          "data_type": "DECIMAL(38,2)"
+        },
+        {
+          "name": "recent_volume",
+          "data_type": "DECIMAL(38,2)"
+        },
+        {
+          "name": "last_activity_months",
+          "data_type": "DOUBLE"
+        },
+        {
+          "name": "balance",
+          "data_type": "DECIMAL(38,2)"
+        },
+        {
+          "name": "type_total_volume",
+          "data_type": "DECIMAL(38,2)"
+        },
+        {
+          "name": "last_activity_date",
+          "data_type": "DATE"
+        }
+      ]
     },
     {
       "catalog": "jxpeehqyifuv",
@@ -2395,10 +2436,113 @@
       "type": "FUNCTION",
       "return_type": "TABLE_TYPE",
       "language": "SQL",
-      "definition": "WITH flagged AS (\n  SELECT\n    aux_account_number,\n    aux_account_label,\n    sp_folder_id,\n    sp_accounting_entry_id,\n    amount,\n    accounting_entry_date,\n    CASE WHEN accounting_entry_date >= date_add(CAST(p_end_date AS DATE), -90) THEN ABS(amount) ELSE CAST(0 AS DECIMAL(30,2)) END AS recent_amount\n  FROM jxpeehqyifuv.geoficiency.mv_gl_core\n  WHERE sp_folder_id = p_sp_folder_id\n    AND param_acc_bs_suppliers = 1\n    AND aux_account_number IS NOT NULL\n    AND accounting_entry_date BETWEEN CAST(p_start_date AS DATE) AND CAST(p_end_date AS DATE)\n),\naggregated AS (\n  SELECT\n    aux_account_number,\n    aux_account_label,\n    sp_folder_id,\n    COUNT(*) AS nb_entries,\n    COUNT(DISTINCT sp_accounting_entry_id) AS nb_accounting_entries,\n    SUM(ABS(amount)) AS volume,\n    SUM(recent_amount) AS recent_volume,\n    MAX(accounting_entry_date) AS last_activity_date,\n    SUM(amount) AS balance\n  FROM flagged\n  GROUP BY aux_account_number, aux_account_label, sp_folder_id\n)\nSELECT\n  aux_account_number,\n  aux_account_label,\n  sp_folder_id,\n  nb_entries,\n  nb_accounting_entries,\n  volume,\n  recent_volume,\n  months_between(CAST(p_end_date AS DATE), last_activity_date) AS last_activity_months,\n  balance,\n  SUM(volume) OVER () AS type_total_volume,\n  last_activity_date\nFROM aggregated",
-      "description": "null",
-      "created": "2026-03-18T12:13:29.384Z",
-      "last_altered": "2026-03-18T12:13:29.384Z"
+      "definition": "WITH\nparams AS (\n  SELECT\n    CAST(p_start_date AS DATE) AS start_date,\n    CAST(p_end_date AS DATE) AS end_date,\n    CAST(last_days AS INT) AS last_days_int\n),\nflagged AS (\n  SELECT\n    aux_account_number,\n    aux_account_label,\n    sp_folder_id,\n    sp_accounting_entry_id,\n    amount,\n    accounting_entry_date,\n    CASE\n      WHEN accounting_entry_date >= date_add(DAY, -params.last_days_int, params.end_date) THEN ABS(amount)\n      ELSE CAST(0 AS DECIMAL(30,2))\n    END AS recent_amount\n  FROM jxpeehqyifuv.geoficiency.mv_gl_core\n  CROSS JOIN params\n  WHERE sp_folder_id = p_sp_folder_id\n    AND param_acc_bs_suppliers = 1\n    AND aux_account_number IS NOT NULL\n    AND accounting_entry_date BETWEEN params.start_date AND params.end_date\n),\naggregated AS (\n  SELECT\n    aux_account_number,\n    aux_account_label,\n    sp_folder_id,\n    COUNT(*) AS nb_entries,\n    COUNT(DISTINCT sp_accounting_entry_id) AS nb_accounting_entries,\n    SUM(ABS(amount)) AS volume,\n    SUM(recent_amount) AS recent_volume,\n    MAX(accounting_entry_date) AS last_activity_date,\n    SUM(amount) AS balance\n  FROM flagged\n  GROUP BY aux_account_number, aux_account_label, sp_folder_id\n)\nSELECT\n  aux_account_number,\n  aux_account_label,\n  aggregated.sp_folder_id,\n  nb_entries,\n  nb_accounting_entries,\n  volume,\n  recent_volume,\n  months_between(params.end_date, last_activity_date) AS last_activity_months,\n  balance,\n  SUM(volume) OVER () AS type_total_volume,\n  last_activity_date\nFROM aggregated\nCROSS JOIN params",
+      "description": "For each supplier (vendor) account, returns: number of entries, number of accounting entries, total transaction volume, recent transaction volume (last N days), months since last activity, last activity date, account balance, and total volume for the account type. Used to identify inactive suppliers, suppliers with open balances, and concentration risks. One row per supplier account.",
+      "created": "2026-04-06T19:38:11.703Z",
+      "last_altered": "2026-04-06T19:38:11.703Z",
+      "return_columns": [
+        {
+          "name": "aux_account_number",
+          "data_type": "STRING"
+        },
+        {
+          "name": "aux_account_label",
+          "data_type": "STRING"
+        },
+        {
+          "name": "sp_folder_id",
+          "data_type": "STRING"
+        },
+        {
+          "name": "nb_entries",
+          "data_type": "BIGINT"
+        },
+        {
+          "name": "nb_accounting_entries",
+          "data_type": "BIGINT"
+        },
+        {
+          "name": "volume",
+          "data_type": "DECIMAL(38,2)"
+        },
+        {
+          "name": "recent_volume",
+          "data_type": "DECIMAL(38,2)"
+        },
+        {
+          "name": "last_activity_months",
+          "data_type": "DOUBLE"
+        },
+        {
+          "name": "balance",
+          "data_type": "DECIMAL(38,2)"
+        },
+        {
+          "name": "type_total_volume",
+          "data_type": "DECIMAL(38,2)"
+        },
+        {
+          "name": "last_activity_date",
+          "data_type": "DATE"
+        }
+      ]
+    },
+    {
+      "catalog": "jxpeehqyifuv",
+      "schema": "geoficiency",
+      "name": "get_tva_rates_applied_for_customers_by_folder_id",
+      "full_name": "jxpeehqyifuv.geoficiency.get_tva_rates_applied_for_customers_by_folder_id",
+      "type": "FUNCTION",
+      "return_type": "TABLE_TYPE",
+      "language": "SQL",
+      "definition": "WITH entries_dedup AS (\n  SELECT DISTINCT\n    `sp_accounting_entry_id`,\n    `geo_calc_entry_collected_vat_rate`\n  FROM\n    `jxpeehqyifuv`.`geoficiency`.`mv_accounting_entry_enriched`\n  WHERE\n    `sp_folder_id` = p_sp_folder_id\n    AND `scheme_param_acc_bs_customers` = 1\n)\nSELECT DISTINCT\n  ROUND(`geo_calc_entry_collected_vat_rate`, 2) AS `taux_tva_client`\nFROM\n  entries_dedup\nWHERE\n  `geo_calc_entry_collected_vat_rate` IS NOT NULL\nORDER BY\n  `taux_tva_client` ASC",
+      "description": "Returns the distinct deductible and collected VAT (TVA) rates found in accounting entries for the specified folder ID and customers.",
+      "created": "2026-04-10T05:47:15.395Z",
+      "last_altered": "2026-04-10T05:47:15.395Z",
+      "return_columns": [
+        {
+          "name": "tva_rate",
+          "data_type": "DECIMAL(5,2)"
+        }
+      ]
+    },
+    {
+      "catalog": "jxpeehqyifuv",
+      "schema": "geoficiency",
+      "name": "get_tva_rates_applied_for_suppliers_by_folder_id",
+      "full_name": "jxpeehqyifuv.geoficiency.get_tva_rates_applied_for_suppliers_by_folder_id",
+      "type": "FUNCTION",
+      "return_type": "TABLE_TYPE",
+      "language": "SQL",
+      "definition": "WITH entries_dedup AS (\n  SELECT DISTINCT\n    sp_accounting_entry_id,\n    geo_calc_entry_deductible_vat_rate\n  FROM\n    jxpeehqyifuv.geoficiency.mv_accounting_entry_enriched\n  WHERE\n    sp_folder_id = p_sp_folder_id\n    AND scheme_param_acc_bs_suppliers = 1\n)\nSELECT DISTINCT\n  ROUND(geo_calc_entry_deductible_vat_rate, 2) AS taux_tva_fournisseur\nFROM\n  entries_dedup\nWHERE\n  geo_calc_entry_deductible_vat_rate IS NOT NULL\nORDER BY\n  taux_tva_fournisseur ASC",
+      "description": "Returns the distinct deductible and collected VAT (TVA) rates found in accounting entries for the specified folder ID and suppliers.",
+      "created": "2026-04-10T05:47:16.086Z",
+      "last_altered": "2026-04-10T05:47:16.086Z",
+      "return_columns": [
+        {
+          "name": "tva_rate",
+          "data_type": "DECIMAL(5,2)"
+        }
+      ]
+    },
+    {
+      "catalog": "jxpeehqyifuv",
+      "schema": "geoficiency",
+      "name": "get_tva_rates_by_folder_id",
+      "full_name": "jxpeehqyifuv.geoficiency.get_tva_rates_by_folder_id",
+      "type": "FUNCTION",
+      "return_type": "TABLE_TYPE",
+      "language": "SQL",
+      "definition": "WITH entries_dedup AS (\n  SELECT DISTINCT\n    sp_accounting_entry_id,\n    geo_calc_entry_deductible_vat_rate,\n    geo_calc_entry_collected_vat_rate\n  FROM\n    jxpeehqyifuv.geoficiency.mv_accounting_entry_enriched\n  WHERE\n    sp_folder_id = p_sp_folder_id\n)\nSELECT\n  geo_calc_entry_deductible_vat_rate AS tva_rate\nFROM\n  entries_dedup\nWHERE\n  geo_calc_entry_deductible_vat_rate IS NOT NULL\nUNION\nSELECT\n  geo_calc_entry_collected_vat_rate AS tva_rate\nFROM\n  entries_dedup\nWHERE\n  geo_calc_entry_collected_vat_rate IS NOT NULL\nORDER BY\n  tva_rate ASC",
+      "description": "Returns the distinct deductible and collected VAT (TVA) rates found in accounting entries for the specified folder ID.",
+      "created": "2026-04-10T05:47:14.597Z",
+      "last_altered": "2026-04-10T05:47:14.597Z",
+      "return_columns": [
+        {
+          "name": "tva_rate",
+          "data_type": "DECIMAL(5,2)"
+        }
+      ]
     }
   ]
 }

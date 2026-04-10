@@ -478,10 +478,141 @@ Node proxy now pipes `ReadableStreamDefaultReader<Uint8Array>` chunks directly t
 
 ---
 
+## Feature: Temporal Scope Clarification (April 2026)
+
+When a user asks for group/subsidiary analysis mentioning a year or period, the controller now injects temporal clarification questions alongside the existing scope questions.
+
+### Architecture
+
+- **Temporal guardrail** in `controller_decision.py`: `_temporal_ambiguous()` checks for temporal keywords (`année`, `exercice`, `trimestre`, etc.) and verifies they haven't been disambiguated yet. Fires after the scope guardrail, appending `period_type` (select: calendar year / fiscal year) and `period_year` (number) questions.
+- **Temporal disambiguation keywords**: `{"année civile", "exercice comptable", "fiscal year", "calendar year"}` — if any of these appear in prompt or conversation context, the guardrail does not fire.
+- **Client-side visibility**: `clarification-spec.ts` hides `period_year` until `period_type` has a value (same pattern as `sp_folder_id` / `scope_level`).
+- **`_serialize_questions()`** in `main.py` adds visibility instruction for `period_year` so the LLM-generated form spec also respects the rule.
+
+### Key invariants
+
+1. Temporal questions are always appended AFTER scope questions (scope is more fundamental).
+2. The temporal guardrail only fires when temporal keywords are present AND not yet disambiguated.
+3. The `rewrittenPrompt` integrates the chosen period type naturally via the existing clarification re-submission flow.
+
+---
+
+## Feature: Chart Interface Contract Enforcement (April 2026)
+
+Three-layer defense ensuring the LLM generates valid chart specs with correct column types.
+
+### Layer 1 — Prompt-level guidance
+- `GenUiSpecSignature.spec_patches` now has a `desc` field specifying JSONL format and column type rules (was previously empty).
+- `_build_spec_prompt()` in `main.py` extracts a `## Column Metadata` table from the Genie result payload, surfacing each column's name, type, and whether it's numeric.
+- `genui_catalog_prompt.md` has a new "Chart Column Type Constraints (CRITICAL)" section with per-prop type rules and NEVER rules.
+
+### Layer 2 — Client-side validation
+- `validateChartSpec()` in `genie-utils.ts` validates assembled specs before storage: checks that numeric-only props (`yKey`, `angleKey`, `radiusKey`, `sizeKey`) reference actual numeric columns AND that categorical props (`xKey`, `labelKey`, `angleKey` for radar) exist in the data columns. Silently remaps numeric props to the first available numeric column; replaces charts with missing categorical props with DataTable.
+- Integrated in `useSpecStreaming.ts` `onComplete` callback.
+
+### Layer 3 — Renderer guards
+- All 7 chart renderers in `chat-ui-registry.tsx` have `if (data.length === 0) return null` early returns.
+- `InteractiveChart.tsx` `isReadyToRender` provides per-chart-type data validity checks (unchanged, pre-existing).
+
+---
+
+## Bugs Fixed (April 2026 — Controller Alignment & Chart Rendering Pass)
+
+### Bug 64 — `activeValueKey` could equal `activeLabelKey`, producing degenerate pie/donut
+`client/src/components/InteractiveChart.tsx`: fallback `numericColumns[0]` for `activeValueKey` and `activeSizeKey` could select the same column as `activeLabelKey` or `xKey` — e.g. when only one numeric column exists. Pie chart rendered a single indistinguishable slice; bubble chart showed a diagonal pattern. Fixed: changed final fallback from `numericColumns[0]` to `''`, forcing `isReadyToRender` to return false instead of rendering a degenerate chart.
+
+### Bug 65 — `isReadyToRender` did not validate `xKey` exists in data (line/area/bar)
+`client/src/components/InteractiveChart.tsx`: for line/area/bar, the guard only checked `xKey` was truthy, not that it was an actual column. A nonexistent column (e.g. from a stale LLM spec) produced a blank chart with no feedback. Fixed: added `sortedData.some(d => d[xKey] !== undefined)` check.
+
+### Bug 66 — `validateChartSpec` did not check categorical prop existence (`xKey`, `labelKey`, `angleKey`)
+`client/src/lib/genie-utils.ts`: only numeric props were validated. A chart spec with `xKey: "nonexistent_col"` passed validation silently. Fixed: added `checkCategoricalProp()` helper that verifies the column exists in `data[0]` keys before proceeding with numeric prop validation. Returns `unfixable = true` → replaces with DataTable.
+
+### Bug 67 — `handleTypeChange` did not reset irrelevant state on chart type switch
+`client/src/components/InteractiveChart.tsx`: switching from pie→line left `yKeys` empty (blank chart); switching from line→pie left stale `xKey`/`yKeys` in dropdowns. Fixed: when switching to cartesian, auto-populate `yKeys` if empty; when switching away from bubble, reset `sizeKey`.
+
+### Bug 68 — `xIsNumeric` in `sortedData` sampled only row 0
+`client/src/components/InteractiveChart.tsx`: `!isNaN(Number(data[0][xKey]))` was fragile — a column numeric at index 0 but string elsewhere caused `NaN` in sort comparisons. Fixed: replaced with `numericColumns.includes(xKey)` which samples 10 rows. Added `numericColumns` to `useMemo` deps.
+
+### Bug 69 — `datumColorIndex` used object references as Map keys
+`client/src/components/InteractiveChart.tsx`: `new Map(sortedData.map((d, i) => [d, i]))` relied on AG Charts returning the exact same object reference in `itemStyler` callbacks. If AG Charts cloned datum objects internally, all items got the same color (index 0). Fixed: replaced with `_colorIdx` numeric field stamped onto each datum via `indexedData` useMemo. `itemStyler` reads `params.datum._colorIdx` directly.
+
+### Bug 70 — `bubbleData` lost `_xIdx` when `bubbleXIsNumeric` flipped
+`client/src/components/InteractiveChart.tsx`: `bubbleData` conditionally added `_xIdx` only when `bubbleXIsNumeric` was false. Changing `xKey` to a numeric column removed `_xIdx`, but `isReadyToRender` could still reference it during the transition. Fixed: `bubbleData` now always includes `_xIdx` unconditionally.
+
+### Bug 71 — `enrichedPrompt` field never populated — dead code path
+`client/src/types/chat.ts`, `useControllerState.ts`, `ai-chat-drawer.tsx`: `enrichedPrompt` was defined in types and read in multiple code paths, but Python never set it and the Node plugin never constructed it. Every read always fell through to `rewrittenPrompt`. Fixed: removed `enrichedPrompt` from `ControllerApiResponse`, `PendingClarification`, and all consuming code. Replaced with direct `rewrittenPrompt` usage.
+
+### Bug 72 — `coherenceNote` dropped by Node plugin
+`plugins/controller-ai-agent/controller-ai-agent.ts`: Python backend sent `coherenceNote` in the response, but the plugin's `ControllerResponse` type and response construction omitted it — field was silently filtered. Fixed: added `coherenceNote` to plugin type and response construction.
+
+### Bug 73 — Guardrail question dedup happened at frontend, not Python
+`semantic_layer_api/src/modules/controller_decision.py`: if the LLM hallucinated a question with `id: "scope_level"`, the guardrail check found it and skipped injection. Frontend received the malformed LLM question instead of the well-formed guardrail version. Fixed: both scope and temporal guardrails now strip any existing questions whose `id` matches a guardrail question id before checking, ensuring the well-formed guardrail version always takes precedence.
+
+### Bug 74 — Error response format mismatch between plugin and frontend
+`plugins/controller-ai-agent/controller-ai-agent.ts`: 502 error responses returned `{ error: string }` but frontend expected `{ decision: string, ... }`. The error path worked by accident (null fallback → generic error message), but the format inconsistency was fragile. Fixed: all error responses now include `decision: 'error'`, `confidence: 0`, `message: "..."` alongside the `error` field for backwards compatibility.
+
+### Bug 75 — Guardrail-forced `clarify` lost semantic context
+`semantic_layer_api/src/modules/controller_decision.py`, `plugins/controller-ai-agent/controller-ai-agent.ts`, `client/src/types/chat.ts`: when scope/temporal guardrails overrode a decision to `clarify`, the frontend couldn't distinguish "LLM uncertain" from "guardrail needs scope info". Fixed: added `guardrailSource: 'scope' | 'temporal' | null` field propagated from Python → Node plugin → frontend `PendingClarification`. UI can now differentiate guardrail-forced clarifications.
+
+### Bug 76 — Missing `needsParams` in guide/low-confidence `PendingClarification`
+`client/src/hooks/useControllerState.ts`: the guide/low-confidence proceed path (line ~219) did not include `needsParams` when building `PendingClarification`, even though the `clarify` path (line ~177) did. `ClarificationPanel` reads `needsParams` to choose between "Paramètres requis" (filter icon, teal) and "Précision requise" (warning icon, orange). A guide decision with `needsParams: true` always showed the wrong icon and label. Fixed: added `needsParams: ControllerResponse.needsParams ?? false` to the guide path.
+
+### Bug 77 — Double clarification lines in `canSendDirectly` submit path
+`client/src/components/ai-chat-drawer.tsx`: `handleClarificationSubmit` when `canSendDirectly` was true re-appended `questionLines` on top of `clarifiedPrompt` which already contained them. When `rewrittenPrompt` was falsy, `basePrompt` fell back to `clarifiedPrompt`, producing `"original\nClarifications:\n- Q: A\nClarifications:\n- Q: A"`. Fixed: simplified to use `clarifiedPrompt` directly — it already includes clarification lines when present.
+
+### Bug 78 — Plugin `questions` field typed as `unknown[]`
+`plugins/controller-ai-agent/controller-ai-agent.ts`: the `ControllerResponse` type used `questions: unknown[]` instead of a structured type matching the Python question schema and the client `ControllerQuestion`. TypeScript couldn't catch schema violations at the plugin boundary. Fixed: added `ControllerQuestion` type to the plugin matching the Python guardrail schema and cast appropriately.
+
+---
+
+### Bug 79 — `RenderErrorBoundary` never reset after catching error
+`client/src/components/MessageContent.tsx`: once `hasError` was set to `true`, it never reset — even if the spec was updated or the error was transient. A single bad render permanently replaced the message with the error fallback. Also missing `componentDidCatch` so errors were not logged. Fixed: added `resetKey` prop and `getDerivedStateFromProps` that resets `hasError` when the key changes; added `componentDidCatch` with console logging. Both usage sites pass a key (`messageId`, `key`) so the boundary resets when the spec changes.
+
+### Bug 80 — Empty spec patches not reported to client (stream hangs)
+`semantic_layer_api/main.py`: when the LLM produced empty `spec_patches`, the endpoint logged an error but yielded nothing. The client's `useUIStream` received no data and hung indefinitely in streaming state. Fixed: yield a valid JSONL error object `{"error": "LLM produced empty spec_patches"}` so the client can detect the failure.
+
+### Bug 81 — Exception format mismatch in `/spec/generate` endpoint
+`semantic_layer_api/main.py`: the exception handler yielded `# error: {exc}` (JSONL comment syntax) instead of a parseable error object. Clients ignored comment lines and treated the stream as incomplete. Fixed: yield a valid JSONL error object `{"error": "spec generation failed: ..."}`.
+
+---
+
+## Dead Code Cleanup (April 2026)
+
+### Removed: shadcn/ui component library (`client/src/components/ui/`)
+Deleted 56 shadcn/ui component files (accordion, alert-dialog, button, calendar, carousel, chart, dialog, form, sidebar, sonner, toast, etc.) and supporting files:
+- `client/src/components/ui/` — entire directory (Tailwind + Radix UI + class-variance-authority components)
+- `client/src/lib/utils.ts` — `cn()` utility (clsx + tailwind-merge), only used by `ui/` components
+- `client/src/hooks/use-toast.tsx` — shadcn toast store, only consumed by `ui/toaster.tsx`
+- `client/tailwind.config.ts` — Tailwind CSS v4 configuration
+- `client/components.json` — shadcn CLI configuration
+
+**Why:** The app uses Mantine UI exclusively (`MantineProvider` in `main.tsx`, all app components use `@mantine/core`). The shadcn/ui library was scaffolding template code — no non-`ui/` file imported any `ui/` component.
+
+### Removed: Tailwind CSS
+- Removed `@tailwindcss/postcss`, `@tailwindcss/vite`, `tailwindcss` from `devDependencies`
+- Removed `tailwindcss()` plugin from `client/vite.config.ts`
+- Replaced `@tailwindcss/postcss` with `postcss-preset-mantine` in `client/postcss.config.js`
+- Cleaned commented-out CSS custom properties (shadcn theme tokens) from `client/src/index.css`
+
+### Removed: Unused runtime dependencies
+- `lucide-react` — icon library used only by deleted shadcn/ui components (app uses `@tabler/icons-react`)
+- `react-resizable-panels` — used only by deleted `ui/resizable.tsx`
+- `react-router` — not imported anywhere in client code
+- `zod` — not imported anywhere in client code
+- `recharts` — transitive dependency of deleted `ui/chart.tsx` (app uses AG Charts)
+- `embla-carousel-react` — transitive dependency of deleted `ui/carousel.tsx`
+- `next-themes` — transitive dependency of deleted `ui/sonner.tsx` (app uses Mantine theme)
+
+### Removed: `recharts` from Vite `optimizeDeps.include`
+`client/vite.config.ts`: `recharts` was in the `optimizeDeps.include` array but the package is no longer used.
+
+---
+
 ## Code Quality Evaluation (April 2026 Snapshot)
 
 - **Hook hygiene:** improved — effect count reduced from 12 to 7 in `client/src`, all remaining effects correspond to external synchronization (DOM, listeners, timers, abort cleanup, third-party subscriptions).
 - **State modeling:** improved — clarification form state is now single-source (`JSONUIProvider`) with filtered state-change ingestion.
 - **Readability:** improved — side-effect orchestration extracted into named hooks in `ai-chat-drawer`.
 - **Reliability:** improved — smoke test assertions now target real UI and catch failed requests.
+- **Bundle size:** improved — removed 56 unused shadcn/ui components, Tailwind CSS, and 6 unused runtime dependencies.
 - **Residual risk:** dynamic suggestion loading currently caches one promise per page lifetime; if runtime suggestion refresh is later required, this cache strategy should be revisited.

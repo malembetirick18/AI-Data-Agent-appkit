@@ -1,6 +1,5 @@
 import { defineConfig, loadEnv } from 'vite';
 import react from '@vitejs/plugin-react';
-import tailwindcss from '@tailwindcss/vite';
 import path from 'node:path';
 
 // https://vite.dev/config/
@@ -11,7 +10,7 @@ export default defineConfig(({ mode }) => {
   define: {
     __AGGRID_LICENSE_KEY__: JSON.stringify(env.AGGRID_LICENSE_KEY ?? ''),
   },
-  plugins: [react(), tailwindcss()],
+  plugins: [react()],
   server: {
     middlewareMode: true,
   },
@@ -20,7 +19,7 @@ export default defineConfig(({ mode }) => {
     emptyOutDir: true,
   },
   optimizeDeps: {
-    include: ['react', 'react-dom', 'react/jsx-dev-runtime', 'react/jsx-runtime', 'recharts'],
+    include: ['react', 'react-dom', 'react/jsx-dev-runtime', 'react/jsx-runtime'],
   },
   resolve: {
     alias: {

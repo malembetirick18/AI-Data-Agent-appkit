@@ -152,6 +152,38 @@ Values inside `pushState` can contain `{ "$state": "/statePath" }` references to
 | `AccordionGroup` | `variant?: "default" \| "contained" \| "separated"` | Accordion container. Defaults to `"separated"`. Accepts `AccordionSection` children. |
 | `AccordionSection` | `title: string, value: string` | Single accordion item. `value` must be unique within its parent. Accepts children. |
 
+### Visualization Priority Rule (CRITICAL)
+
+When the data contains at least one numeric column **AND** at least one categorical/date column, you **MUST** include a chart component (`BarChartViz`, `LineChartViz`, `AreaChartViz`, `PieChartViz`, etc.) alongside any `DataTable` or `TextContent`. Charts convey patterns, comparisons, and anomalies far more effectively than tables alone.
+
+- **Always pair a chart with a summary table** — the chart highlights the pattern, the table provides detail.
+- **Choose the chart type based on the analysis intent:**
+  - Anomaly detection / comparisons → `BarChartViz` (écarts, distributions)
+  - Time series / trends → `LineChartViz` or `AreaChartViz`
+  - Part-to-whole (≤10 categories) → `PieChartViz` or `DonutChartViz`
+  - Multi-dimensional ranking → `RadarChartViz`
+- **Use the data from the Genie query result directly** — reference the actual column names for `xKey`, `yKey`, `series[].yKey`, etc.
+- **Inline the chart `data` array in the element props** (preferred) or bind via `$state`. When inlining, include at least 5–20 representative rows sampled from the query result.
+- **When numeric columns are available, always include ALL three layers:** `TextContent` (summary/KPIs) + chart (`BarChartViz`, `LineChartViz`, etc.) + `DataTable` (detailed rows). Never omit the chart layer.
+
+### Chart Column Type Constraints (CRITICAL)
+
+When generating chart specs, you MUST respect column data types. Refer to the **Column Metadata** table in the prompt to determine which columns are numeric.
+
+| Chart Prop | Must Be | Used By |
+|------------|---------|---------|
+| `yKey` | Numeric | BarChartViz, BubbleChartViz |
+| `series[].yKey` | Numeric | LineChartViz, AreaChartViz |
+| `angleKey` | Numeric | PieChartViz, DonutChartViz |
+| `radiusKey` | Numeric | RadarChartViz |
+| `sizeKey` | Numeric | BubbleChartViz |
+| `xKey` | Any (prefer categorical/date) | LineChartViz, AreaChartViz, BarChartViz, BubbleChartViz |
+| `labelKey` | Categorical (string) | PieChartViz, DonutChartViz, RadarChartViz |
+
+**NEVER** assign a STRING or DATE column to `yKey`, `angleKey`, `radiusKey`, or `sizeKey` — the chart will fail to render.
+**NEVER** assign a purely numeric ID column (e.g. `sp_folder_id`) to `labelKey` when a descriptive string column is available.
+If no numeric column exists in the data, do **NOT** generate a chart component — use `DataTable` instead.
+
 ### SubmitButton — REQUIRED for any FormPanel with user inputs
 
 Every `FormPanel` that contains at least one form input (`SelectInputField`, `TextInputField`, `NumberInputField`, `ToggleField`) **MUST** include a `SubmitButton` as its last child. Without it, the user has no way to re-run the analysis with their new selections.

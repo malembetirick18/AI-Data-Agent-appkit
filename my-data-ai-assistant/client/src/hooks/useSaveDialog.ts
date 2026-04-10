@@ -1,4 +1,4 @@
-import { useState, useRef } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import { inferRubriqueFromText, suggestedRubriqueMap } from '../lib/spec-utils'
 import { blocksToPlainText } from '../lib/message-utils'
 import type { Message, SavedControl, UserRight } from '../types/chat'
@@ -16,6 +16,10 @@ export function useSaveDialog(onSaveControl?: (control: SavedControl) => void) {
   const [applyToGroup, setApplyToGroup] = useState(false)
   const [userRights, setUserRights] = useState<Record<string, UserRight>>(() => ({ ...INITIAL_USER_RIGHTS }))
   const lastSuggestionIndexRef = useRef(-1)
+  const saveTimerRef = useRef<ReturnType<typeof setTimeout>>(null)
+
+  // Cleanup timer on unmount to prevent setState on unmounted component
+  useEffect(() => () => { if (saveTimerRef.current) clearTimeout(saveTimerRef.current) }, [])
 
   const handleOpenSave = (msg: Message) => {
     const plainResults = msg.content + (msg.blocks ? '\n' + blocksToPlainText(msg.blocks) : '')
@@ -47,7 +51,7 @@ export function useSaveDialog(onSaveControl?: (control: SavedControl) => void) {
         rubriqueId: saveForm.rubriqueId,
       })
     }
-    setTimeout(() => {
+    saveTimerRef.current = setTimeout(() => {
       setSaveModalOpened(false)
       setSaved(false)
       setApplyToGroup(false)

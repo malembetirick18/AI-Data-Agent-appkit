@@ -11,7 +11,7 @@ Return exactly one of:
 | Value | Description |
 |---|---|
 | `Normal SQL` | Standard SQL query |
-| `SQL Function` | Queries involving `fn_vendor_typology` or `fn_customer_typology`, including any mention of inactive suppliers/customers, vendor typology, concentration risk, customer activity analysis, or supplier balances by account type |
+| `SQL Function` | Queries involving `fn_vendor_typology`, `fn_customer_typology`, `get_tva_rates_by_folder_id`, `get_tva_rates_applied_for_customers_by_folder_id`, or `get_tva_rates_applied_for_suppliers_by_folder_id`, including any mention of inactive suppliers/customers, vendor/customer typology, concentration risk, activity analysis, supplier/customer balances by account type, or TVA/VAT rate analysis |
 | `Predictive SQL` | Queries with predictive or ML components |
 | `General Information` | Non-SQL informational requests |
 
@@ -28,8 +28,16 @@ Return **ONLY** a JSON array of column names (no table names).
 Return **ONLY** a JSON array using these allowed values:
 
 ```json
-["fn_vendor_typology", "fn_customer_typology"]
+["fn_vendor_typology", "fn_customer_typology", "get_tva_rates_by_folder_id", "get_tva_rates_applied_for_customers_by_folder_id", "get_tva_rates_applied_for_suppliers_by_folder_id"]
 ```
+
+| Function | When to use |
+|---|---|
+| `fn_customer_typology` | Customer activity, inactive customers, customer balances, concentration risk |
+| `fn_vendor_typology` | Supplier activity, inactive suppliers, supplier balances, concentration risk |
+| `get_tva_rates_by_folder_id` | All distinct TVA/VAT rates (deductible + collected) for a folder |
+| `get_tva_rates_applied_for_customers_by_folder_id` | Distinct collected TVA rates for customer entries |
+| `get_tva_rates_applied_for_suppliers_by_folder_id` | Distinct deductible TVA rates for supplier entries |
 
 Return `[]` if none apply.
 

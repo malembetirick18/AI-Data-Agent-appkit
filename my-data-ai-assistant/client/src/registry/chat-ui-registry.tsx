@@ -87,12 +87,14 @@ const { registry: chatUiRegistry } = defineRegistry(chatUiCatalog, {
 
     LineChartViz: function LineChartVizRenderer({ props }: { props: Record<string, unknown> }) {
       const data = Array.isArray(props.data) ? props.data as Record<string, unknown>[] : []
+      if (data.length === 0) return null
       const yKeys = Array.isArray(props.series) ? (props.series as Array<{ yKey: string }>).map(s => s.yKey) : []
       return <InteractiveChart data={data} initialXKey={props.xKey as string ?? ''} initialYKeys={yKeys} initialType="line" title={props.title && props.title !== 'Title' ? props.title as string : undefined} yLabel={props.yLabel as string | undefined} source={props.source as string | undefined} />
     },
 
     BarChartViz: function BarChartVizRenderer({ props }: { props: Record<string, unknown> }) {
       const data = Array.isArray(props.data) ? props.data as Record<string, unknown>[] : []
+      if (data.length === 0) return null
       const yKeys = props.yKey ? [props.yKey as string] : []
       return <InteractiveChart data={data} initialXKey={props.xKey as string ?? ''} initialYKeys={yKeys} initialType="bar" title={props.title && props.title !== 'Title' ? props.title as string : undefined} />
     },
@@ -100,27 +102,32 @@ const { registry: chatUiRegistry } = defineRegistry(chatUiCatalog, {
     AreaChartViz: function AreaChartVizRenderer({ props }: { props: Record<string, unknown> }) {
       const p = props as { data?: unknown; xKey?: string; series?: Array<{ yKey: string }>; title?: string; yLabel?: string; source?: string }
       const data = Array.isArray(p.data) ? p.data as Record<string, unknown>[] : []
+      if (data.length === 0) return null
       const yKeys = Array.isArray(p.series) ? p.series.map(s => s.yKey) : []
       return <InteractiveChart data={data} initialXKey={p.xKey ?? ''} initialYKeys={yKeys} initialType="area" title={p.title && p.title !== 'Title' ? p.title : undefined} yLabel={p.yLabel} source={p.source} />
     },
 
     PieChartViz: function PieChartVizRenderer({ props }: { props: Record<string, unknown> }) {
       const data = Array.isArray(props.data) ? props.data as Record<string, unknown>[] : []
+      if (data.length === 0) return null
       return <InteractiveChart data={data} initialXKey="" initialYKeys={[]} initialType="pie" initialLabelKey={props.labelKey as string ?? ''} initialValueKey={props.angleKey as string ?? ''} title={props.title && props.title !== 'Title' ? props.title as string : undefined} />
     },
 
     DonutChartViz: function DonutChartVizRenderer({ props }: { props: Record<string, unknown> }) {
       const data = Array.isArray(props.data) ? props.data as Record<string, unknown>[] : []
+      if (data.length === 0) return null
       return <InteractiveChart data={data} initialXKey="" initialYKeys={[]} initialType="donut" initialLabelKey={props.labelKey as string ?? ''} initialValueKey={props.angleKey as string ?? ''} title={props.title && props.title !== 'Title' ? props.title as string : undefined} />
     },
 
     RadarChartViz: function RadarChartVizRenderer({ props }: { props: Record<string, unknown> }) {
       const data = Array.isArray(props.data) ? props.data as Record<string, unknown>[] : []
+      if (data.length === 0) return null
       return <InteractiveChart data={data} initialXKey="" initialYKeys={[]} initialType="radar" initialLabelKey={props.angleKey as string ?? ''} initialValueKey={props.radiusKey as string ?? ''} title={props.title && props.title !== 'Title' ? props.title as string : undefined} />
     },
 
     BubbleChartViz: function BubbleChartVizRenderer({ props }: { props: Record<string, unknown> }) {
       const data = Array.isArray(props.data) ? props.data as Record<string, unknown>[] : []
+      if (data.length === 0) return null
       const yKeys = props.yKey ? [props.yKey as string] : []
       return <InteractiveChart data={data} initialXKey={props.xKey as string ?? ''} initialYKeys={yKeys} initialType="bubble" initialSizeKey={props.sizeKey as string ?? ''} title={props.title && props.title !== 'Title' ? props.title as string : undefined} />
     },

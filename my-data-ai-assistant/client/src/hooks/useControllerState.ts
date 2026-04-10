@@ -170,12 +170,12 @@ export function useControllerState({
           message: ControllerResponse.message,
           decision: ControllerResponse.decision,
           rewrittenPrompt: ControllerResponse.rewrittenPrompt,
-          enrichedPrompt: ControllerResponse.enrichedPrompt,
           questions,
           suggestedTables: ControllerResponse.suggestedTables ?? [],
           suggestedFunctions: ControllerResponse.suggestedFunctions ?? [],
           canSendDirectly: false,
           needsParams: ControllerResponse.needsParams ?? false,
+          guardrailSource: ControllerResponse.guardrailSource ?? null,
         })
         setClarificationAnswers(
           Object.fromEntries(questions.map((q) => [q.id, ''])) as Record<string, string>
@@ -190,7 +190,7 @@ export function useControllerState({
         setControllerHint(null)
         latestReasoningRef.current = ControllerResponse.reasoning ?? ''
         setLatestReasoning(ControllerResponse.reasoning ?? '')
-        const promptToSend = ControllerResponse.enrichedPrompt || ControllerResponse.rewrittenPrompt?.trim() || trimmedPrompt
+        const promptToSend = ControllerResponse.rewrittenPrompt?.trim() || trimmedPrompt
         if (promptToSend !== trimmedPrompt) {
           const ultimate = enrichedToOriginal.get(trimmedPrompt) ?? trimmedPrompt
           enrichedToOriginal.set(promptToSend.trim(), ultimate)
@@ -221,13 +221,14 @@ export function useControllerState({
         message: ControllerResponse.message || "L'agent IA recommande de vérifier la reformulation avant envoi à l'agent IA.",
         decision: ControllerResponse.decision,
         rewrittenPrompt: ControllerResponse.rewrittenPrompt,
-        enrichedPrompt: ControllerResponse.enrichedPrompt,
         questions,
         suggestedTables: ControllerResponse.suggestedTables ?? [],
         suggestedFunctions: ControllerResponse.suggestedFunctions ?? [],
         // guide: questions are optional, user can send directly to Genie
         // proceed (confidence < 0.90): re-run controller with clarifications
         canSendDirectly: ControllerResponse.decision === 'guide',
+        needsParams: ControllerResponse.needsParams ?? false,
+        guardrailSource: ControllerResponse.guardrailSource ?? null,
       })
       setClarificationAnswers(
         Object.fromEntries(questions.map((q) => [q.id, ''])) as Record<string, string>
@@ -235,7 +236,7 @@ export function useControllerState({
     } finally {
       setControllerLoading(false)
     }
-  }, [buildConversationContext, clarificationRetryCount, enrichedToOriginal, latestReasoningRef, setLatestReasoning, sendMessage, setInput, setLocalUserMessages, setShowSuggestions])
+  }, [buildConversationContext, clarificationRetryCount, latestReasoningRef, setLatestReasoning, sendMessage, setInput, setLocalUserMessages, setShowSuggestions, enrichedToOriginal])
 
   const resetControllerState = () => {
     setControllerLoading(false)

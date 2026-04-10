@@ -50,6 +50,22 @@ function writeSseEvent(res: Response, payload: unknown): void {
   res.write(`data: ${JSON.stringify(safe)}\n\n`);
 }
 
+/**
+ * Backpressure-aware SSE write. Returns false if the response is destroyed
+ * (client disconnected) — callers should break the loop.
+ */
+async function writeSseEventSafe(res: Response, payload: unknown): Promise<boolean> {
+  if (res.destroyed) return false;
+  const safe = payload && typeof payload === 'object' && 'type' in payload
+    ? truncateQueryResultEvent(payload as GenieStreamEvent)
+    : payload;
+  const ok = res.write(`data: ${JSON.stringify(safe)}\n\n`);
+  if (!ok && !res.destroyed) {
+    await new Promise<void>((resolve) => res.once('drain', resolve));
+  }
+  return !res.destroyed;
+}
+
 function openSseStream(res: Response): void {
   res.status(200);
   res.setHeader('Content-Type', 'text/event-stream');
@@ -133,15 +149,25 @@ createApp({
           const reader = specResp.body.getReader() as ReadableStreamDefaultReader<Uint8Array>;
           try {
             for (;;) {
+              if (res.destroyed) break;
               const chunk = await reader.read();
               if (chunk.done) break;
-              res.write(chunk.value);
+              const ok = res.write(chunk.value);
+              if (!ok && !res.destroyed) {
+                await new Promise<void>((resolve) => res.once('drain', resolve));
+              }
+            }
+          } catch {
+            // Upstream stream broke mid-transfer. If headers already sent, write a
+            // JSONL error line so useUIStream can detect the failure instead of hanging.
+            if (res.headersSent && !res.destroyed) {
+              res.write(JSON.stringify({ error: 'Upstream spec stream interrupted.' }) + '\n');
             }
           } finally {
             reader.releaseLock();
           }
         }
-        res.end();
+        if (!res.destroyed) res.end();
       } catch (error) {
         if (!res.headersSent) {
           res.status(502).json({
@@ -192,10 +218,10 @@ createApp({
         openSseStream(res);
 
         for await (const event of appKit.genie.asUser(req).sendMessage(alias, content, conversationId)) {
-          writeSseEvent(res, event);
+          if (!await writeSseEventSafe(res, event)) break;
         }
 
-        res.end();
+        if (!res.destroyed) res.end();
       } catch (error) {
         if (!res.headersSent) {
           res.status(500).json({ error: 'Failed to stream Genie response.' });
@@ -225,20 +251,23 @@ createApp({
         const conversation = await appKit.genie.asUser(req).getConversation(alias, conversationId);
         openSseStream(res);
 
+        let disconnected = false;
         for (const message of conversation.messages) {
-          writeSseEvent(res, {
-            type: 'message_result',
-            message,
-          });
+          if (!await writeSseEventSafe(res, { type: 'message_result', message })) {
+            disconnected = true;
+            break;
+          }
         }
 
-        writeSseEvent(res, {
-          type: 'history_info',
-          conversationId: conversation.conversationId,
-          spaceId: conversation.spaceId,
-          nextPageToken: null,
-          loadedCount: conversation.messages.length,
-        });
+        if (!disconnected) {
+          await writeSseEventSafe(res, {
+            type: 'history_info',
+            conversationId: conversation.conversationId,
+            spaceId: conversation.spaceId,
+            nextPageToken: null,
+            loadedCount: conversation.messages.length,
+          });
+        }
 
         res.end();
       } catch (error) {

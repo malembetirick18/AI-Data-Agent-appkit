@@ -20,12 +20,11 @@ from __future__ import annotations
 import json
 import os
 from collections.abc import AsyncIterable
-from typing import Any, Union
 
 import dspy
 import mlflow
 from dspy.streaming import StatusMessage, StreamListener, StreamResponse
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -47,11 +46,12 @@ class ControllerResponse(BaseModel):
     suggestedFunctions: list[str] = []
     requiredColumns: list[str] = []
     predictiveFunctions: list[str] = []
-    questions: list[Any] = []
+    questions: list[dict] = []
     queryClassification: str | None = None
     coherenceNote: str = ""
     needsParams: bool = False
     reasoning: str = ""
+    guardrailSource: str | None = None
 
 
 class ControllerRequest(BaseModel):
@@ -62,7 +62,7 @@ class ControllerRequest(BaseModel):
 
 class SpecRequest(BaseModel):
     prompt: str
-    genie_result: Union[dict, list, str, None] = None
+    genie_result: dict | None = None
     questions: list[dict] | None = None  # ControllerQuestion[] from client (for clarification specs)
 
 
@@ -89,14 +89,20 @@ def _serialize_questions(questions: list[dict]) -> str:
         "Questions:",
     ]
     for i, q in enumerate(questions, 1):
+        if not isinstance(q, dict):
+            continue
         q_id = q.get("id", "")
         q_label = q.get("label", "")
         q_type = _INPUT_TYPE_LABELS.get(q.get("inputType", "text"), "text input")
         q_required = " (required)" if q.get("required") else " (optional)"
         parts = [f"{i}. [id={q_id}, type={q_type}, $bindState=/{q_id}] {q_label}{q_required}"]
-        if q.get("options"):
-            opts = ", ".join(o.get("label", o.get("value", "")) for o in q["options"])
-            parts.append(f"   options: {opts}")
+        raw_options = q.get("options")
+        if isinstance(raw_options, list) and raw_options:
+            opts = ", ".join(
+                o.get("label", o.get("value", "")) for o in raw_options if isinstance(o, dict)
+            )
+            if opts:
+                parts.append(f"   options: {opts}")
         if q.get("min") is not None or q.get("max") is not None:
             bounds = f"   bounds: min={q.get('min', 'none')} max={q.get('max', 'none')}"
             if q.get("step") is not None:
@@ -104,7 +110,72 @@ def _serialize_questions(questions: list[dict]) -> str:
             parts.append(bounds)
         if q_id == "sp_folder_id":
             parts.append("   visibility: only show when scope_level = 'filiale'")
+        if q_id == "period_year":
+            parts.append("   visibility: only show when period_type has a value")
         lines.extend(parts)
+    return "\n".join(lines)
+
+
+_NUMERIC_TYPES = frozenset({
+    "INT", "INTEGER", "BIGINT", "LONG", "SHORT", "TINYINT",
+    "FLOAT", "DOUBLE", "DECIMAL", "NUMERIC", "NUMBER",
+})
+
+
+def _is_numeric_type(type_name: str) -> bool:
+    upper = (type_name or "STRING").upper()
+    return upper in _NUMERIC_TYPES or upper.startswith("DECIMAL")
+
+
+def _extract_column_metadata(genie_result: dict | list | str | None) -> str:
+    """Extract a markdown table of column names and types from a Genie result payload.
+
+    Walks queryResults → values → manifest.schema.columns to surface column metadata
+    that is otherwise buried in the raw JSON blob.  Returns an empty string when no
+    column information can be found (e.g. clarification-only requests).
+    """
+    if not isinstance(genie_result, dict):
+        return ""
+
+    # The client sends { queryResults: { [queryId]: GenieStatementResponse } }
+    query_results = genie_result.get("queryResults")
+    if not isinstance(query_results, dict):
+        return ""
+
+    columns: list[tuple[str, str, bool]] = []  # (name, type, is_numeric)
+    for statement in query_results.values():
+        if not isinstance(statement, dict):
+            continue
+        manifest = statement.get("manifest")
+        if not isinstance(manifest, dict):
+            continue
+        schema = manifest.get("schema")
+        if not isinstance(schema, dict):
+            continue
+        for col in schema.get("columns", []):
+            if not isinstance(col, dict):
+                continue
+            name = col.get("name", "")
+            type_name = col.get("type_name", "STRING")
+            if name:
+                columns.append((name, type_name, _is_numeric_type(type_name)))
+        if columns:
+            break  # use first statement with columns
+
+    if not columns:
+        return ""
+
+    lines = [
+        "## Column Metadata",
+        "IMPORTANT: When generating chart specs, only assign numeric columns (Numeric? = Yes) "
+        "to yKey, series[].yKey, angleKey, radiusKey, sizeKey. "
+        "Use string/date columns for xKey, labelKey.",
+        "",
+        "| Column | Type | Numeric? |",
+        "|--------|------|----------|",
+    ]
+    for name, type_name, is_num in columns:
+        lines.append(f"| {name} | {type_name} | {'Yes' if is_num else 'No'} |")
     return "\n".join(lines)
 
 
@@ -121,11 +192,7 @@ def _build_spec_prompt(request: SpecRequest) -> str:
         parts.append(f"Context (do NOT render as TextContent — render only the FormPanel above): {request.prompt}")
         if request.genie_result:
             try:
-                genie_data = (
-                    json.dumps(request.genie_result)
-                    if not isinstance(request.genie_result, str)
-                    else request.genie_result
-                )
+                genie_data = json.dumps(request.genie_result)
             except (TypeError, ValueError) as exc:
                 raise HTTPException(
                     status_code=400,
@@ -137,12 +204,12 @@ def _build_spec_prompt(request: SpecRequest) -> str:
     # No questions — standard data-viz spec generation
     parts = [request.prompt]
     if request.genie_result:
+        # Surface column metadata so the LLM knows which columns are numeric
+        col_meta = _extract_column_metadata(request.genie_result)
+        if col_meta:
+            parts.append(col_meta)
         try:
-            genie_data = (
-                json.dumps(request.genie_result)
-                if not isinstance(request.genie_result, str)
-                else request.genie_result
-            )
+            genie_data = json.dumps(request.genie_result)
         except (TypeError, ValueError) as exc:
             raise HTTPException(
                 status_code=400,
@@ -167,6 +234,7 @@ def _prediction_to_controller_response(result: dspy.Prediction) -> ControllerRes
         queryClassification=result.get("queryClassification"),
         coherenceNote=result.get("coherenceNote", ""),
         needsParams=bool(result.get("needsParams", False)),
+        guardrailSource=result.get("guardrailSource"),
     )
 
 
@@ -270,12 +338,17 @@ logger.info(
 
 app = FastAPI(root_path="/api", title="Semantic layer API", version="0.1.0")
 
+_cors_origins_raw = os.getenv("CORS_ALLOWED_ORIGINS", "")
+_cors_origins = [o.strip() for o in _cors_origins_raw.split(",") if o.strip()] if _cors_origins_raw else ["*"]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_cors_origins,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+if _cors_origins == ["*"]:
+    logger.warning("CORS_ALLOWED_ORIGINS not set — allowing all origins. Set this env var in production.")
 
 
 DEFAULT_SUGGESTIONS: list[str] = [
@@ -313,63 +386,68 @@ async def get_suggestions():
 # ── Controller endpoint (SSE) ────────────────────────────────────────────────
 
 @app.post("/chat/stream", response_class=StreamingResponse)
-async def stream_chat(request: ControllerRequest) -> AsyncIterable[str]:
+async def stream_chat(body: ControllerRequest, http_request: Request) -> AsyncIterable[str]:
     """Stream controller decision as Server-Sent Events.
 
     Yields status messages while the LM is running, then emits the final
     controller_decision event once the Prediction is ready.
     """
-    catalog_source = "payload" if request.catalog_info else "default"
+    catalog_source = "payload" if body.catalog_info else "default"
     logger.info(
         "[chat/stream] prompt=%r catalog=%s",
-        request.source_text[:80],
+        body.source_text[:80],
         catalog_source,
     )
 
-    catalog = request.catalog_info or default_catalog_info
+    catalog = body.catalog_info or default_catalog_info
     conversation_context = (
-        json.dumps(request.conversation_context)
-        if request.conversation_context
+        json.dumps(body.conversation_context)
+        if body.conversation_context
         else ""
     )
 
     reasoning_parts: list[str] = []
 
     try:
-         async for chunk in stream_controller(
-                source_text=request.source_text,
-                catalog_info=catalog,
-                conversation_context=conversation_context,
-            ):
-                if isinstance(chunk, StatusMessage):
-                    yield f"event: status\ndata: {json.dumps({'message': chunk.message})}\n\n"
+        async for chunk in stream_controller(
+            source_text=body.source_text,
+            catalog_info=catalog,
+            conversation_context=conversation_context,
+        ):
+            # Stop streaming if the client disconnected — avoids wasting LLM calls.
+            if await http_request.is_disconnected():
+                logger.info("[chat/stream] client disconnected, stopping stream")
+                break
 
-                elif isinstance(chunk, StreamResponse):
-                    # Accumulate reasoning tokens from controller_decision predictor
-                    if chunk.chunk:
-                        reasoning_parts.append(chunk.chunk)
-                    yield (
-                        f"event: reasoning_token\n"
-                        f"data: {json.dumps({'chunk': chunk.chunk})}\n\n"
-                    )
+            if isinstance(chunk, StatusMessage):
+                yield f"event: status\ndata: {json.dumps({'message': chunk.message})}\n\n"
 
-                elif isinstance(chunk, dspy.Prediction):
-                    response = _prediction_to_controller_response(chunk)
-                    # Inject reasoning assembled from the stream, not from the Prediction
-                    response.reasoning = "".join(reasoning_parts)
-                    logger.info(
-                        "[chat/stream] → decision=%s confidence=%.2f classification=%s questions=%d",
-                        response.decision,
-                        response.confidence,
-                        response.queryClassification or "-",
-                        len(response.questions),
-                    )
-                    payload = {"role": "controller", "data": response.model_dump()}
-                    yield f"event: controller_decision\ndata: {json.dumps(payload)}\n\n"
+            elif isinstance(chunk, StreamResponse):
+                # Accumulate reasoning tokens from controller_decision predictor
+                if chunk.chunk:
+                    reasoning_parts.append(chunk.chunk)
+                yield (
+                    f"event: reasoning_token\n"
+                    f"data: {json.dumps({'chunk': chunk.chunk})}\n\n"
+                )
+
+            elif isinstance(chunk, dspy.Prediction):
+                response = _prediction_to_controller_response(chunk)
+                # Inject reasoning assembled from the stream, not from the Prediction
+                response.reasoning = "".join(reasoning_parts)
+                logger.info(
+                    "[chat/stream] → decision=%s confidence=%.2f classification=%s questions=%d",
+                    response.decision,
+                    response.confidence,
+                    response.queryClassification or "-",
+                    len(response.questions),
+                )
+                payload = {"role": "controller", "data": response.model_dump()}
+                yield f"event: controller_decision\ndata: {json.dumps(payload)}\n\n"
 
     except Exception as exc:
         logger.error("[chat/stream] LLM call failed: %s", exc, exc_info=True)
-        error_payload = json.dumps({"error": f"LLM controller error: {exc}"})
+        error_payload = json.dumps({"error": "Une erreur interne est survenue lors de l'analyse."})
         yield f"event: error\ndata: {error_payload}\n\n"
            
 
@@ -377,28 +455,33 @@ async def stream_chat(request: ControllerRequest) -> AsyncIterable[str]:
 # ── Spec generation endpoint (JSONL stream) ──────────────────────────────────
 
 @app.post("/spec/generate", response_class=StreamingResponse)
-async def generate_spec(request: SpecRequest) -> AsyncIterable[str]:
+async def generate_spec(body: SpecRequest, http_request: Request) -> AsyncIterable[str]:
     """Stream GenUI spec patches as JSONL lines.
 
     Each line is a complete JSON patch object. Status messages are emitted
     as SSE-style comments (lines prefixed with `#`) so they don't break
     JSONL consumers but can be consumed by aware clients.
     """
-    if not request.prompt:
+    if not body.prompt:
         raise HTTPException(status_code=400, detail="prompt is required")
 
-    user_content = _build_spec_prompt(request)
+    user_content = _build_spec_prompt(body)
     logger.info(
         "[spec/generate] prompt=%r has_data=%s has_questions=%s",
-        request.prompt[:80],
-        bool(request.genie_result),
-        bool(request.questions),
+        body.prompt[:80],
+        bool(body.genie_result),
+        bool(body.questions),
     )
 
     try:
         async for chunk in stream_spec(
             user_prompt=user_content,
         ):
+            # Stop streaming if the client disconnected — avoids wasting LLM calls.
+            if await http_request.is_disconnected():
+                logger.info("[spec/generate] client disconnected, stopping stream")
+                break
+
             if isinstance(chunk, StatusMessage):
                 # Emit as a comment — JSONL readers ignore these
                 yield f"# {chunk.message}\n"
@@ -422,8 +505,12 @@ async def generate_spec(request: SpecRequest) -> AsyncIterable[str]:
                             yield stripped + "\n"
                 else:
                     logger.error("[spec/generate] LLM produced empty spec_patches")
+                    # Yield a valid JSONL error object so the client can detect the failure
+                    # instead of hanging indefinitely waiting for patches.
+                    yield json.dumps({"error": "LLM produced empty spec_patches"}) + "\n"
 
     except Exception as exc:
         logger.error("[spec/generate] failed during streaming: %s", exc, exc_info=True)
-        yield f"# error: {exc}\n"
+        # Yield a valid JSONL error object (not a comment) so clients can detect the failure.
+        yield json.dumps({"error": "Une erreur interne est survenue lors de la génération."}) + "\n"
             

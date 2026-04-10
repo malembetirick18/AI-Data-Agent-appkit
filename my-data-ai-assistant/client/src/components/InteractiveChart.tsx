@@ -86,8 +86,8 @@ const InteractiveChart = memo(function InteractiveChart({
   const isBubble = chartType === 'bubble'
 
   const activeLabelKey = labelKey || stringColumns[0] || allColumns[0] || ''
-  const activeValueKey = valueKey || numericColumns.find(c => c !== activeLabelKey) || numericColumns[0] || ''
-  const activeSizeKey = sizeKey || numericColumns.find(c => c !== xKey && !yKeys.includes(c)) || numericColumns[0] || ''
+  const activeValueKey = valueKey || numericColumns.find(c => c !== activeLabelKey) || ''
+  const activeSizeKey = sizeKey || numericColumns.find(c => c !== xKey && !yKeys.includes(c)) || ''
 
   const allColOptions = useMemo(() => allColumns.map(col => ({ value: col, label: formatColumnLabel(col) })), [allColumns])
   const numColOptions = useMemo(() => numericColumns.map(col => ({ value: col, label: formatColumnLabel(col) })), [numericColumns])
@@ -129,10 +129,20 @@ const InteractiveChart = memo(function InteractiveChart({
     setChartType(type)
     if (RADIAL_TYPES.has(type)) {
       if (!labelKey) setLabelKey(stringColumns[0] || allColumns[0] || '')
-      if (!valueKey) setValueKey(numericColumns[0] || '')
+      if (!valueKey) setValueKey(numericColumns.find(c => c !== (labelKey || stringColumns[0] || allColumns[0] || '')) || '')
+    } else {
+      // Switching to cartesian — ensure yKeys are populated (pie/donut don't use them)
+      if (yKeys.length === 0) {
+        const defaultX = xKey || stringColumns[0] || allColumns[0] || ''
+        const avail = numericColumns.filter(c => c !== defaultX)
+        if (avail[0]) setYKeys([avail[0]])
+      }
     }
     if (type === 'bubble' && !sizeKey) {
-      setSizeKey(numericColumns.find(c => c !== xKey && !yKeys.includes(c)) || numericColumns[0] || '')
+      setSizeKey(numericColumns.find(c => c !== xKey && !yKeys.includes(c)) || '')
+    }
+    if (type !== 'bubble') {
+      setSizeKey('')
     }
   }
 
@@ -145,43 +155,45 @@ const InteractiveChart = memo(function InteractiveChart({
     if (chartType === 'bar') {
       return [...data].sort((a, b) => Number(b[activeYKeys[0]] ?? 0) - Number(a[activeYKeys[0]] ?? 0))
     }
-    const xIsNumeric = !isNaN(Number(data[0][xKey]))
+    const xIsNumeric = numericColumns.includes(xKey)
     return [...data].sort((a, b) => {
       const va = xIsNumeric ? Number(a[xKey]) : String((a[xKey] ?? '') as string | number | boolean)
       const vb = xIsNumeric ? Number(b[xKey]) : String((b[xKey] ?? '') as string | number | boolean)
       return typeof va === 'number' ? (va) - (vb as number) : (va).localeCompare(vb as string)
     })
-  }, [data, chartType, xKey, activeYKeys, activeValueKey, isRadial])
+  }, [data, chartType, xKey, activeYKeys, activeValueKey, isRadial, numericColumns])
 
   const chartTitle = title ? { text: title, fontSize: 12, fontWeight: 'bold' as const } : undefined
-  const datumColorIndex = useMemo(() => new Map(sortedData.map((d, i) => [d, i])), [sortedData])
-  const bubbleXIsNumeric = numericColumns.includes(xKey)
-  const bubbleData = useMemo(
-    () => bubbleXIsNumeric ? sortedData : sortedData.map((d, i) => ({ ...d, _xIdx: i })),
-    [sortedData, bubbleXIsNumeric]
+  // Tag every datum with a stable numeric index for color lookup.
+  // Object-reference Map keys break when AG Charts clones datum objects internally.
+  const indexedData = useMemo(
+    () => sortedData.map<Record<string, unknown>>((d, i) => ({ ...d, _colorIdx: i })),
+    [sortedData]
   )
-  const bubbleDatumColorIndex = useMemo(
-    () => new Map(bubbleData.map((d, i) => [d, i])),
-    [bubbleData]
+  const bubbleXIsNumeric = numericColumns.includes(xKey)
+  // Always include _xIdx so it survives bubbleXIsNumeric flips without losing the field
+  const bubbleData = useMemo(
+    () => indexedData.map<Record<string, unknown>>((d, i) => ({ ...d, _xIdx: i })),
+    [indexedData]
   )
 
   let options: object
   if (chartType === 'pie') {
     options = {
-      data: sortedData, title: chartTitle,
+      data: indexedData, title: chartTitle,
       series: [{ type: 'pie' as const, angleKey: activeValueKey, legendItemKey: activeLabelKey }],
       autoSize: true, legend: { position: 'right' as const },
     }
   } else if (chartType === 'donut') {
     options = {
-      data: sortedData, title: chartTitle,
+      data: indexedData, title: chartTitle,
       series: [{ type: 'donut' as const, angleKey: activeValueKey, legendItemKey: activeLabelKey, innerRadiusRatio: 0.6 }],
       autoSize: true, legend: { position: 'right' as const },
     }
   } else if (chartType === 'radar') {
     const radarKeys = activeYKeys.length > 0 ? activeYKeys : [activeValueKey]
     options = {
-      data: sortedData.slice(0, 10), title: chartTitle,
+      data: indexedData.slice(0, 10), title: chartTitle,
       series: radarKeys.map((rk, i) => {
         const colorIdx = numericColumns.indexOf(rk) >= 0 ? numericColumns.indexOf(rk) : i
         return {
@@ -207,7 +219,7 @@ const InteractiveChart = memo(function InteractiveChart({
         yName: formatColumnLabel(yKey),
         ...(isSingleBubbleSeries ? {
           itemStyler: (params: { datum: Record<string, unknown> }) => {
-            const idx = bubbleDatumColorIndex.get(params.datum) ?? 0
+            const idx = (params.datum._colorIdx as number) ?? 0
             return { fill: categoryColor(idx), stroke: categoryColor(idx) }
           },
         } : {}),
@@ -234,12 +246,12 @@ const InteractiveChart = memo(function InteractiveChart({
     const isSingleBarSeries = chartType === 'bar' && activeYKeys.length === 1
     const xIsDate = (chartType === 'line' || chartType === 'area') && isIsoDateColumn(sortedData, xKey)
     options = {
-      data: sortedData, title: chartTitle,
+      data: indexedData, title: chartTitle,
       series: activeYKeys.map((yKey, i) => ({
         type: chartType, xKey, yKey, yName: formatColumnLabel(yKey),
         ...(isSingleBarSeries ? {
           itemStyler: (params: { datum: Record<string, unknown> }) => {
-            const idx = datumColorIndex.get(params.datum) ?? 0
+            const idx = (params.datum._colorIdx as number) ?? 0
             return { fill: categoryColor(idx), stroke: categoryColor(idx) }
           },
         } : {}),
@@ -305,6 +317,8 @@ const InteractiveChart = memo(function InteractiveChart({
 
     // line / area / bar
     if (activeYKeys.length === 0 || !xKey) return false
+    // Validate xKey is an actual column in the data
+    if (!sortedData.some(d => d[xKey] !== undefined)) return false
     // Line/area with a single distinct X value has no path to draw
     if (chartType === 'line' || chartType === 'area') {
       const distinctX = new Set(sortedData.map(d => String((d[xKey] as string | number | null | undefined) ?? ''))).size

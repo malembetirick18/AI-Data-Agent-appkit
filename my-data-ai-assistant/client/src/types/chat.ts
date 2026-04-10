@@ -27,7 +27,6 @@ export interface ControllerApiResponse {
   decision: 'clarify' | 'guide' | 'proceed' | 'error'
   message: string
   rewrittenPrompt?: string
-  enrichedPrompt?: string
   suggestedTables?: string[]
   suggestedFunctions?: string[]
   questions?: ControllerQuestion[]
@@ -35,11 +34,14 @@ export interface ControllerApiResponse {
   requiredColumns?: string[]
   predictiveFunctions?: string[]
   queryClassification?: string
+  coherenceNote?: string
   model?: string
   catalogSource?: 'payload' | 'env-json' | 'env-file' | 'empty'
   needsParams?: boolean
   reasoning?: string
   periodOptions?: Array<{ label: string; value: string }>
+  /** Set when a guardrail (scope/temporal) overrode the original decision to 'clarify'. */
+  guardrailSource?: 'scope' | 'temporal' | null
 }
 
 export interface ControllerConversationContext {
@@ -54,12 +56,13 @@ export interface PendingClarification {
   message: string
   decision: 'clarify' | 'guide' | 'proceed' | 'error'
   rewrittenPrompt?: string
-  enrichedPrompt?: string
   questions: ControllerQuestion[]
   suggestedTables: string[]
   suggestedFunctions: string[]
   canSendDirectly?: boolean
   needsParams?: boolean
+  /** Set when a guardrail (scope/temporal) overrode the original decision to 'clarify'. */
+  guardrailSource?: 'scope' | 'temporal' | null
 }
 
 export interface Message {

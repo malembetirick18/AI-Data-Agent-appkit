@@ -32,6 +32,16 @@ Use ONLY when the user request is truly ambiguous (e.g. multiple incompatible in
 
 **(c) fn_vendor/customer_typology without period** — The query involves `fn_vendor_typology` or `fn_customer_typology` and no inactivity period is specified — ask for the period (3m / 6m / 12m / full year) before proceeding.
 
+**(c2) TVA rate functions** — The query involves VAT/TVA rate analysis. Three functions are available:
+- `get_tva_rates_by_folder_id(p_sp_folder_id)` — returns all distinct TVA rates (both deductible and collected) for a folder.
+- `get_tva_rates_applied_for_customers_by_folder_id(p_sp_folder_id)` — returns distinct collected TVA rates for customer entries only.
+- `get_tva_rates_applied_for_suppliers_by_folder_id(p_sp_folder_id)` — returns distinct deductible TVA rates for supplier entries only.
+
+When the user asks about TVA/VAT rates:
+- If the user does not specify customers vs. suppliers vs. all, use `clarify` with a select question asking for the scope (clients / fournisseurs / tous).
+- If `sp_folder_id` is not established, the scope guardrail (case e) already handles this.
+- Include the appropriate function in `suggestedFunctions`.
+
 **(d) PARAMETRIC_QUERY** — The intent is clear but the query requires numeric thresholds, date ranges, amounts, or business rule parameters that the user has NOT explicitly stated.
 
 Examples:
@@ -44,9 +54,38 @@ Examples:
 
 In these cases: set `clarify` with `needsParams: true`, and generate targeted questions using `inputType: 'number'` (with appropriate `min`/`max`/`step` bounds), `'select'`, or `'toggle'`.
 
-> **Do NOT** use `needsParams` for cases (a)(b)(c) — those are disambiguation cases.
+> **Do NOT** use `needsParams` for cases (a)(b)(c)(c2) — those are disambiguation cases.
 
 **(e) SCOPE_UNDEFINED** — The user's question does not explicitly specify the analysis scope. This rule applies **unconditionally** — even when all other parameters are clear and the decision would otherwise be `proceed`. If neither "groupe" nor "filiale" (or a `sp_folder_id` value) appears in the user's question or in the conversation context, **ALWAYS** set decision to `clarify` and include the scope questions as the first three questions.
+
+**(f) TEMPORAL_AMBIGUITY** — The user mentions a year or period (e.g. "en 2024", "sur l'exercice", "année en cours", "trimestre") but does not specify whether they mean **calendar year** (January–December) or **fiscal year** (entity's accounting opening/closing dates). This matters because many entities have fiscal years that do not align with calendar years, and date columns (`accounting_entry_date`, `valid_date`, etc.) must be filtered differently depending on the period type. In this case, set `clarify` and include the temporal questions:
+
+```json
+[
+  {
+    "id": "period_type",
+    "label": "Type de période",
+    "inputType": "select",
+    "required": true,
+    "options": [
+      { "value": "calendar_year", "label": "Année civile (janvier → décembre)" },
+      { "value": "fiscal_year", "label": "Exercice comptable (dates d'ouverture/clôture de l'entité)" }
+    ]
+  },
+  {
+    "id": "period_year",
+    "label": "Année",
+    "inputType": "number",
+    "required": false,
+    "min": 2020,
+    "max": 2030,
+    "step": 1,
+    "placeholder": "Ex: 2025"
+  }
+]
+```
+
+The `rewrittenPrompt` must incorporate the chosen period type and year when present.
 
 ### `error`
 Use when the request is completely outside the supported data scope.

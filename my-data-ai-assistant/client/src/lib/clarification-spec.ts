@@ -91,6 +91,10 @@ export function questionsToSpec(pc: PendingClarification): GenericUiSpec | null 
     if (question.id === 'sp_folder_id') {
       element.visible = { $state: '/scope_level', eq: 'filiale' }
     }
+    // period_year is only shown once a period_type has been selected
+    if (question.id === 'period_year') {
+      element.visible = { $state: '/period_type' }
+    }
 
     elements[elementKey] = element
     childKeys.push(elementKey)

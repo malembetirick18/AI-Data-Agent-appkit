@@ -1,6 +1,7 @@
 import { useState, useRef, useCallback } from 'react'
 import { useUIStream } from '@json-render/react'
 import type { GenericUiSpec, PendingClarification } from '../types/chat'
+import { validateChartSpec } from '../lib/genie-utils'
 
 export function useSpecStreaming() {
   const [generatedSpecs, setGeneratedSpecs] = useState<Record<string, GenericUiSpec>>({})
@@ -18,7 +19,8 @@ export function useSpecStreaming() {
     onComplete: (spec) => {
       const id = streamingSpecMessageIdRef.current
       if (id) {
-        setGeneratedSpecs((prev) => (prev[id] ? prev : { ...prev, [id]: spec }))
+        const validated = validateChartSpec(spec)
+        setGeneratedSpecs((prev) => (prev[id] ? prev : { ...prev, [id]: validated }))
         streamingSpecMessageIdRef.current = null
         setStreamingSpecMessageId(null)
       }

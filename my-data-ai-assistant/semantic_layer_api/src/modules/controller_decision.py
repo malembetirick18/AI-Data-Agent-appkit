@@ -79,8 +79,15 @@ def _validate_against_catalog(
         cleaned = [v for v in original if v in valid_set]
         if len(cleaned) != len(original):
             # High-confidence trust: if Phase-3 was very confident and stripping would
-            # empty suggestedTables, trust the LLM — the catalog may be incomplete.
-            if key == "suggestedTables" and not cleaned and phase3_confidence >= _HIGH_CONFIDENCE_THRESHOLD:
+            # empty the field, trust the LLM — the catalog may be incomplete.
+            # Applies to tables AND functions (Bug 29 originally covered only tables;
+            # extended to functions to prevent valid SQL functions from being stripped
+            # when the catalog index is incomplete).
+            if (
+                key in {"suggestedTables", "suggestedFunctions", "predictiveFunctions"}
+                and not cleaned
+                and phase3_confidence >= _HIGH_CONFIDENCE_THRESHOLD
+            ):
                 continue
             removed[key] = [v for v in original if v not in valid_set]
             decision[key] = cleaned
@@ -178,10 +185,47 @@ _SCOPE_QUESTIONS: list[dict] = [
 ]
 
 
-def _scope_established(source_text: str, conversation_context: str) -> bool:
+def _scope_established(combined_lower: str) -> bool:
     """Return True if analysis scope is already known from the prompt or conversation."""
-    combined = (source_text + " " + conversation_context).lower()
-    return any(kw in combined for kw in _SCOPE_KEYWORDS)
+    return any(kw in combined_lower for kw in _SCOPE_KEYWORDS)
+
+
+# ── Temporal guardrail ───────────────────────────────────────────────────────
+# When the user mentions a year/period but doesn't specify calendar vs fiscal,
+# inject temporal clarification questions.
+_TEMPORAL_KEYWORDS = {"année", "annee", "exercice", "year", "fiscal", "trimestre", "semestre"}
+_TEMPORAL_DISAMBIGUATED = {"année civile", "annee civile", "exercice comptable", "fiscal year", "calendar year"}
+
+_TEMPORAL_QUESTIONS: list[dict] = [
+    {
+        "id": "period_type",
+        "label": "Type de période",
+        "inputType": "select",
+        "required": True,
+        "options": [
+            {"value": "calendar_year", "label": "Année civile (janvier → décembre)"},
+            {"value": "fiscal_year", "label": "Exercice comptable (dates d'ouverture/clôture de l'entité)"},
+        ],
+    },
+    {
+        "id": "period_year",
+        "label": "Année",
+        "inputType": "number",
+        "required": False,
+        "min": 2020,
+        "max": 2030,
+        "step": 1,
+        "placeholder": "Ex: 2025",
+    },
+]
+
+
+def _temporal_ambiguous(combined_lower: str) -> bool:
+    """Return True if the user mentions a year/period but hasn't disambiguated calendar vs fiscal."""
+    has_temporal = any(kw in combined_lower for kw in _TEMPORAL_KEYWORDS)
+    if not has_temporal:
+        return False
+    return not any(term in combined_lower for term in _TEMPORAL_DISAMBIGUATED)
 
 
 # ── Controller agent ──────────────────────────────────────────────────────────
@@ -318,12 +362,20 @@ class ControllerDecision(dspy.Module):
             else:
                 logger.debug("Phase-3b catalog validation clean")
 
-        # ── Scope guardrail ──────────────────────────────────────────────────
-        # Runs before Reflexion so scope-forced clarify decisions never enter
-        # the costly Phase 3c+4 path.
-        if not _scope_established(source_text, conversation_context):
+        # ── Guardrails ────────────────────────────────────────────────────────
+        # Compute the combined lowered string once for both guardrails.
+        _combined_lower = (source_text + " " + conversation_context).lower()
+
+        # Scope guardrail — runs before Reflexion so scope-forced clarify
+        # decisions never enter the costly Phase 3c+4 path.
+        if not _scope_established(_combined_lower):
             raw_questions = decision.get("questions", [])
             existing_questions: list[dict] = raw_questions if isinstance(raw_questions, list) else []
+            # Guard against LLM hallucinating a question with the exact guardrail id:
+            # remove any existing question whose id matches a guardrail question id before
+            # checking, so the well-formed guardrail version always takes precedence.
+            _scope_ids = {q["id"] for q in _SCOPE_QUESTIONS}
+            existing_questions = [q for q in existing_questions if not (isinstance(q, dict) and q.get("id") in _scope_ids)]
             has_scope = any(isinstance(q, dict) and q.get("id") == "scope_level" for q in existing_questions)
             if not has_scope:
                 logger.info("Scope guardrail fired — overriding to 'clarify', injecting %d scope questions",
@@ -333,6 +385,26 @@ class ControllerDecision(dspy.Module):
                 if not decision.get("message"):
                     decision["message"] = "Veuillez préciser le périmètre d'analyse avant de continuer."
                 decision["confidence"] = min(float(decision.get("confidence", 0.0)), 0.35)
+                decision["guardrailSource"] = "scope"
+
+        # Temporal guardrail — when a year/period is mentioned but calendar vs
+        # fiscal is not disambiguated, inject temporal questions.
+        if _temporal_ambiguous(_combined_lower):
+            raw_questions = decision.get("questions", [])
+            existing_questions: list[dict] = raw_questions if isinstance(raw_questions, list) else []
+            # Same guard as scope: strip any LLM-hallucinated temporal question ids first
+            _temporal_ids = {q["id"] for q in _TEMPORAL_QUESTIONS}
+            existing_questions = [q for q in existing_questions if not (isinstance(q, dict) and q.get("id") in _temporal_ids)]
+            has_temporal = any(isinstance(q, dict) and q.get("id") == "period_type" for q in existing_questions)
+            if not has_temporal:
+                logger.info("Temporal guardrail fired — injecting %d temporal questions",
+                             len(_TEMPORAL_QUESTIONS))
+                decision["decision"] = "clarify"
+                decision["questions"] = existing_questions + _TEMPORAL_QUESTIONS
+                if not decision.get("message"):
+                    decision["message"] = "Veuillez préciser le type de période d'analyse."
+                decision["confidence"] = min(float(decision.get("confidence", 0.0)), 0.40)
+                decision.setdefault("guardrailSource", "temporal")
 
         # ── Phases 3c + 4 — Full Reflexion cycle (production only) ──────────────────────────
         # Reflexion pattern (Shinn et al., 2023):
@@ -345,6 +417,7 @@ class ControllerDecision(dspy.Module):
         # Single reflection+correction cycle per request (synchronous latency constraint).
         # A second programmatic validation after correction closes the evaluation loop.
         _has_reflection_signal = bool(removed) or bool(coherence_note)
+        pre_reflexion_decision = dict(decision)  # snapshot for fallback
         if (
             self.self_reflect is not None
             and self.correct_decision is not None
@@ -399,7 +472,21 @@ class ControllerDecision(dspy.Module):
                     corrected, _ = _validate_against_catalog(corrected, catalog_index)
                 logger.info("Phase-4 corrected decision=%r confidence=%.2f",
                              corrected.get("decision"), float(corrected.get("confidence", 0.0)))
-                decision = corrected
+                # Guard: 'clarify' with 0 questions is a dead-end — the client has
+                # nothing to show and the retry counter increments silently, leading
+                # to the max-3 exhaustion message.  Fall back to the pre-Reflexion
+                # decision (typically 'guide') which lets the user confirm or reject.
+                corrected_questions = corrected.get("questions") or []
+                if corrected.get("decision") == "clarify" and not corrected_questions:
+                    logger.warning(
+                        "Phase-4 produced 'clarify' with 0 questions — "
+                        "falling back to pre-Reflexion decision=%r confidence=%.2f",
+                        pre_reflexion_decision.get("decision"),
+                        float(pre_reflexion_decision.get("confidence", 0.0)),
+                    )
+                    decision = pre_reflexion_decision
+                else:
+                    decision = corrected
             except Exception as exc:
                 logger.warning(
                     "Reflexion cycle (3c+4) failed (non-fatal) — keeping Phase 3b decision. Error: %s",

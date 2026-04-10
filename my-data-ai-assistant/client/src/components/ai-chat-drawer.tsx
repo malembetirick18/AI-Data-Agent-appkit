@@ -211,9 +211,12 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
   })
   const [localUserMessages, setLocalUserMessages] = useState<Message[]>([])
 
-  const [genieTimestamps] = useState<Map<string, string>>(() => new Map())
-  const [genieEpochs] = useState<Map<string, number>>(() => new Map())
-  const [enrichedToOriginal] = useState<Map<string, string>>(() => new Map())
+  const [genieTimestamps] = useState(() => new Map<string, string>())
+  const [genieEpochs] = useState(() => new Map<string, number>())
+  const [enrichedToOriginal] = useState(() => new Map<string, string>())
+  // Wall-clock time of the most recent user action.  Updated in event handlers
+  // (impure context OK); read during render to assign epochs without calling Date.now().
+  const lastActionTimeRef = useRef(0)
   const latestReasoningRef = useRef<string>('')
   // Dual-tracking: ref for stale-closure-free callbacks, state for rendering.
   // latestReasoningRef.current must NOT be read during render (react-hooks/refs).
@@ -228,14 +231,16 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
     // Populate first-seen epochs/timestamps inline to avoid a separate useEffect
     // that runs after paint — which caused new Genie messages to sort at epoch=0
     // (top of the list) for one render before the effect corrected them.
+    // Derive the base epoch from localUserMessages to avoid calling Date.now()
+    // during render (react-hooks/purity).  The latest user-message epoch is a
+    // close-enough wall time (set via Date.now() in event handlers).
+    const baseEpoch = localUserMessages.reduce((max, m) => Math.max(max, m.epoch ?? 0), 0) || 1
     for (const gm of genieMessages) {
       const key = String(gm.id)
       if (!genieTimestamps.has(key)) {
-        // eslint-disable-next-line react-hooks/purity -- intentional: Maps are stable external state; guard prevents re-stamping
-        const now = Date.now()
         // For user messages echoed by Genie, reuse the original local message's epoch so
         // the initial user question always sorts before the QR-summary clarification bubble.
-        let epoch = now
+        let epoch = baseEpoch
         if (gm.role === 'user') {
           const originalContent = enrichedToOriginal.get(gm.content.trim()) ?? gm.content.trim()
           const localMatch = localUserMessages.find((lm) => lm.content.trim() === originalContent)
@@ -303,7 +308,7 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
     })
     filtered.sort((a, b) => (a.epoch ?? 0) - (b.epoch ?? 0))
     return filtered
-  }, [genieMessages, localUserMessages, chatStatus, genieTimestamps, genieEpochs, enrichedToOriginal, latestReasoning])
+  }, [genieMessages, localUserMessages, chatStatus, latestReasoning, enrichedToOriginal, genieEpochs, genieTimestamps])
 
   const [input, setInput] = useState('')
   const [showSuggestions, setShowSuggestions] = useState(true)
@@ -319,7 +324,7 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
   } = specStreaming
 
   const messagesRef = useRef(messages)
-  messagesRef.current = messages
+  useEffect(() => { messagesRef.current = messages }, [messages])
 
   const controller = useControllerState({
     enrichedToOriginal,
@@ -363,12 +368,14 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
   })
 
   const handlePeriodConfirm = (periodLabel: string) => {
+    lastActionTimeRef.current = Date.now()
     void controller.submitPromptThroughController(`Période confirmée : ${periodLabel}`)
   }
 
   const handleSend = useCallback((text?: string) => {
     const msgText = text || input.trim()
     if (!msgText) return
+    lastActionTimeRef.current = Date.now()
 
     if (genieFollowUpRef.current) {
       genieFollowUpRef.current = false
@@ -376,10 +383,11 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
       setShowSuggestions(false)
       controller.setControllerHint(null)
       controller.setPendingClarification(null)
+      const now = lastActionTimeRef.current
       setLocalUserMessages((prev) => [...prev, {
-        id: `local-${Date.now()}`, role: 'user' as const, content: msgText,
-        timestamp: new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }),
-        epoch: Date.now(),
+        id: `local-${now}`, role: 'user' as const, content: msgText,
+        timestamp: new Date(now).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }),
+        epoch: now,
       }])
       sendMessage(msgText)
       return
@@ -404,11 +412,12 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
     lastSuggestionIndexRef.current = -1
     setShowSuggestions(true)
     controller.resetControllerState()
-  }, [reset, specStreaming, setLocalUserMessages, enrichedToOriginal, genieTimestamps, genieEpochs, controller, lastSuggestionIndexRef])
+  }, [reset, specStreaming, setLocalUserMessages, controller, lastSuggestionIndexRef, enrichedToOriginal, genieTimestamps, genieEpochs])
 
   const handleClarificationSubmit = useCallback((answers: Record<string, string>) => {
     const { pendingClarification } = controller
     if (!pendingClarification) return
+    lastActionTimeRef.current = Date.now()
 
     const questionLines = pendingClarification.questions
       .map((q) => { const v = answers[q.id]?.trim(); return v ? `- ${q.label}: ${v}` : null })
@@ -421,20 +430,20 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
     controller.setPendingClarification(null)
 
     const addQrBubble = (text: string) => {
+      const now = lastActionTimeRef.current
       enrichedToOriginal.set(text.trim(), pendingClarification.originalPrompt)
       setLocalUserMessages((prev) => [...prev, {
-        id: `qr-${Date.now()}`, role: 'user' as const, content: text,
-        timestamp: new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }),
-        epoch: Date.now(),
+        id: `qr-${now}`, role: 'user' as const, content: text,
+        timestamp: new Date(now).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }),
+        epoch: now,
       }])
     }
 
     if (pendingClarification.canSendDirectly) {
-      const promptToSend = pendingClarification.enrichedPrompt && questionLines.length > 0
-        ? `${pendingClarification.enrichedPrompt}\nClarifications:\n${questionLines.join('\n')}`
-        : pendingClarification.enrichedPrompt || clarifiedPrompt
+      // Use clarifiedPrompt directly — it already includes clarification lines when present.
+      // Do NOT re-append questionLines (that would duplicate them).
+      const promptToSend = clarifiedPrompt
       enrichedToOriginal.set(promptToSend.trim(), pendingClarification.originalPrompt)
-      enrichedToOriginal.set(clarifiedPrompt.trim(), pendingClarification.originalPrompt)
       if (qrSummary) addQrBubble(qrSummary)
       sendMessage(promptToSend)
     } else {
@@ -442,7 +451,7 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
       if (qrSummary) addQrBubble(qrSummary)
       void controller.submitPromptThroughController(clarifiedPrompt, { suppressControllerBubble: true })
     }
-  }, [controller, enrichedToOriginal, sendMessage, setLocalUserMessages])
+  }, [controller, sendMessage, setLocalUserMessages, enrichedToOriginal])
 
   const handleSpecSubmit = useCallback((specState: Record<string, unknown>) => {
     const params = Object.entries(specState)
@@ -517,7 +526,7 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
               <Paper p="md" radius="md" style={{ backgroundColor: '#f0fdf9', border: '1px solid #c3fae8' }}>
                 <Group gap="xs" mb="xs">
                   <IconBulb size={16} color="#0c8599" />
-                  <Text size="sm" fw={600} c="#0c8599">Assistant de génération de contrôles</Text>
+                  <Text size="sm" fw={600} c="#0c8599">Assistant IA de génération de contrôles</Text>
                 </Group>
                 <Text size="xs" style={{ lineHeight: 1.6 }} c="dark">
                   Cet assistant vous permet de <b>générer de nouveaux contrôles personnalisés en langage naturel</b>. Décrivez simplement le type de vérification que vous souhaitez effectuer et l{"'"}assistant analysera vos données pour produire des résultats détaillés.

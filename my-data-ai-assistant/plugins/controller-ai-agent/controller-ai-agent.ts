@@ -14,6 +14,19 @@ export type ControllerRequest = {
   conversationContext?: Record<string, unknown> | null;
 };
 
+/** Minimal question type matching the Python guardrail schema and client ControllerQuestion. */
+export type ControllerQuestion = {
+  id: string;
+  label: string;
+  inputType?: 'select' | 'text' | 'number' | 'toggle';
+  required?: boolean;
+  placeholder?: string;
+  options?: Array<{ value: string; label: string }>;
+  min?: number;
+  max?: number;
+  step?: number;
+};
+
 export type ControllerResponse = {
   decision: 'proceed' | 'guide' | 'clarify' | 'error';
   confidence: number;
@@ -23,11 +36,14 @@ export type ControllerResponse = {
   suggestedFunctions: string[];
   requiredColumns: string[];
   predictiveFunctions: string[];
-  questions: unknown[];
+  questions: ControllerQuestion[];
   queryClassification?: string;
+  coherenceNote?: string;
   needsParams: boolean;
   canSendDirectly: boolean;
   reasoning: string;
+  /** Set when a guardrail (scope/temporal) overrode the original decision to 'clarify'. */
+  guardrailSource?: 'scope' | 'temporal' | null;
 };
 
 // ── Confidence helpers ────────────────────────────────────────────────────────
@@ -51,8 +67,8 @@ function parseControllerDecisionFromSse(text: string): Record<string, unknown> |
           return parsed.data as Record<string, unknown>;
         }
         return parsed;
-      } catch {
-        // continue
+      } catch (parseErr) {
+        console.warn('[parseControllerDecisionFromSse] JSON parse failed for line:', line.slice(0, 200), parseErr);
       }
     }
   }
@@ -88,6 +104,9 @@ export const controllerAiAgent = toPlugin(ControllerAiAgentPlugin);
 
 // ── POST /api/controller ──────────────────────────────────────────────────────
 
+const MAX_PROMPT_LENGTH = 10_000;
+const MAX_CONTEXT_SIZE = 50_000;
+
 export async function handleControllerRequest(req: Request, res: Response): Promise<void> {
   const body = req.body as ControllerRequest | undefined;
   const prompt = typeof body?.prompt === 'string' ? body.prompt.trim() : '';
@@ -96,6 +115,27 @@ export async function handleControllerRequest(req: Request, res: Response): Prom
     clearControllerApprovalCookie(res);
     res.status(400).json({ error: 'prompt is required' });
     return;
+  }
+
+  if (prompt.length > MAX_PROMPT_LENGTH) {
+    clearControllerApprovalCookie(res);
+    res.status(400).json({ error: `prompt exceeds maximum length (${MAX_PROMPT_LENGTH} chars)` });
+    return;
+  }
+
+  if (body?.conversationContext != null) {
+    try {
+      const ctxSize = JSON.stringify(body.conversationContext).length;
+      if (ctxSize > MAX_CONTEXT_SIZE) {
+        clearControllerApprovalCookie(res);
+        res.status(400).json({ error: `conversationContext exceeds maximum size (${MAX_CONTEXT_SIZE} bytes)` });
+        return;
+      }
+    } catch {
+      clearControllerApprovalCookie(res);
+      res.status(400).json({ error: 'conversationContext is not serializable' });
+      return;
+    }
   }
 
   let raw: Record<string, unknown>;
@@ -114,8 +154,14 @@ export async function handleControllerRequest(req: Request, res: Response): Prom
 
     if (!response.ok) {
       const errorText = await response.text().catch(() => '');
+      console.error('[controller] Semantic layer API error:', response.status, errorText || response.statusText);
       clearControllerApprovalCookie(res);
-      res.status(502).json({ error: `Semantic layer API error: ${errorText || response.statusText}` });
+      res.status(502).json({
+        decision: 'error' as const,
+        confidence: 0,
+        message: "L'agent IA a rencontré une erreur. Veuillez réessayer.",
+        error: 'Semantic layer API returned an error.',
+      });
       return;
     }
 
@@ -124,15 +170,24 @@ export async function handleControllerRequest(req: Request, res: Response): Prom
 
     if (!parsed) {
       clearControllerApprovalCookie(res);
-      res.status(502).json({ error: 'Invalid response from semantic layer API.' });
+      res.status(502).json({
+        decision: 'error' as const,
+        confidence: 0,
+        message: 'Invalid response from semantic layer API.',
+        error: 'Invalid response from semantic layer API.',
+      });
       return;
     }
 
     raw = parsed;
   } catch (error) {
+    console.error('[controller] Failed to reach semantic layer API:', error instanceof Error ? error.message : error);
     clearControllerApprovalCookie(res);
     res.status(502).json({
-      error: error instanceof Error ? error.message : 'Failed to reach semantic layer API.',
+      decision: 'error' as const,
+      confidence: 0,
+      message: "Impossible de joindre l'agent IA. Veuillez réessayer.",
+      error: 'Failed to reach semantic layer API.',
     });
     return;
   }
@@ -164,11 +219,13 @@ export async function handleControllerRequest(req: Request, res: Response): Prom
     suggestedFunctions: Array.isArray(raw.suggestedFunctions) ? (raw.suggestedFunctions as string[]) : [],
     requiredColumns: Array.isArray(raw.requiredColumns) ? (raw.requiredColumns as string[]) : [],
     predictiveFunctions: Array.isArray(raw.predictiveFunctions) ? (raw.predictiveFunctions as string[]) : [],
-    questions: Array.isArray(raw.questions) ? raw.questions : [],
+    questions: Array.isArray(raw.questions) ? (raw.questions as ControllerQuestion[]) : [],
     queryClassification: typeof raw.queryClassification === 'string' ? raw.queryClassification : undefined,
+    coherenceNote: typeof raw.coherenceNote === 'string' ? raw.coherenceNote : undefined,
     needsParams: raw.needsParams === true,
     canSendDirectly,
     reasoning: typeof raw.reasoning === 'string' ? raw.reasoning : '',
+    guardrailSource: typeof raw.guardrailSource === 'string' ? (raw.guardrailSource as ControllerResponse['guardrailSource']) : null,
   };
 
   res.status(200).json(controllerResponse);

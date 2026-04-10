@@ -13,7 +13,7 @@ class QueryAnalysisSignature(dspy.Signature):
         desc="JSON array string of required column names"
     )
     sql_functions_json = dspy.OutputField(
-        desc="JSON array string from fn_vendor_typology, fn_customer_typology, or []"
+        desc="JSON array string from fn_vendor_typology, fn_customer_typology, get_tva_rates_by_folder_id, get_tva_rates_applied_for_customers_by_folder_id, get_tva_rates_applied_for_suppliers_by_folder_id, or []"
     )
     coherence_note = dspy.OutputField(
         desc=(
