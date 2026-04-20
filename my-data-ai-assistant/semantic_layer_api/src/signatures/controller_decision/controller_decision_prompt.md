@@ -42,6 +42,26 @@ When the user asks about TVA/VAT rates:
 - If `sp_folder_id` is not established, the scope guardrail (case e) already handles this.
 - Include the appropriate function in `suggestedFunctions`.
 
+**(c3) DSO (Days Sales Outstanding) function** — The query involves DSO / délai moyen de paiement client / average customer payment delay analysis:
+- `get_avg_dso_days_for_third_parties(p_sp_folder_id, p_months)` — returns the average DSO in days per customer account (`aux_account_number`, `aux_account_label`, `avg_dso_days`) for the given folder and look-back period in months.
+
+When the user asks about DSO / customer payment delays:
+- If the look-back period (in months) is not specified, use `clarify` with a `number` question (e.g. `min: 1, max: 36, step: 1, placeholder: "Ex: 12"`).
+- If `sp_folder_id` is not established, the scope guardrail (case e) already handles this.
+- Include `get_avg_dso_days_for_third_parties` in `suggestedFunctions`.
+
+**(c4) VAT anomaly detection & VAT rate distribution functions** — The query involves VAT/TVA rate compliance, anomalies, or the statistical distribution of applied VAT rates. Two functions are available:
+
+- `fn_vat_anomaly_detection(folder_id, legal_vat_rates, country_key)` — returns **only anomalous** purchase and sales accounting entries whose VAT rate is not in the legal reference. `country_key` (e.g. `"FR"`, `"BE"`) identifies the country reference table `mv_geo_parameter_default_values_by_country` used for the legal rates lookup. `legal_vat_rates` is an **additional** informational input (comma-separated string, e.g. `"0,5.5,10,20"`) that complements the country reference — not a replacement for it. Return columns: `sp_accounting_entry_id`, `sp_accounting_scheme_id`, `document_type_code`, `document_type_label`, `operation_type`, `vat_rate`, `anomaly_type`, `is_anomalous`, `rate_frequency_in_folder`, `rate_pct_of_folder`, `total_debit`, `total_credit`, `total_balance`.
+- `fn_vat_rate_distribution(folder_id, country_key)` — descriptive distribution of VAT rates applied to purchase and sales entries, crossed with the country legal reference (no anomaly operationalization). Return columns: `operation_type`, `vat_rate`, `nb_entries`, `pct_of_total`, `statut_referentiel` (`Taux légal (référentiel pays)` or `Taux hors référentiel`).
+
+When the user asks about VAT anomalies, non-compliant rates, "taux hors référentiel", "anomalies TVA", or the distribution / répartition of applied VAT rates:
+- If `sp_folder_id` is not established, the scope guardrail (case e) already handles this.
+- If `country_key` is not explicitly stated and cannot be inferred from `conversation_context`, use `clarify` with a `text` question (e.g. `placeholder: "Ex: FR, BE, LU"`). This is needed for both functions since the country reference determines the legal rates lookup.
+- For `fn_vat_anomaly_detection` only: always include an **optional** `text` question with `id: "user_legal_vat_rates"` asked alongside `country_key` so the user can provide an additional informational list of legal rates (e.g. `"0,5.5,10,20"`) that complements — does NOT replace — the country reference. Mark `required: false` and use a placeholder like `"Optionnel — ex: 0,5.5,10,20 (complément au référentiel pays)"`. When provided, this value is passed as the `legal_vat_rates` argument alongside `country_key`; when empty, the function uses the country reference alone.
+- Choose between the two functions based on intent: **anomalies only** → `fn_vat_anomaly_detection`; **overall distribution / répartition / tous les taux avec leur fréquence** → `fn_vat_rate_distribution`. If the user's intent is ambiguous between the two, use `clarify` with a `select` question offering both options.
+- Include the appropriate function in `suggestedFunctions`.
+
 **(d) PARAMETRIC_QUERY** — The intent is clear but the query requires numeric thresholds, date ranges, amounts, or business rule parameters that the user has NOT explicitly stated.
 
 Examples:

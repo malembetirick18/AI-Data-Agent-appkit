@@ -28,11 +28,11 @@ User Question
     │
     ▼
 Phase 1: QueryAnalysis
-    Classify query (Normal SQL / SQL Function / Predictive SQL / General Info)
+    Classify query (Normal SQL / SQL Function / General Information)
     Extract required columns, SQL functions, coherence note
     │
     ▼
-Phase 2: RephraseQuery (conditional — only for SQL Function / Predictive / General Info)
+Phase 2: RephraseQuery (conditional — only for SQL Function / General Information)
     Rewrite query for Genie clarity
     │
     ▼
@@ -429,6 +429,10 @@ These run AFTER the LLM decision and BEFORE Reflexion. They override the LLM's d
 
 **Format:** Server-Sent Events (SSE) via FastAPI `StreamingResponse` + DSPy `streamify()`
 
+> Per [FastAPI streaming docs](https://fastapi.tiangolo.com/advanced/stream-data/), `media_type` is set via a custom `_SseResponse(StreamingResponse)` subclass with `media_type = "text/event-stream"` and `Cache-Control: no-cache, no-transform` (defined in `main.py`).
+
+**Response headers:**
+
 ```
 Content-Type: text/event-stream
 Cache-Control: no-cache, no-transform
@@ -443,56 +447,204 @@ Cache-Control: no-cache, no-transform
 | `controller_decision` | `{"role": "controller", "data": {<ControllerResponse>}}` | `dspy.Prediction` — final decision (single event) |
 | `error` | `{"error": "error description"}` | Exception during streaming |
 
-**Backend implementation** (FastAPI):
+**Backend implementation** ([FastAPI >= 0.134 yield pattern](https://fastapi.tiangolo.com/advanced/stream-data/)):
 
 ```python
-@app.post("/chat/stream", response_class=StreamingResponse)
+@app.post("/chat/stream", response_class=_SseResponse)
 async def stream_chat(body: ControllerRequest, http_request: Request) -> AsyncIterable[str]:
+    """Yield directly from the path-operation function.
+    FastAPI wraps the async generator in StreamingResponse automatically.
+    Each yielded string is sent to the client as-is (no JSON serialization).
+    """
     reasoning_parts: list[str] = []
 
-    async for chunk in stream_controller(source_text=body.source_text, ...):
-        if await http_request.is_disconnected():
-            break
+    try:
+        async for chunk in stream_controller(source_text=body.source_text, ...):
+            if await http_request.is_disconnected():
+                break
 
-        if isinstance(chunk, StatusMessage):
-            yield f"event: status\ndata: {json.dumps({'message': chunk.message})}\n\n"
+            if isinstance(chunk, StatusMessage):
+                yield f"event: status\ndata: {json.dumps({'message': chunk.message})}\n\n"
 
-        elif isinstance(chunk, StreamResponse):
-            if chunk.chunk:
-                reasoning_parts.append(chunk.chunk)
-            yield f"event: reasoning_token\ndata: {json.dumps({'chunk': chunk.chunk})}\n\n"
+            elif isinstance(chunk, StreamResponse):
+                if chunk.chunk:
+                    reasoning_parts.append(chunk.chunk)
+                yield f"event: reasoning_token\ndata: {json.dumps({'chunk': chunk.chunk})}\n\n"
 
-        elif isinstance(chunk, dspy.Prediction):
-            response = _prediction_to_controller_response(chunk)
-            response.reasoning = "".join(reasoning_parts)
-            payload = {"role": "controller", "data": response.model_dump()}
-            yield f"event: controller_decision\ndata: {json.dumps(payload)}\n\n"
+            elif isinstance(chunk, dspy.Prediction):
+                response = _prediction_to_controller_response(chunk)
+                response.reasoning = "".join(reasoning_parts)
+                payload = {"role": "controller", "data": response.model_dump()}
+                yield f"event: controller_decision\ndata: {json.dumps(payload)}\n\n"
+
+    except Exception as exc:
+        yield f"event: error\ndata: {json.dumps({'error': str(exc)})}\n\n"
 ```
+
+**Key patterns from FastAPI docs:**
+- `response_class=_SseResponse` + `yield` from async path operation (FastAPI >= 0.134)
+- No manual `StreamingResponse(generator)` wrapping — FastAPI handles it
+- `http_request.is_disconnected()` check to abort cleanly on client disconnect
+- `try/except` around the generator to yield error events instead of dropping the connection
 
 ### 7.2 — Spec Generation Endpoint (`POST /spec/generate`)
 
-**Format:** JSONL (text/plain) with RFC 6902 JSON Patch operations
+**Format:** SpecStream — JSONL (RFC 6902 JSON Patch operations), one patch per line
+
+> Per [FastAPI streaming docs](https://fastapi.tiangolo.com/advanced/stream-data/), `media_type` is set via a custom `_JsonlResponse(StreamingResponse)` subclass with `media_type = "text/plain"` and `Cache-Control: no-cache, no-transform` (defined in `main.py`). The Node proxy (`server.ts`) also sets these same headers on the proxied response.
+
+**Response headers:**
 
 ```
 Content-Type: text/plain; charset=utf-8
 Cache-Control: no-cache, no-transform
 ```
 
-**Line types:**
+**SpecStream line types:**
 
 | Format | Meaning |
 |--------|---------|
-| `# Status message text` | Progress comment — JSONL readers ignore these |
-| `{"op":"add","path":"/root","value":"main"}` | RFC 6902 patch operation |
-| `{"op":"add","path":"/elements/table-1","value":{...}}` | Element patch |
-| `{"op":"add","path":"/state/items","value":[...]}` | State patch |
-| `{"error":"LLM produced empty spec_patches"}` | Error object |
+| `# Status message text` | Progress comment — JSONL parsers and `createSpecStreamCompiler` ignore these |
+| `{"op":"add","path":"/root","value":"main"}` | RFC 6902 patch: set root element key |
+| `{"op":"add","path":"/elements/table-1","value":{...}}` | RFC 6902 patch: add element definition |
+| `{"op":"add","path":"/state/items","value":[...]}` | RFC 6902 patch: add state data |
+| `{"op":"add","path":"/elements/card-1/props","value":{...}}` | RFC 6902 patch: set element props |
+| `{"op":"add","path":"/elements/card-1/children","value":["child-1"]}` | RFC 6902 patch: set children |
+| `{"op":"replace","path":"/state/total","value":42}` | RFC 6902 patch: update state value |
+| `{"error":"LLM produced empty spec_patches"}` | Error object (non-patch — signals failure) |
 
-### 7.3 — Frontend Consumption
+**Supported RFC 6902 operations:** `add`, `remove`, `replace`, `move` (requires `from`), `copy` (requires `from`), `test`.
 
-**Controller:** The Express server (`server.ts` at `POST /api/controller`) calls Python `/chat/stream`, parses the full SSE text response, extracts the `controller_decision` event, and returns the response as JSON. The frontend receives a single JSON response (not streaming SSE).
+**Paths follow RFC 6901 JSON Pointer notation** into the Spec object:
+- `/root` — root element key (string)
+- `/elements/<id>` — element definition
+- `/elements/<id>/props` — element properties
+- `/elements/<id>/children` — child element ID array
+- `/state/<path>` — state data (for `$state`, `$bindState`, `repeat`)
 
-**Spec:** The Express server (`server.ts` at `POST /api/spec-stream`) pipes Python `/spec/generate` JSONL directly to the client using `ReadableStreamDefaultReader<Uint8Array>` chunk-by-chunk (no buffering). The frontend uses `useUIStream` from `@json-render/react` to assemble RFC 6902 patches into a live UI spec.
+### 7.3 — Spec Object Type
+
+The assembled Spec follows the [json-render Spec format](https://json-render.dev/docs/specs):
+
+```typescript
+interface Spec {
+  root: string;                          // Key of the entry element
+  elements: {
+    [elementId: string]: {
+      type: string;                      // Component name from catalog/registry
+      props: Record<string, unknown>;    // Component properties (may use $state, $item, $template)
+      children?: string[];               // Child element IDs (flat tree structure)
+      visible?: { $state: string; eq?: unknown };  // Conditional visibility
+      repeat?: { statePath: string };    // Dynamic list rendering
+    };
+  };
+  state?: Record<string, unknown>;       // Reactive state data (optional)
+}
+```
+
+### 7.4 — Frontend Consumption
+
+#### Controller (non-streaming to client)
+
+The Express server (`server.ts` at `POST /api/controller`) calls Python `/chat/stream`, consumes the entire SSE response as text (`await response.text()`), extracts the `controller_decision` event via `parseControllerDecisionFromSse()`, and returns the unwrapped `data` object as a single JSON response. The frontend receives a single HTTP response (not streaming SSE).
+
+```typescript
+// Plugin (controller-ai-agent.ts) — SSE text parsing
+function parseControllerDecisionFromSse(text: string): Record<string, unknown> | null {
+  for (const line of text.split('\n')) {
+    if (line.startsWith('data:')) {
+      const parsed = JSON.parse(line.slice(5).trim());
+      // Unwrap envelope: { role: 'controller', data: { ... } } → data
+      if (parsed.role === 'controller' && parsed.data != null) {
+        return parsed.data;
+      }
+      return parsed;
+    }
+  }
+  return null;
+}
+```
+
+#### Spec (streaming to client via `useUIStream`)
+
+The Express server (`server.ts` at `POST /api/spec-stream`) pipes Python `/spec/generate` JSONL directly to the client using `ReadableStreamDefaultReader<Uint8Array>` chunk-by-chunk with backpressure handling (no buffering). The frontend uses [`useUIStream`](https://json-render.dev/docs/streaming) from `@json-render/react` to progressively assemble RFC 6902 patches into a live Spec.
+
+**`useUIStream` API** (from [@json-render/react](https://json-render.dev/docs/api/react)):
+
+```typescript
+const {
+  spec,         // Spec | null — current assembled UI spec (updates on each patch)
+  isStreaming,  // boolean — true while the stream is active
+  error,        // Error | null — set on stream failure, persists until clear()
+  send,         // (prompt: string, context?: Record<string, unknown>) => Promise<void>
+  clear,        // () => void — resets spec and error state
+} = useUIStream({
+  api: '/api/spec-stream',               // Endpoint URL
+  onComplete?: (spec: Spec) => void,     // Fired when stream finishes successfully
+  onError?: (error: Error) => void,      // Fired on stream failure
+});
+```
+
+**`send()` request format:** POST to the `api` URL with the prompt and optional context:
+
+```typescript
+// Genie result spec generation
+uiStream.send(promptText, { genieResult: buildGenieResultPayload(msg) })
+
+// Clarification form spec generation
+clarificationStream.send(pendingClarification.message, {
+  genieResult: null,
+  questions: pendingClarification.questions,
+})
+```
+
+The hook internally uses `createSpecStreamCompiler` to parse the JSONL response line-by-line, apply each RFC 6902 patch incrementally, and update `spec` on every new patch — enabling progressive rendering.
+
+**`clear()` for race condition prevention:** Call `clear()` before `send()` when re-triggering a stream to cancel any in-flight request and reset state:
+
+```typescript
+const triggerClarificationSpec = useCallback((pc: PendingClarification) => {
+  clarificationStream.clear()          // Cancel previous stream, reset spec + error
+  void clarificationStream.send(pc.message, { questions: pc.questions })
+}, [clarificationStream])
+```
+
+**Rendering with `Renderer`:**
+
+```tsx
+<JSONUIProvider spec={resolvedSpec} registry={registry} initialState={spec.state ?? EMPTY_STATE}>
+  <Renderer spec={resolvedSpec} registry={registry} loading={isStreaming} />
+</JSONUIProvider>
+```
+
+The `loading={isStreaming}` prop tells the `Renderer` the spec is still being assembled — it renders partial content gracefully and updates as new patches arrive.
+
+#### Dual `useUIStream` instances
+
+Two independent `useUIStream` hooks coexist in `hooks/useSpecStreaming.ts`:
+
+| Instance | Purpose | Trigger |
+|----------|---------|---------|
+| `uiStream` | Genie result spec (charts, tables) | After Genie returns query data |
+| `clarificationStream` | Clarification form spec (FormPanel) | When controller decision is `clarify` |
+
+Both target the same endpoint (`/api/spec-stream`) but send different context (Genie data vs. questions). Each maintains independent `spec`, `isStreaming`, and `error` state.
+
+#### Node proxy backpressure handling
+
+```typescript
+// server.ts — /api/spec-stream proxy
+const reader = specResp.body.getReader() as ReadableStreamDefaultReader<Uint8Array>;
+for (;;) {
+  if (res.destroyed) break;
+  const chunk = await reader.read();
+  if (chunk.done) break;
+  const ok = res.write(chunk.value);      // Write raw bytes (no parsing)
+  if (!ok && !res.destroyed) {
+    await new Promise<void>((resolve) => res.once('drain', resolve));  // Backpressure
+  }
+}
+```
 
 ---
 
@@ -600,7 +752,7 @@ ORDER BY last_activity_months DESC
 
 ### GenUI Spec → Rendered UI
 
-GenUI Spec Generator receives Genie results and produces JSONL patches for a DataTable + BarChart visualization.
+GenUI Spec Generator receives Genie results and streams SpecStream JSONL patches via `POST /spec/generate`. The Node proxy (`/api/spec-stream`) pipes the JSONL directly to the client. `useUIStream` assembles the patches incrementally via `createSpecStreamCompiler`, and `<Renderer loading={isStreaming}>` progressively renders the UI (DataTable + BarChart) as each patch arrives.
 
 ---
 
@@ -645,6 +797,6 @@ GenUI Spec Generator receives Genie results and produces JSONL patches for a Dat
 5. **Ask, don't assume** — when a required parameter is missing, `clarify` before proceeding.
 6. **Scope is mandatory** — `sp_folder_id` must always be established before sending to Genie.
 7. **Disambiguate polysemy** — polysemous accounting terms always require clarification, even when combined with valid audit patterns.
-8. **Stream everything** — every reasoning token and status update is an SSE event visible to the user in real time.
+8. **Stream everything** — controller reasoning tokens and status updates are SSE events (`event: reasoning_token`, `event: status`); spec patches are SpecStream JSONL lines assembled by `useUIStream` via `createSpecStreamCompiler`. Both are visible to the user in real time.
 9. **Validate against catalog** — Phase 3b strips hallucinated names; trust the catalog, not the LLM's inventions.
 10. **Annotate provenance** — every value in the `rewrittenPrompt` must trace to its source (user input, function, or warehouse data).

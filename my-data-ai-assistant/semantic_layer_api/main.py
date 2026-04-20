@@ -6,9 +6,9 @@ Refactored based on:
 
 Key changes
 ───────────
-1. Endpoints use `response_class=StreamingResponse` with `yield` directly
-   from the path-operation function (FastAPI ≥ 0.134 pattern) instead of
-   manually constructing StreamingResponse with an inner generator.
+1. Endpoints use custom ``StreamingResponse`` subclasses (``_SseResponse``,
+   ``_JsonlResponse``) with ``media_type`` set explicitly and ``yield``
+   directly from the path-operation function (FastAPI ≥ 0.134 pattern).
 2. DSPy streaming uses typed chunk dispatch (`StreamResponse`, `Prediction`,
    `StatusMessage`) instead of raw string buffering.
 3. A `StatusMessageProvider` gives real-time observability into LM calls.
@@ -33,6 +33,35 @@ from dotenv import load_dotenv
 from src.logger import Logger
 from src.modules.controller_decision import ControllerDecision
 from src.modules.genui_spec_generator import GenUiSpecGenerator
+
+
+# ── Streaming response subclasses ─────────────────────────────────────────────
+#
+# Per https://fastapi.tiangolo.com/advanced/stream-data/ — use a custom
+# subclass with ``media_type`` as a class attribute when the default
+# Content-Type is not appropriate.  StreamingResponse defaults to no
+# Content-Type for async generators; the subclasses below make the MIME
+# type explicit and add cache-busting headers required for real-time
+# streaming consumers.
+
+class _SseResponse(StreamingResponse):
+    """SSE-formatted streaming response for the controller endpoint."""
+
+    media_type = "text/event-stream"
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.headers.setdefault("Cache-Control", "no-cache, no-transform")
+
+
+class _JsonlResponse(StreamingResponse):
+    """JSONL (SpecStream) streaming response for the spec generation endpoint."""
+
+    media_type = "text/plain"
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.headers.setdefault("Cache-Control", "no-cache, no-transform")
 
 
 # ── Request / Response models ─────────────────────────────────────────────────
@@ -385,7 +414,7 @@ async def get_suggestions():
 
 # ── Controller endpoint (SSE) ────────────────────────────────────────────────
 
-@app.post("/chat/stream", response_class=StreamingResponse)
+@app.post("/chat/stream", response_class=_SseResponse)
 async def stream_chat(body: ControllerRequest, http_request: Request) -> AsyncIterable[str]:
     """Stream controller decision as Server-Sent Events.
 
@@ -454,13 +483,13 @@ async def stream_chat(body: ControllerRequest, http_request: Request) -> AsyncIt
 
 # ── Spec generation endpoint (JSONL stream) ──────────────────────────────────
 
-@app.post("/spec/generate", response_class=StreamingResponse)
+@app.post("/spec/generate", response_class=_JsonlResponse)
 async def generate_spec(body: SpecRequest, http_request: Request) -> AsyncIterable[str]:
-    """Stream GenUI spec patches as JSONL lines.
+    """Stream GenUI spec patches as JSONL lines (SpecStream format).
 
-    Each line is a complete JSON patch object. Status messages are emitted
-    as SSE-style comments (lines prefixed with `#`) so they don't break
-    JSONL consumers but can be consumed by aware clients.
+    Each line is a complete RFC 6902 JSON Patch object. Status messages are
+    emitted as comment lines (prefixed with ``#``) — ignored by JSONL parsers
+    and ``createSpecStreamCompiler`` but consumable by status-aware clients.
     """
     if not body.prompt:
         raise HTTPException(status_code=400, detail="prompt is required")

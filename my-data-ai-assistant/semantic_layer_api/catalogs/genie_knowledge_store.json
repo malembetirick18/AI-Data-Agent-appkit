@@ -1,7 +1,7 @@
 {
   "source": "catalog_schemas_description",
   "table_count": 15,
-  "function_count": 5,
+  "function_count": 8,
   "tables": [
     {
       "catalog": "jxpeehqyifuv",
@@ -2376,7 +2376,7 @@
       "full_name": "jxpeehqyifuv.geoficiency.fn_customer_typology",
       "type": "FUNCTION",
       "return_type": "TABLE_TYPE",
-      "language": "SQL",
+      "language": "null",
       "definition": "WITH\nparams AS (\n  SELECT\n    CAST(p_start_date AS DATE) AS start_date,\n    CAST(p_end_date AS DATE) AS end_date,\n    CAST(last_days AS INT) AS last_days_int\n),\nflagged AS (\n  SELECT\n    aux_account_number,\n    aux_account_label,\n    sp_folder_id,\n    sp_accounting_entry_id,\n    amount,\n    accounting_entry_date,\n    CASE\n      WHEN accounting_entry_date >= date_add(DAY, -params.last_days_int, params.end_date) THEN ABS(amount)\n      ELSE CAST(0 AS DECIMAL(30,2))\n    END AS recent_amount\n  FROM jxpeehqyifuv.geoficiency.mv_gl_core\n  CROSS JOIN params\n  WHERE sp_folder_id = p_sp_folder_id\n    AND param_acc_bs_customers = 1\n    AND aux_account_number IS NOT NULL\n    AND accounting_entry_date BETWEEN params.start_date AND params.end_date\n),\naggregated AS (\n  SELECT\n    aux_account_number,\n    aux_account_label,\n    sp_folder_id,\n    COUNT(*) AS nb_entries,\n    COUNT(DISTINCT sp_accounting_entry_id) AS nb_accounting_entries,\n    SUM(ABS(amount)) AS volume,\n    SUM(recent_amount) AS recent_volume,\n    MAX(accounting_entry_date) AS last_activity_date,\n    SUM(amount) AS balance\n  FROM flagged\n  GROUP BY aux_account_number, aux_account_label, sp_folder_id\n)\nSELECT\n  aux_account_number,\n  aux_account_label,\n  aggregated.sp_folder_id,\n  nb_entries,\n  nb_accounting_entries,\n  volume,\n  recent_volume,\n  months_between(params.end_date, last_activity_date) AS last_activity_months,\n  balance,\n  SUM(volume) OVER () AS type_total_volume,\n  last_activity_date\nFROM aggregated\nCROSS JOIN params",
       "description": "For each customer account, returns: number of entries, number of accounting entries, total transaction volume, recent transaction volume (last N days), months since last activity, last activity date, account balance, and total volume for the account type. Used to identify inactive customers, customers with open balances, and concentration risks. One row per customer account.",
       "created": "2026-04-06T19:38:13.573Z",
@@ -2431,11 +2431,113 @@
     {
       "catalog": "jxpeehqyifuv",
       "schema": "geoficiency",
+      "name": "fn_vat_anomaly_detection",
+      "full_name": "jxpeehqyifuv.geoficiency.fn_vat_anomaly_detection",
+      "type": "FUNCTION",
+      "return_type": "TABLE_TYPE",
+      "language": "null",
+      "definition": "WITH\n  -- CTE 1: Résolution dossier → geo_file_version_id\n  folder_info AS (\n    SELECT f.id AS sp_folder_id, f.geo_file_version_id\n    FROM jxpeehqyifuv.geoficiency.mv_folder f\n    WHERE f.id = folder_id\n  ),\n\n  -- CTE 2: Taux fournis par l'utilisateur (si non vide)\n  user_provided_rates AS (\n    SELECT DISTINCT CAST(TRIM(rate_str) AS DECIMAL(5,2)) AS legal_rate\n    FROM (SELECT EXPLODE(SPLIT(legal_vat_rates, ',')) AS rate_str)\n    WHERE legal_vat_rates IS NOT NULL\n      AND TRIM(legal_vat_rates) != ''\n  ),\n\n  -- CTE 3: Taux légaux du référentiel pays (fallback)\n  reference_rates AS (\n    SELECT DISTINCT CAST(ref.param_default_value AS DECIMAL(5,2)) AS legal_rate\n    FROM jxpeehqyifuv.geoficiency.mv_geo_parameter_default_values_by_country ref\n    INNER JOIN folder_info fi ON ref.geo_file_version_id = fi.geo_file_version_id\n    WHERE ref.geo_parameter_type_code = 'param_general_vat_rates'\n      AND (ref.country_key IS NULL OR ref.country_key = country_key)\n  ),\n\n  -- CTE 4: Priorité user > référentiel\n  legal_vat_rates AS (\n    SELECT legal_rate FROM user_provided_rates\n    WHERE (SELECT COUNT(*) FROM user_provided_rates) > 0\n    UNION ALL\n    SELECT legal_rate FROM reference_rates\n    WHERE (SELECT COUNT(*) FROM user_provided_rates) = 0\n  ),\n\n  -- CTE 5: Fréquence TVA déductible (achats)\n  deductible_rate_freq AS (\n    SELECT\n      ROUND(e.geo_calc_entry_deductible_vat_rate, 2) AS vat_rate,\n      COUNT(*) AS cnt,\n      ROUND(COUNT(*) * 100.0 / SUM(COUNT(*)) OVER(), 2) AS pct_of_total\n    FROM jxpeehqyifuv.geoficiency.mv_accounting_entry_enriched e\n    WHERE e.sp_folder_id = folder_id\n      AND e.param_acc_pl_expense_purchase = 1\n      AND e.geo_calc_entry_deductible_vat_rate IS NOT NULL\n    GROUP BY ROUND(e.geo_calc_entry_deductible_vat_rate, 2)\n  ),\n\n  -- CTE 6: Fréquence TVA collectée (ventes)\n  collected_rate_freq AS (\n    SELECT\n      ROUND(e.geo_calc_entry_collected_vat_rate, 2) AS vat_rate,\n      COUNT(*) AS cnt,\n      ROUND(COUNT(*) * 100.0 / SUM(COUNT(*)) OVER(), 2) AS pct_of_total\n    FROM jxpeehqyifuv.geoficiency.mv_accounting_entry_enriched e\n    WHERE e.sp_folder_id = folder_id\n      AND e.param_acc_pl_income_revenue = 1\n      AND e.geo_calc_entry_collected_vat_rate IS NOT NULL\n    GROUP BY ROUND(e.geo_calc_entry_collected_vat_rate, 2)\n  ),\n\n  -- CTE 7: Écritures achats — flag anomalie\n  anomalous_achats AS (\n    SELECT\n      e.sp_accounting_entry_id,\n      e.sp_accounting_scheme_id,\n      e.document_type_code,\n      e.document_type_label,\n      'Achat' AS operation_type,\n      ROUND(e.geo_calc_entry_deductible_vat_rate, 2) AS vat_rate,\n      CASE\n        WHEN ROUND(e.geo_calc_entry_deductible_vat_rate, 2)\n             NOT IN (SELECT legal_rate FROM legal_vat_rates)\n        THEN 'Taux non conforme (hors référentiel légal)'\n        ELSE 'Taux conforme'\n      END AS anomaly_type,\n      CASE\n        WHEN ROUND(e.geo_calc_entry_deductible_vat_rate, 2)\n             NOT IN (SELECT legal_rate FROM legal_vat_rates)\n        THEN 1 ELSE 0\n      END AS is_anomalous,\n      drf.cnt AS rate_frequency_in_folder,\n      drf.pct_of_total AS rate_pct_of_folder,\n      e.total_debit,\n      e.total_credit,\n      e.total_balance\n    FROM jxpeehqyifuv.geoficiency.mv_accounting_entry_enriched e\n    LEFT JOIN deductible_rate_freq drf\n      ON ROUND(e.geo_calc_entry_deductible_vat_rate, 2) = drf.vat_rate\n    WHERE e.sp_folder_id = folder_id\n      AND e.param_acc_pl_expense_purchase = 1\n      AND e.geo_calc_entry_deductible_vat_rate IS NOT NULL\n      AND e.document_type_code IS NOT NULL\n      AND e.document_type_label IS NOT NULL\n  ),\n\n  -- CTE 8: Écritures ventes — flag anomalie\n  anomalous_ventes AS (\n    SELECT\n      e.sp_accounting_entry_id,\n      e.sp_accounting_scheme_id,\n      e.document_type_code,\n      e.document_type_label,\n      'Vente' AS operation_type,\n      ROUND(e.geo_calc_entry_collected_vat_rate, 2) AS vat_rate,\n      CASE\n        WHEN ROUND(e.geo_calc_entry_collected_vat_rate, 2)\n             NOT IN (SELECT legal_rate FROM legal_vat_rates)\n        THEN 'Taux non conforme (hors référentiel légal)'\n        ELSE 'Taux conforme'\n      END AS anomaly_type,\n      CASE\n        WHEN ROUND(e.geo_calc_entry_collected_vat_rate, 2)\n             NOT IN (SELECT legal_rate FROM legal_vat_rates)\n        THEN 1 ELSE 0\n      END AS is_anomalous,\n      crf.cnt AS rate_frequency_in_folder,\n      crf.pct_of_total AS rate_pct_of_folder,\n      e.total_debit,\n      e.total_credit,\n      e.total_balance\n    FROM jxpeehqyifuv.geoficiency.mv_accounting_entry_enriched e\n    LEFT JOIN collected_rate_freq crf\n      ON ROUND(e.geo_calc_entry_collected_vat_rate, 2) = crf.vat_rate\n    WHERE e.sp_folder_id = folder_id\n      AND e.param_acc_pl_income_revenue = 1\n      AND e.geo_calc_entry_collected_vat_rate IS NOT NULL\n      AND e.document_type_code IS NOT NULL\n      AND e.document_type_label IS NOT NULL\n  )\n\n  -- Résultat : uniquement les écritures non conformes\n  SELECT\n    sp_accounting_entry_id, sp_accounting_scheme_id,\n    document_type_code, document_type_label,\n    operation_type, vat_rate, anomaly_type, is_anomalous,\n    rate_frequency_in_folder, rate_pct_of_folder,\n    total_debit, total_credit, total_balance\n  FROM anomalous_achats WHERE is_anomalous = 1\n  UNION ALL\n  SELECT\n    sp_accounting_entry_id, sp_accounting_scheme_id,\n    document_type_code, document_type_label,\n    operation_type, vat_rate, anomaly_type, is_anomalous,\n    rate_frequency_in_folder, rate_pct_of_folder,\n    total_debit, total_credit, total_balance\n  FROM anomalous_ventes WHERE is_anomalous = 1\n  ORDER BY operation_type, document_type_code, vat_rate, sp_accounting_entry_id",
+      "description": "Détecte les écritures comptables achats et ventes dont le taux de TVA ne figure pas dans le référentiel légal. Priorité : taux fournis par utilisateur > référentiel pays via mv_geo_parameter_default_values_by_country. Retourne uniquement les écritures anomaliques.",
+      "created": "2026-04-17T13:52:30.563Z",
+      "last_altered": "2026-04-17T13:52:30.563Z",
+      "return_columns": [
+        {
+          "name": "sp_accounting_entry_id",
+          "data_type": "STRING"
+        },
+        {
+          "name": "sp_accounting_scheme_id",
+          "data_type": "STRING"
+        },
+        {
+          "name": "document_type_code",
+          "data_type": "STRING"
+        },
+        {
+          "name": "document_type_label",
+          "data_type": "STRING"
+        },
+        {
+          "name": "operation_type",
+          "data_type": "STRING"
+        },
+        {
+          "name": "vat_rate",
+          "data_type": "DECIMAL(31,2)"
+        },
+        {
+          "name": "anomaly_type",
+          "data_type": "STRING"
+        },
+        {
+          "name": "is_anomalous",
+          "data_type": "INT"
+        },
+        {
+          "name": "rate_frequency_in_folder",
+          "data_type": "BIGINT"
+        },
+        {
+          "name": "rate_pct_of_folder",
+          "data_type": "DECIMAL(27,2)"
+        },
+        {
+          "name": "total_debit",
+          "data_type": "DECIMAL(30,2)"
+        },
+        {
+          "name": "total_credit",
+          "data_type": "DECIMAL(30,2)"
+        },
+        {
+          "name": "total_balance",
+          "data_type": "DECIMAL(30,2)"
+        }
+      ]
+    },
+    {
+      "catalog": "jxpeehqyifuv",
+      "schema": "geoficiency",
+      "name": "fn_vat_rate_distribution",
+      "full_name": "jxpeehqyifuv.geoficiency.fn_vat_rate_distribution",
+      "type": "FUNCTION",
+      "return_type": "TABLE_TYPE",
+      "language": "null",
+      "definition": "WITH\n  folder_info AS (\n    SELECT f.id AS sp_folder_id, f.geo_file_version_id\n    FROM jxpeehqyifuv.geoficiency.mv_folder f\n    WHERE f.id = folder_id\n  ),\n\n  legal_rates AS (\n    SELECT DISTINCT\n      CAST(ref.param_default_value AS DECIMAL(5,2)) AS legal_rate\n    FROM jxpeehqyifuv.geoficiency.mv_geo_parameter_default_values_by_country ref\n    INNER JOIN folder_info fi ON ref.geo_file_version_id = fi.geo_file_version_id\n    WHERE ref.geo_parameter_type_code = 'param_general_vat_rates'\n      AND (ref.country_key IS NULL OR ref.country_key = country_key)\n  ),\n\n  deductible_dist AS (\n    SELECT\n      'Achat' AS operation_type,\n      ROUND(e.geo_calc_entry_deductible_vat_rate, 2) AS vat_rate,\n      COUNT(*) AS nb_entries,\n      ROUND(COUNT(*) * 100.0 / SUM(COUNT(*)) OVER(), 2) AS pct_of_total,\n      CASE\n        WHEN ROUND(e.geo_calc_entry_deductible_vat_rate, 2) IN (SELECT legal_rate FROM legal_rates)\n        THEN 'Taux légal (référentiel pays)'\n        ELSE 'Taux hors référentiel'\n      END AS statut_referentiel\n    FROM jxpeehqyifuv.geoficiency.mv_accounting_entry_enriched e\n    WHERE e.sp_folder_id = folder_id\n      AND e.param_acc_pl_expense_purchase = 1\n      AND e.geo_calc_entry_deductible_vat_rate IS NOT NULL\n    GROUP BY\n      ROUND(e.geo_calc_entry_deductible_vat_rate, 2),\n      CASE\n        WHEN ROUND(e.geo_calc_entry_deductible_vat_rate, 2) IN (SELECT legal_rate FROM legal_rates)\n        THEN 'Taux légal (référentiel pays)'\n        ELSE 'Taux hors référentiel'\n      END\n  ),\n\n  collected_dist AS (\n    SELECT\n      'Vente' AS operation_type,\n      ROUND(e.geo_calc_entry_collected_vat_rate, 2) AS vat_rate,\n      COUNT(*) AS nb_entries,\n      ROUND(COUNT(*) * 100.0 / SUM(COUNT(*)) OVER(), 2) AS pct_of_total,\n      CASE\n        WHEN ROUND(e.geo_calc_entry_collected_vat_rate, 2) IN (SELECT legal_rate FROM legal_rates)\n        THEN 'Taux légal (référentiel pays)'\n        ELSE 'Taux hors référentiel'\n      END AS statut_referentiel\n    FROM jxpeehqyifuv.geoficiency.mv_accounting_entry_enriched e\n    WHERE e.sp_folder_id = folder_id\n      AND e.param_acc_pl_income_revenue = 1\n      AND e.geo_calc_entry_collected_vat_rate IS NOT NULL\n    GROUP BY\n      ROUND(e.geo_calc_entry_collected_vat_rate, 2),\n      CASE\n        WHEN ROUND(e.geo_calc_entry_collected_vat_rate, 2) IN (SELECT legal_rate FROM legal_rates)\n        THEN 'Taux légal (référentiel pays)'\n        ELSE 'Taux hors référentiel'\n      END\n  )\n\n  SELECT operation_type, vat_rate, nb_entries, pct_of_total, statut_referentiel\n  FROM deductible_dist\n  UNION ALL\n  SELECT operation_type, vat_rate, nb_entries, pct_of_total, statut_referentiel\n  FROM collected_dist\n  ORDER BY operation_type, nb_entries DESC",
+      "description": "Distribution descriptive des taux de TVA appliqués aux écritures achats et ventes. Croise les taux observés avec le référentiel légal pays sans opérationnaliser la notion anomalie. Conforme Section 4 du prompt Financial Data Analyst.",
+      "created": "2026-04-17T13:56:27.304Z",
+      "last_altered": "2026-04-17T13:56:27.304Z",
+      "return_columns": [
+        {
+          "name": "operation_type",
+          "data_type": "STRING"
+        },
+        {
+          "name": "vat_rate",
+          "data_type": "DECIMAL(31,2)"
+        },
+        {
+          "name": "nb_entries",
+          "data_type": "BIGINT"
+        },
+        {
+          "name": "pct_of_total",
+          "data_type": "DECIMAL(27,2)"
+        },
+        {
+          "name": "statut_referentiel",
+          "data_type": "STRING"
+        }
+      ]
+    },
+    {
+      "catalog": "jxpeehqyifuv",
+      "schema": "geoficiency",
       "name": "fn_vendor_typology",
       "full_name": "jxpeehqyifuv.geoficiency.fn_vendor_typology",
       "type": "FUNCTION",
       "return_type": "TABLE_TYPE",
-      "language": "SQL",
+      "language": "null",
       "definition": "WITH\nparams AS (\n  SELECT\n    CAST(p_start_date AS DATE) AS start_date,\n    CAST(p_end_date AS DATE) AS end_date,\n    CAST(last_days AS INT) AS last_days_int\n),\nflagged AS (\n  SELECT\n    aux_account_number,\n    aux_account_label,\n    sp_folder_id,\n    sp_accounting_entry_id,\n    amount,\n    accounting_entry_date,\n    CASE\n      WHEN accounting_entry_date >= date_add(DAY, -params.last_days_int, params.end_date) THEN ABS(amount)\n      ELSE CAST(0 AS DECIMAL(30,2))\n    END AS recent_amount\n  FROM jxpeehqyifuv.geoficiency.mv_gl_core\n  CROSS JOIN params\n  WHERE sp_folder_id = p_sp_folder_id\n    AND param_acc_bs_suppliers = 1\n    AND aux_account_number IS NOT NULL\n    AND accounting_entry_date BETWEEN params.start_date AND params.end_date\n),\naggregated AS (\n  SELECT\n    aux_account_number,\n    aux_account_label,\n    sp_folder_id,\n    COUNT(*) AS nb_entries,\n    COUNT(DISTINCT sp_accounting_entry_id) AS nb_accounting_entries,\n    SUM(ABS(amount)) AS volume,\n    SUM(recent_amount) AS recent_volume,\n    MAX(accounting_entry_date) AS last_activity_date,\n    SUM(amount) AS balance\n  FROM flagged\n  GROUP BY aux_account_number, aux_account_label, sp_folder_id\n)\nSELECT\n  aux_account_number,\n  aux_account_label,\n  aggregated.sp_folder_id,\n  nb_entries,\n  nb_accounting_entries,\n  volume,\n  recent_volume,\n  months_between(params.end_date, last_activity_date) AS last_activity_months,\n  balance,\n  SUM(volume) OVER () AS type_total_volume,\n  last_activity_date\nFROM aggregated\nCROSS JOIN params",
       "description": "For each supplier (vendor) account, returns: number of entries, number of accounting entries, total transaction volume, recent transaction volume (last N days), months since last activity, last activity date, account balance, and total volume for the account type. Used to identify inactive suppliers, suppliers with open balances, and concentration risks. One row per supplier account.",
       "created": "2026-04-06T19:38:11.703Z",
@@ -2490,11 +2592,38 @@
     {
       "catalog": "jxpeehqyifuv",
       "schema": "geoficiency",
+      "name": "get_avg_dso_days_for_third_parties",
+      "full_name": "jxpeehqyifuv.geoficiency.get_avg_dso_days_for_third_parties",
+      "type": "FUNCTION",
+      "return_type": "TABLE_TYPE",
+      "language": "null",
+      "definition": "WITH date_bounds AS (\n  SELECT MAX(doc_date) AS max_doc_date\n  FROM jxpeehqyifuv.geoficiency.mv_gl_core\n  WHERE sp_folder_id = p_sp_folder_id\n    AND param_acc_bs_customers = 1\n    AND doc_date IS NOT NULL\n),\ncustomer_dso AS (\n  SELECT\n    g.aux_account_number,\n    g.aux_account_label,\n    DATEDIFF(COALESCE(g.clearing_date, b.max_doc_date), g.doc_date) AS dso_days\n  FROM\n    jxpeehqyifuv.geoficiency.mv_gl_core g\n    CROSS JOIN date_bounds b\n  WHERE\n    g.sp_folder_id = p_sp_folder_id\n    AND g.param_acc_bs_customers = 1\n    AND g.doc_date IS NOT NULL\n    AND g.aux_account_number IS NOT NULL\n    AND g.aux_account_label IS NOT NULL\n    AND g.doc_date <= b.max_doc_date\n    AND (\n      g.doc_date >= date_add(MONTH, -CAST(p_months AS INT), b.max_doc_date)\n      OR (\n        g.clearing_date >= date_add(MONTH, -CAST(p_months AS INT), b.max_doc_date)\n        AND g.clearing_date <= b.max_doc_date\n      )\n      OR (g.clearing_date IS NULL AND g.doc_date >= date_add(MONTH, -CAST(p_months AS INT), b.max_doc_date))\n    )\n)\nSELECT\n  aux_account_number,\n  aux_account_label,\n  ROUND(AVG(dso_days), 2) AS avg_dso_days\nFROM\n  customer_dso\nGROUP BY\n  aux_account_number,\n  aux_account_label\nORDER BY\n  avg_dso_days DESC",
+      "description": "Returns the average DSO (Days Sales Outstanding) by customer account for a given folder and period",
+      "created": "2026-04-15T08:03:53.342Z",
+      "last_altered": "2026-04-15T08:03:53.342Z",
+      "return_columns": [
+        {
+          "name": "aux_account_number",
+          "data_type": "STRING"
+        },
+        {
+          "name": "aux_account_label",
+          "data_type": "STRING"
+        },
+        {
+          "name": "avg_dso_days",
+          "data_type": "DECIMAL(10,2)"
+        }
+      ]
+    },
+    {
+      "catalog": "jxpeehqyifuv",
+      "schema": "geoficiency",
       "name": "get_tva_rates_applied_for_customers_by_folder_id",
       "full_name": "jxpeehqyifuv.geoficiency.get_tva_rates_applied_for_customers_by_folder_id",
       "type": "FUNCTION",
       "return_type": "TABLE_TYPE",
-      "language": "SQL",
+      "language": "null",
       "definition": "WITH entries_dedup AS (\n  SELECT DISTINCT\n    `sp_accounting_entry_id`,\n    `geo_calc_entry_collected_vat_rate`\n  FROM\n    `jxpeehqyifuv`.`geoficiency`.`mv_accounting_entry_enriched`\n  WHERE\n    `sp_folder_id` = p_sp_folder_id\n    AND `scheme_param_acc_bs_customers` = 1\n)\nSELECT DISTINCT\n  ROUND(`geo_calc_entry_collected_vat_rate`, 2) AS `taux_tva_client`\nFROM\n  entries_dedup\nWHERE\n  `geo_calc_entry_collected_vat_rate` IS NOT NULL\nORDER BY\n  `taux_tva_client` ASC",
       "description": "Returns the distinct deductible and collected VAT (TVA) rates found in accounting entries for the specified folder ID and customers.",
       "created": "2026-04-10T05:47:15.395Z",
@@ -2513,7 +2642,7 @@
       "full_name": "jxpeehqyifuv.geoficiency.get_tva_rates_applied_for_suppliers_by_folder_id",
       "type": "FUNCTION",
       "return_type": "TABLE_TYPE",
-      "language": "SQL",
+      "language": "null",
       "definition": "WITH entries_dedup AS (\n  SELECT DISTINCT\n    sp_accounting_entry_id,\n    geo_calc_entry_deductible_vat_rate\n  FROM\n    jxpeehqyifuv.geoficiency.mv_accounting_entry_enriched\n  WHERE\n    sp_folder_id = p_sp_folder_id\n    AND scheme_param_acc_bs_suppliers = 1\n)\nSELECT DISTINCT\n  ROUND(geo_calc_entry_deductible_vat_rate, 2) AS taux_tva_fournisseur\nFROM\n  entries_dedup\nWHERE\n  geo_calc_entry_deductible_vat_rate IS NOT NULL\nORDER BY\n  taux_tva_fournisseur ASC",
       "description": "Returns the distinct deductible and collected VAT (TVA) rates found in accounting entries for the specified folder ID and suppliers.",
       "created": "2026-04-10T05:47:16.086Z",
@@ -2532,7 +2661,7 @@
       "full_name": "jxpeehqyifuv.geoficiency.get_tva_rates_by_folder_id",
       "type": "FUNCTION",
       "return_type": "TABLE_TYPE",
-      "language": "SQL",
+      "language": "null",
       "definition": "WITH entries_dedup AS (\n  SELECT DISTINCT\n    sp_accounting_entry_id,\n    geo_calc_entry_deductible_vat_rate,\n    geo_calc_entry_collected_vat_rate\n  FROM\n    jxpeehqyifuv.geoficiency.mv_accounting_entry_enriched\n  WHERE\n    sp_folder_id = p_sp_folder_id\n)\nSELECT\n  geo_calc_entry_deductible_vat_rate AS tva_rate\nFROM\n  entries_dedup\nWHERE\n  geo_calc_entry_deductible_vat_rate IS NOT NULL\nUNION\nSELECT\n  geo_calc_entry_collected_vat_rate AS tva_rate\nFROM\n  entries_dedup\nWHERE\n  geo_calc_entry_collected_vat_rate IS NOT NULL\nORDER BY\n  tva_rate ASC",
       "description": "Returns the distinct deductible and collected VAT (TVA) rates found in accounting entries for the specified folder ID.",
       "created": "2026-04-10T05:47:14.597Z",
