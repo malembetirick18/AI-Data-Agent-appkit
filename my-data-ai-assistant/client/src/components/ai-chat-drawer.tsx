@@ -4,7 +4,7 @@ import { Suspense, use, useState, useRef, useEffect, useLayoutEffect, useCallbac
 import {
   Drawer, Text, TextInput, ActionIcon, Group, Box, ScrollArea,
   Paper, ThemeIcon, Stack, Divider, List, Accordion, UnstyledButton,
-  Tooltip, Badge, Alert, Skeleton,
+  Tooltip, Badge, Alert, Skeleton, Loader,
 } from '@mantine/core'
 import {
   IconSparkles, IconSend, IconArrowsMaximize, IconTrash, IconX,
@@ -673,9 +673,26 @@ export function AiChatDrawer({ opened, onClose, onSaveControl }: AiChatDrawerPro
               </ThemeIcon>
               <Paper p="sm" radius="md" style={{ flex: 1, backgroundColor: '#f8f9fa', border: '1px solid #e9ecef', borderLeft: '3px solid #0c8599' }}>
                 <Stack gap={7}>
-                  <Skeleton height={10} radius="sm" width="62%" />
-                  <Skeleton height={10} radius="sm" width="80%" />
-                  <Skeleton height={10} radius="sm" width="42%" />
+                  {controller.streamingStatus ? (
+                    <Group gap={6} align="center" wrap="nowrap">
+                      <Loader size={10} color="#0c8599" />
+                      <Text size="xs" fw={600} c="#0c8599" style={{ lineHeight: 1.4 }}>
+                        {controller.streamingStatus}
+                      </Text>
+                    </Group>
+                  ) : (
+                    <Skeleton height={10} radius="sm" width="62%" />
+                  )}
+                  {controller.streamingReasoning ? (
+                    <Text size="xs" c="dimmed" style={{ lineHeight: 1.55, whiteSpace: 'pre-wrap' }}>
+                      {controller.streamingReasoning}
+                    </Text>
+                  ) : (
+                    <>
+                      <Skeleton height={10} radius="sm" width="80%" />
+                      <Skeleton height={10} radius="sm" width="42%" />
+                    </>
+                  )}
                 </Stack>
               </Paper>
             </Group>

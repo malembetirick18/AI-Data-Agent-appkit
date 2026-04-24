@@ -248,35 +248,85 @@ def _build_spec_prompt(request: SpecRequest) -> str:
     return "\n\n".join(parts)
 
 
-def _prediction_to_controller_response(result: dspy.Prediction) -> ControllerResponse:
-    """Map a DSPy Prediction to the typed API response."""
+def _prediction_to_controller_response(pred: dspy.Prediction) -> ControllerResponse:
+    """Map a DSPy ReAct Prediction to the typed API response.
+
+    The ReAct output wraps its typed result in `pred.result` (a
+    `ControllerDecisionResult` pydantic model). A defensive fallback keeps
+    the endpoint alive if the LLM emits a shape the coercer cannot parse.
+    """
+    raw = pred.get("result") if hasattr(pred, "get") else getattr(pred, "result", None)
+    if raw is None:
+        return ControllerResponse(
+            decision="error",
+            confidence=0.0,
+            message="Le contrôleur n'a pas produit de décision structurée.",
+        )
+    # `raw` is normally a ControllerDecisionResult pydantic model, but accept
+    # a plain dict too (some adapters may return unparsed JSON).
+    if hasattr(raw, "model_dump"):
+        data = raw.model_dump()
+    elif isinstance(raw, dict):
+        data = raw
+    else:
+        return ControllerResponse(
+            decision="error",
+            confidence=0.0,
+            message="Le contrôleur n'a pas produit de décision structurée.",
+        )
+
     return ControllerResponse(
-        decision=result.get("decision", "error"),
-        confidence=float(result.get("confidence", 0.0)),
-        message=result.get("message", ""),
-        rewrittenPrompt=result.get("rewrittenPrompt"),
-        suggestedTables=result.get("suggestedTables", []),
-        suggestedFunctions=result.get("suggestedFunctions", []),
-        requiredColumns=result.get("requiredColumns", []),
-        predictiveFunctions=result.get("predictiveFunctions", []),
-        questions=result.get("questions", []),
-        queryClassification=result.get("queryClassification"),
-        coherenceNote=result.get("coherenceNote", ""),
-        needsParams=bool(result.get("needsParams", False)),
-        guardrailSource=result.get("guardrailSource"),
+        decision=data.get("decision", "error"),
+        confidence=float(data.get("confidence", 0.0)),
+        message=data.get("message", "") or "",
+        rewrittenPrompt=data.get("rewrittenPrompt"),
+        suggestedTables=list(data.get("suggestedTables") or []),
+        suggestedFunctions=list(data.get("suggestedFunctions") or []),
+        requiredColumns=list(data.get("requiredColumns") or []),
+        predictiveFunctions=list(data.get("predictiveFunctions") or []),
+        questions=list(data.get("questions") or []),
+        queryClassification=data.get("queryClassification"),
+        coherenceNote=data.get("coherenceNote", "") or "",
+        needsParams=bool(data.get("needsParams", False)),
+        guardrailSource=data.get("guardrailSource"),
     )
 
 
 # ── Status message providers (DSPy streaming observability) ───────────────────
 
+# Maps each tool's function name to the French status shown in the UI while it runs.
+_TOOL_STATUS_FR = {
+    "check_scope_coverage":    "Vérification du périmètre d'analyse…",
+    "check_temporal_coverage": "Vérification de la période temporelle…",
+    "classify_intent":         "Classification de la requête…",
+    "rewrite_query":           "Reformulation de la requête…",
+    "lookup_catalog":          "Recherche dans le catalogue…",
+    "validate_catalog_names":  "Validation des noms contre le catalogue…",
+}
+
+
 class ControllerStatusProvider(dspy.streaming.StatusMessageProvider):
-    """Emits human-readable status updates while the controller LM runs."""
+    """Emits human-readable status updates for every agentic step.
+
+    - tool_start fires for each dspy.Tool call (programmatic or LLM-backed),
+      giving the user a live status for each step of the ReAct loop.
+    - lm_start fires before each inner predictor LM call — we surface it as a
+      short "reasoning" pulse so the UI can show an active indicator.
+    """
+
+    def tool_start_status_message(self, instance, inputs):
+        name = getattr(instance, "name", "") or ""
+        return _TOOL_STATUS_FR.get(name, f"Outil : {name}…") if name else None
+
+    def tool_end_status_message(self, outputs):
+        # Silent — the next tool_start (or the final reasoning_token) communicates progress.
+        return None
 
     def lm_start_status_message(self, instance, inputs):
-        return "Analyzing query against catalog…"
+        return "Raisonnement en cours…"
 
     def lm_end_status_message(self, outputs):
-        return "Controller decision ready."
+        return None
 
 
 class SpecStatusProvider(dspy.streaming.StatusMessageProvider):
@@ -335,14 +385,18 @@ dspy.configure(lm=lm, adapter=dspy.JSONAdapter(), track_usage=True)
 controller_agent = ControllerDecision()
 genui_spec_generator = GenUiSpecGenerator()
 
-# Streamified versions with typed listeners
+# Streamified versions with typed listeners.
+# ReAct exposes two internal predictors:
+#   - `._react.react`   — per-iteration predictor (Thought/Action/Args) — noisy for UI
+#   - `._react.extract` — final ChainOfThought producing the typed `result` + a clean
+#                         `reasoning` field. We stream that field token-by-token.
 stream_controller = dspy.streamify(
     controller_agent,
     stream_listeners=[
         StreamListener(
             signature_field_name="reasoning",
-            predict=controller_agent.controller_decision,
-            predict_name="controller_decision",
+            predict=controller_agent._react.extract,
+            predict_name="extract",
         ),
     ],
     status_message_provider=ControllerStatusProvider(),

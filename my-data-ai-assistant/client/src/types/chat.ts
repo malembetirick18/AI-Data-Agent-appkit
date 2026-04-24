@@ -44,6 +44,16 @@ export interface ControllerApiResponse {
   guardrailSource?: 'scope' | 'temporal' | null
 }
 
+/**
+ * Union of events forwarded by the controller SSE proxy.
+ * Consumed by `runControllerPreflight` and dispatched through the streaming reducer.
+ */
+export type ControllerStreamEvent =
+  | { kind: 'status'; message: string }
+  | { kind: 'reasoning_token'; chunk: string }
+  | { kind: 'decision'; data: ControllerApiResponse }
+  | { kind: 'error'; message: string }
+
 export interface ControllerConversationContext {
   conversationId: string
   sessionId: string

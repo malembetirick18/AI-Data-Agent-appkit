@@ -1,7 +1,45 @@
-import { useState, useCallback, useRef, useEffect, useEffectEvent } from 'react'
+import { useState, useCallback, useRef, useReducer, useEffect, useEffectEvent } from 'react'
 import { runControllerPreflight, isControllerApproved } from '../lib/spec-utils'
 import { normalizeClarificationQuestions } from '../lib/clarification-questions'
 import type { ControllerApiResponse, PendingClarification, Message } from '../types/chat'
+
+// ── Streaming reducer ──────────────────────────────────────────────────────
+//
+// Centralises every SSE-driven state update into a single dispatcher so React
+// 18 auto-batching groups rapid updates, and the `finalized` flag prevents any
+// desync from late-arriving status or reasoning events after the final decision.
+
+type StreamingState = {
+  status: string | null
+  reasoningLive: string
+  finalized: boolean
+}
+
+type StreamingAction =
+  | { type: 'STATUS'; message: string }
+  | { type: 'REASONING_TOKEN'; chunk: string }
+  | { type: 'FINALIZED' }
+  | { type: 'RESET' }
+
+const INITIAL_STREAMING_STATE: StreamingState = {
+  status: null,
+  reasoningLive: '',
+  finalized: false,
+}
+
+function streamingReducer(state: StreamingState, action: StreamingAction): StreamingState {
+  if (state.finalized && action.type !== 'RESET') return state
+  switch (action.type) {
+    case 'STATUS':
+      return { ...state, status: action.message }
+    case 'REASONING_TOKEN':
+      return { ...state, reasoningLive: state.reasoningLive + action.chunk }
+    case 'FINALIZED':
+      return { ...state, finalized: true }
+    case 'RESET':
+      return INITIAL_STREAMING_STATE
+  }
+}
 
 function useAbortOnUnmount(activeAbortRef: React.MutableRefObject<AbortController | null>) {
   const abortLatestRequest = useEffectEvent(() => {
@@ -43,6 +81,7 @@ export function useControllerState({
   const [pendingClarification, setPendingClarification] = useState<PendingClarification | null>(null)
   const [_clarificationAnswers, setClarificationAnswers] = useState<Record<string, string>>({})
   const [clarificationRetryCount, setClarificationRetryCount] = useState(0)
+  const [streamingState, dispatchStreaming] = useReducer(streamingReducer, INITIAL_STREAMING_STATE)
   const activeAbortRef = useRef<AbortController | null>(null)
 
   useAbortOnUnmount(activeAbortRef)
@@ -83,6 +122,7 @@ export function useControllerState({
     setShowSuggestions(false)
     setControllerLoading(true)
     setControllerHint(null)
+    dispatchStreaming({ type: 'RESET' })
     setInput('')
 
     if (!enrichedToOriginal.has(trimmedPrompt)) {
@@ -103,6 +143,20 @@ export function useControllerState({
         prompt: trimmedPrompt,
         conversationContext: buildConversationContext(trimmedPrompt),
         signal: abortController.signal,
+        onEvent: (ev) => {
+          switch (ev.kind) {
+            case 'status':
+              dispatchStreaming({ type: 'STATUS', message: ev.message })
+              break
+            case 'reasoning_token':
+              dispatchStreaming({ type: 'REASONING_TOKEN', chunk: ev.chunk })
+              break
+            case 'decision':
+            case 'error':
+              dispatchStreaming({ type: 'FINALIZED' })
+              break
+          }
+        },
       })
 
       if (!ControllerResponse) {
@@ -244,6 +298,7 @@ export function useControllerState({
     setPendingClarification(null)
     setClarificationAnswers({})
     setClarificationRetryCount(0)
+    dispatchStreaming({ type: 'RESET' })
   }
 
   return {
@@ -255,5 +310,7 @@ export function useControllerState({
     clarificationRetryCount,
     submitPromptThroughController,
     resetControllerState,
+    streamingStatus: streamingState.status,
+    streamingReasoning: streamingState.reasoningLive,
   }
 }

@@ -1,157 +1,47 @@
 """
-controller_decision.py — DSPy agent pipeline for the semantic layer API.
+controller_decision.py — Tool-based agentic controller using `dspy.ReAct`.
+
+The controller is a single `dspy.ReAct` module. The agent is given a typed
+output signature and a set of well-documented tools; it decides on its own
+which tools to call and in what order, guided by the signature prompt.
 
 Exports:
-  - ControllerDecision: multi-step controller agent implementing the Reflexion pattern
-    (Actor → Evaluator → Self-Reflection → Corrector)
+  - ControllerDecision: the `dspy.Module` wrapping the ReAct agent.
 """
+from __future__ import annotations
+
+import contextvars
+import difflib
 import json
-import os
-from typing import Any
+from typing import Any, Literal
 
 import dspy
 
 from src.logger import Logger
-from src.signatures.controller_decision.controller_decision_signature import ControllerDecisionSignature
-from src.signatures.rephrase_query.rephrase_query_signature import RephraseQuerySignature
+from src.signatures.controller_agent.controller_agent_signature import (
+    ControllerAgentSignature,
+    ControllerDecisionResult,
+)
 from src.signatures.query_analysis.query_analysis_signature import QueryAnalysisSignature
+from src.signatures.rephrase_query.rephrase_query_signature import RephraseQuerySignature
+from src.signatures.utils.prompt_utils import (
+    load_controller_agent_developer_prompt,
+    load_query_analysis_developer_prompt,
+    load_rephrase_query_developer_prompt,
+)
 
-# Reflexion signatures — imported unconditionally so type checkers can resolve them;
-# the DSPy modules are only instantiated when _REFLECTION_ENABLED is True.
-from src.signatures.controller_self_reflection.controller_self_reflection_signature import ControllerSelfReflectionSignature
-from src.signatures.controller_correction.controller_correction_signature import ControllerCorrectionSignature
-from src.signatures.utils.prompt_utils import load_controller_self_reflection_developer_prompt, load_controller_correction_developer_prompt, load_query_analysis_developer_prompt, load_rephrase_query_developer_prompt, load_controller_decision_developer_prompt
-
-# Child of the root "semantic-layer-api" logger — propagates to its handler, no double output.
 logger = Logger("semantic-layer-api").child("controller")
 
-self_reflection_developer_prompt = load_controller_self_reflection_developer_prompt()
-controller_correction_developer_prompt = load_controller_correction_developer_prompt()
+controller_agent_developer_prompt = load_controller_agent_developer_prompt()
 query_analysis_developer_prompt = load_query_analysis_developer_prompt()
 rephrase_query_developer_prompt = load_rephrase_query_developer_prompt()
-controller_decision_developer_prompt = load_controller_decision_developer_prompt()
 
-# Self-reflection + correction passes are gated behind an env flag.
-# In dev they add two extra LLM calls per request; keeping them off avoids latency overhead.
-# Pattern: Programmatic Evaluator (3b) → Self-Reflection LLM (3c) → Corrector LLM (4).
-_REFLECTION_ENABLED = os.getenv("ENABLE_CONTROLLER_REFLECTION", "false").lower() == "true"
-
-# Catalog validation: when Phase-3 confidence is at or above this threshold, trust the LLM's
-# table choice even if it is absent from the catalog index. Catalog may be incomplete.
+# High-confidence carve-out: when the LLM is very confident and catalog stripping
+# would empty a field, trust the LLM — the catalog index may be incomplete.
 _HIGH_CONFIDENCE_THRESHOLD = 0.85
 
+# ── Guardrail constants (verbatim from the previous implementation) ───────────
 
-# ── Catalog validation helpers ────────────────────────────────────────────────
-
-def _build_catalog_index(catalog_info: str) -> dict:
-    """Parse the catalog JSON string and return sets of valid names for O(1) lookup."""
-    try:
-        catalog = json.loads(catalog_info)
-    except Exception:
-        return {}
-    return {
-        "tables":    {t["name"] for t in catalog.get("tables", [])},
-        "columns":   {c["name"] for t in catalog.get("tables", []) for c in t.get("columns", [])},
-        "functions": {f["name"] for f in catalog.get("functions", [])},
-    }
-
-
-def _validate_against_catalog(
-    decision: dict, index: dict, phase3_confidence: float = 0.0
-) -> tuple[dict, dict]:
-    """Strip names not present in the catalog index.
-
-    Returns (cleaned_decision, removed_by_field) where removed_by_field maps
-    field name → list of hallucinated values that were stripped.
-    """
-    removed: dict[str, list] = {}
-    for key, valid_set in [
-        ("suggestedTables",     index.get("tables",    set())),
-        ("requiredColumns",     index.get("columns",   set())),
-        ("predictiveFunctions", index.get("functions", set())),
-        ("suggestedFunctions",  index.get("functions", set())),
-    ]:
-        if not valid_set:
-            continue
-        original = decision.get(key, [])
-        if not isinstance(original, list):
-            continue
-        cleaned = [v for v in original if v in valid_set]
-        if len(cleaned) != len(original):
-            # High-confidence trust: if Phase-3 was very confident and stripping would
-            # empty the field, trust the LLM — the catalog may be incomplete.
-            # Applies to tables AND functions (Bug 29 originally covered only tables;
-            # extended to functions to prevent valid SQL functions from being stripped
-            # when the catalog index is incomplete).
-            if (
-                key in {"suggestedTables", "suggestedFunctions", "predictiveFunctions"}
-                and not cleaned
-                and phase3_confidence >= _HIGH_CONFIDENCE_THRESHOLD
-            ):
-                continue
-            removed[key] = [v for v in original if v not in valid_set]
-            decision[key] = cleaned
-    # Generalized hallucination penalty — applies to any decision type.
-    #
-    # Rule 1 (hardest): suggestedTables stripped to empty under ANY decision
-    #   → 'clarify' (confidence ≤ 0.45).  No valid data source means the model
-    #   cannot guide the user; asking for clarification is the only safe path.
-    #
-    # Rule 2 (heavy): other fields hallucinated but at least one valid table remains,
-    #   AND the original decision was 'proceed' or 'guide'
-    #   → 'guide' (confidence ≤ 0.70).  The data source is known but the model
-    #   fabricated details, so a direct execute is unsafe.
-    #
-    # 'clarify' and 'error' decisions that already have hallucinations are left at
-    # their decision value — they are already conservative.
-    if removed:
-        tables_now_empty = (
-            "suggestedTables" in removed and not decision.get("suggestedTables")
-        )
-        if tables_now_empty:
-            decision["decision"] = "clarify"
-            decision["confidence"] = min(float(decision.get("confidence", 0.0)), 0.45)
-        elif decision.get("decision") in {"proceed", "guide"}:
-            decision["decision"] = "guide"
-            decision["confidence"] = min(float(decision.get("confidence", 0.0)), 0.70)
-    return decision, removed
-
-
-def _build_validation_feedback(removed: dict, decision: dict) -> str:
-    """Convert the programmatic validation diff into a verbal feedback string.
-
-    This is the evaluator's output (Reflexion 'semantic gradient signal') that is
-    passed explicitly to the self-reflection LLM so it does not have to re-discover
-    problems from scratch.
-    """
-    if not removed:
-        return "No hallucinations detected. Decision is structurally consistent with the catalog."
-    parts = []
-    for field, names in removed.items():
-        parts.append(f"  - {field}: {names} do not exist in the catalog and were removed.")
-    if not decision.get("suggestedTables") and "suggestedTables" in removed:
-        parts.append(
-            "  - suggestedTables is now empty after stripping hallucinations — decision downgraded to "
-            "'clarify' (confidence ≤ 0.45). No valid data source remains; the user must specify "
-            "the correct table or view before any query can be attempted."
-        )
-    elif decision.get("decision") == "guide" and removed:
-        parts.append(
-            "  - Hallucinated names were stripped but at least one valid table remains — "
-            "decision downgraded to 'guide' (confidence ≤ 0.70). "
-            "Direct execution is unsafe; user confirmation is required."
-        )
-    return "Programmatic catalog validation found the following issues:\n" + "\n".join(parts)
-
-_VALID_CLASSIFICATIONS = {"Normal SQL", "SQL Function", "Predictive SQL", "General Information"}
-# Only rephrase when the query needs enrichment — SQL Function and Predictive SQL
-# require function names made explicit; General Information needs reformulation for Genie.
-# Clear Normal SQL queries are sent as-is.
-_REPHRASE_CLASSIFICATIONS = {"SQL Function", "Predictive SQL", "General Information"}
-
-# ── Scope guardrail ───────────────────────────────────────────────────────────
-# These keywords indicate the user has already specified the analysis scope.
-# Checked case-insensitively in both the prompt and the conversation context.
 _SCOPE_KEYWORDS = {"groupe", "filiale", "sp_folder_id", "group", "subsidiary"}
 
 _SCOPE_QUESTIONS: list[dict] = [
@@ -184,15 +74,6 @@ _SCOPE_QUESTIONS: list[dict] = [
     },
 ]
 
-
-def _scope_established(combined_lower: str) -> bool:
-    """Return True if analysis scope is already known from the prompt or conversation."""
-    return any(kw in combined_lower for kw in _SCOPE_KEYWORDS)
-
-
-# ── Temporal guardrail ───────────────────────────────────────────────────────
-# When the user mentions a year/period but doesn't specify calendar vs fiscal,
-# inject temporal clarification questions.
 _TEMPORAL_KEYWORDS = {"année", "annee", "exercice", "year", "fiscal", "trimestre", "semestre"}
 _TEMPORAL_DISAMBIGUATED = {"année civile", "annee civile", "exercice comptable", "fiscal year", "calendar year"}
 
@@ -220,43 +101,380 @@ _TEMPORAL_QUESTIONS: list[dict] = [
 ]
 
 
-def _temporal_ambiguous(combined_lower: str) -> bool:
-    """Return True if the user mentions a year/period but hasn't disambiguated calendar vs fiscal."""
-    has_temporal = any(kw in combined_lower for kw in _TEMPORAL_KEYWORDS)
-    if not has_temporal:
-        return False
-    return not any(term in combined_lower for term in _TEMPORAL_DISAMBIGUATED)
+# ── Request-scoped context (catalog) ──────────────────────────────────────────
+#
+# Tools are module-level functions so that `dspy.ReAct` can bind them once at
+# import time (compatible with `dspy.streamify` / `StreamListener`).  Each
+# request's catalog is stashed into a `ContextVar` by `ControllerDecision.forward`
+# before invoking the agent, and read back inside the tools.
+
+_EMPTY_CTX: dict[str, Any] = {"catalog_info": "", "catalog_raw": None, "catalog_index": {}}
+_request_ctx: contextvars.ContextVar[dict[str, Any]] = contextvars.ContextVar(
+    "controller_request_ctx", default=_EMPTY_CTX
+)
 
 
-# ── Controller agent ──────────────────────────────────────────────────────────
+def _build_catalog_index(catalog_info: str) -> dict:
+    """Parse the catalog JSON and return sets of valid names for O(1) lookup."""
+    try:
+        catalog = json.loads(catalog_info) if catalog_info else None
+    except (json.JSONDecodeError, ValueError):
+        return {}
+    if not isinstance(catalog, dict):
+        return {}
+    return {
+        "tables": {t["name"] for t in catalog.get("tables", []) if isinstance(t, dict)},
+        "columns": {
+            c["name"]
+            for t in catalog.get("tables", [])
+            if isinstance(t, dict)
+            for c in t.get("columns", [])
+            if isinstance(c, dict)
+        },
+        "functions": {f["name"] for f in catalog.get("functions", []) if isinstance(f, dict)},
+    }
+
+
+def _parse_catalog_raw(catalog_info: str) -> dict | None:
+    """Parse the catalog JSON once for descriptive lookups (tables/columns/functions)."""
+    try:
+        catalog = json.loads(catalog_info) if catalog_info else None
+    except (json.JSONDecodeError, ValueError):
+        return None
+    return catalog if isinstance(catalog, dict) else None
+
+
+# ── Tool 1 & 2 — Deterministic guardrails ────────────────────────────────────
+
+def check_scope_coverage(text: str) -> dict:
+    """Check whether the analysis scope (groupe / filiale / sp_folder_id) is specified.
+
+    ALWAYS call this FIRST — before classification, before any other tool — because
+    scope ambiguity short-circuits the entire decision. The input `text` should be
+    the user prompt concatenated with the conversation_context.
+
+    Returns:
+      {
+        "scope_established": bool,
+        "questions": list[dict],       # 3 scope questions when NOT established; [] otherwise
+        "guardrail_source": "scope" | None
+      }
+
+    If scope_established is false you MUST set decision='clarify', copy the returned
+    questions VERBATIM into your final decision, set guardrailSource='scope', cap
+    confidence at 0.35, and STOP calling other tools.
+    """
+    lowered = (text or "").lower()
+    established = any(kw in lowered for kw in _SCOPE_KEYWORDS)
+    if established:
+        return {"scope_established": True, "questions": [], "guardrail_source": None}
+    return {
+        "scope_established": False,
+        "questions": [dict(q) for q in _SCOPE_QUESTIONS],
+        "guardrail_source": "scope",
+    }
+
+
+def check_temporal_coverage(text: str) -> dict:
+    """Check whether the temporal period (année civile vs exercice comptable) is disambiguated.
+
+    ALWAYS call this SECOND (right after check_scope_coverage) for any query that
+    might involve temporal reasoning. The input `text` should be the user prompt
+    concatenated with the conversation_context.
+
+    Returns:
+      {
+        "temporal_ambiguous": bool,
+        "questions": list[dict],       # 2 temporal questions when ambiguous; [] otherwise
+        "guardrail_source": "temporal" | None
+      }
+
+    If temporal_ambiguous is true you MUST set decision='clarify', copy the returned
+    questions VERBATIM into your final decision, set guardrailSource='temporal', cap
+    confidence at 0.40, and STOP.
+    """
+    lowered = (text or "").lower()
+    has_temporal = any(kw in lowered for kw in _TEMPORAL_KEYWORDS)
+    disambiguated = any(term in lowered for term in _TEMPORAL_DISAMBIGUATED)
+    if not has_temporal or disambiguated:
+        return {"temporal_ambiguous": False, "questions": [], "guardrail_source": None}
+    return {
+        "temporal_ambiguous": True,
+        "questions": [dict(q) for q in _TEMPORAL_QUESTIONS],
+        "guardrail_source": "temporal",
+    }
+
+
+# ── Tool 3 — classify_intent (LLM) ────────────────────────────────────────────
+
+_analyze = dspy.ChainOfThought(
+    QueryAnalysisSignature.with_instructions(query_analysis_developer_prompt)
+)
+
+
+def classify_intent(prompt: str) -> dict:
+    """Classify the user query and extract required columns, SQL functions, and a coherence note.
+
+    Call this once BOTH scope and temporal coverage have been confirmed. Uses the
+    catalog_info from the current request context.
+
+    Returns:
+      {
+        "classification": "Normal SQL" | "SQL Function" | "Predictive SQL" | "General Information",
+        "required_columns": list[str],
+        "sql_functions": list[str],
+        "coherence_note": str
+      }
+
+    Use `classification` to decide whether to call rewrite_query next. If
+    `coherence_note` is non-empty (AUDIT_PATTERN / POLYSEMOUS / INCOHERENT /
+    PARAMETRIC), weigh it heavily — POLYSEMOUS or INCOHERENT often warrant
+    decision='clarify'.
+    """
+    ctx = _request_ctx.get()
+    catalog_info = ctx.get("catalog_info", "")
+    try:
+        out = _analyze(prompt=prompt, catalog_info=catalog_info)
+    except Exception as exc:
+        logger.warning("classify_intent failed: %s", exc, exc_info=True)
+        return {
+            "classification": "Normal SQL",
+            "required_columns": [],
+            "sql_functions": [],
+            "coherence_note": "",
+        }
+    raw_class = (out.classification or "").strip()
+    valid = {"Normal SQL", "SQL Function", "Predictive SQL", "General Information"}
+    classification = raw_class if raw_class in valid else "Normal SQL"
+    try:
+        required_columns = json.loads(out.required_columns_json or "[]")
+        required_columns = required_columns if isinstance(required_columns, list) else []
+    except (json.JSONDecodeError, ValueError):
+        required_columns = []
+    try:
+        sql_functions = json.loads(out.sql_functions_json or "[]")
+        sql_functions = sql_functions if isinstance(sql_functions, list) else []
+    except (json.JSONDecodeError, ValueError):
+        sql_functions = []
+    return {
+        "classification": classification,
+        "required_columns": required_columns,
+        "sql_functions": sql_functions,
+        "coherence_note": out.coherence_note or "",
+    }
+
+
+# ── Tool 4 — rewrite_query (LLM) ──────────────────────────────────────────────
+
+_rephrase = dspy.ChainOfThought(
+    RephraseQuerySignature.with_instructions(rephrase_query_developer_prompt)
+)
+
+_REPHRASE_CLASSIFICATIONS = {"SQL Function", "Predictive SQL", "General Information"}
+
+
+def rewrite_query(prompt: str, query_classification: str) -> dict:
+    """Rewrite the user query into a clearer Genie-friendly prompt.
+
+    Only call this when classification is 'SQL Function', 'Predictive SQL', or
+    'General Information'. Do NOT call for 'Normal SQL' — the original prompt is
+    already Genie-friendly.
+
+    Returns: { "rewritten_prompt": str }
+
+    Put the returned rewritten_prompt into the `rewrittenPrompt` field of your
+    final decision.
+    """
+    if query_classification not in _REPHRASE_CLASSIFICATIONS:
+        return {"rewritten_prompt": prompt}
+    try:
+        out = _rephrase(prompt=prompt, query_classification=query_classification)
+    except Exception as exc:
+        logger.warning("rewrite_query failed: %s", exc, exc_info=True)
+        return {"rewritten_prompt": prompt}
+    rewritten = (out.rewritten_prompt or "").strip() or prompt
+    return {"rewritten_prompt": rewritten}
+
+
+# ── Tool 5 — lookup_catalog (programmatic fuzzy match) ───────────────────────
+
+def lookup_catalog(
+    intent: str, kind: Literal["table", "column", "function"], limit: int = 8
+) -> dict:
+    """Fuzzy-match an intent phrase against catalog entries of a specific kind.
+
+    Use this when you need to discover which tables, columns, or functions are
+    relevant to the user query before committing them to your decision.
+
+    Args:
+      intent: natural-language phrase describing what you are looking for
+      kind: "table", "column", or "function"
+      limit: maximum number of candidates to return (default 8)
+
+    Returns:
+      {
+        "candidates": [
+          { "name": str, "description": str, "score": float },
+          ...
+        ]
+      }
+    """
+    ctx = _request_ctx.get()
+    catalog = ctx.get("catalog_raw")
+    if not isinstance(catalog, dict):
+        return {"candidates": []}
+
+    intent_lower = (intent or "").lower()
+
+    if kind == "table":
+        entries = [
+            (t.get("name", ""), t.get("description", "") or "")
+            for t in catalog.get("tables", []) if isinstance(t, dict)
+        ]
+    elif kind == "column":
+        entries = [
+            (c.get("name", ""), c.get("description", "") or "")
+            for t in catalog.get("tables", []) if isinstance(t, dict)
+            for c in t.get("columns", []) if isinstance(c, dict)
+        ]
+    elif kind == "function":
+        entries = [
+            (f.get("name", ""), f.get("description", "") or "")
+            for f in catalog.get("functions", []) if isinstance(f, dict)
+        ]
+    else:
+        return {"candidates": []}
+
+    names = [n for n, _ in entries if n]
+    description_by_name = {n: d for n, d in entries if n}
+
+    # Combine two signals: (1) difflib ratio on names, (2) substring match in description.
+    scored: dict[str, float] = {}
+    for name in names:
+        ratio = difflib.SequenceMatcher(None, intent_lower, name.lower()).ratio()
+        desc = description_by_name.get(name, "").lower()
+        substr_bonus = 0.25 if intent_lower and intent_lower in desc else 0.0
+        scored[name] = max(scored.get(name, 0.0), ratio + substr_bonus)
+
+    # Also boost names matched directly against intent tokens
+    for token in intent_lower.split():
+        if len(token) < 3:
+            continue
+        for name in difflib.get_close_matches(token, [n.lower() for n in names], n=5, cutoff=0.6):
+            original = next((n for n in names if n.lower() == name), None)
+            if original:
+                scored[original] = max(scored.get(original, 0.0), 0.65)
+
+    ranked = sorted(scored.items(), key=lambda it: it[1], reverse=True)[: max(1, int(limit))]
+    return {
+        "candidates": [
+            {"name": name, "description": description_by_name.get(name, ""), "score": round(score, 3)}
+            for name, score in ranked
+            if score > 0.0
+        ]
+    }
+
+
+# ── Tool 6 — validate_catalog_names (programmatic — last line of defence) ────
+
+def _compute_guidance(
+    invalid: dict, provided_tables: list[str], remaining_valid_tables: list[str]
+) -> str:
+    if not invalid["tables"] and not invalid["columns"] and not invalid["functions"]:
+        return "All supplied names are valid. Proceed with your planned decision — no penalty."
+
+    parts: list[str] = []
+    if provided_tables and not remaining_valid_tables:
+        parts.append(
+            "All suggested tables are invalid. Set decision='clarify' and confidence ≤ 0.45 "
+            "(Rule 1). Empty the suggestedTables list. Explain to the user that no valid "
+            "data source matches their query."
+        )
+    elif invalid["tables"] or invalid["columns"] or invalid["functions"]:
+        parts.append(
+            "Some names are invalid but at least one valid table remains. If your planned "
+            "decision was 'proceed' or 'guide', downgrade to 'guide' with confidence ≤ 0.70 "
+            "(Rule 2). Strip the invalid names from the corresponding fields."
+        )
+    parts.append(
+        "HIGH-CONFIDENCE CARVE-OUT: if your own confidence was already ≥ 0.85 AND stripping "
+        "invalid names would empty suggestedTables/suggestedFunctions/predictiveFunctions, "
+        "trust yourself — keep the original names, proceed without penalty. The catalog index "
+        "may be incomplete (e.g. materialized views not registered)."
+    )
+    return " ".join(parts)
+
+
+def validate_catalog_names(
+    tables: list[str] | None = None,
+    columns: list[str] | None = None,
+    functions: list[str] | None = None,
+) -> dict:
+    """Verify that every supplied table, column, and function name exists in the catalog.
+
+    ALWAYS call this as the LAST tool, immediately before returning your final
+    decision, to catch any hallucinated names.
+
+    Returns:
+      {
+        "valid":    { "tables": [...], "columns": [...], "functions": [...] },
+        "invalid":  { "tables": [...], "columns": [...], "functions": [...] },
+        "guidance": str
+      }
+
+    Apply the guidance VERBATIM — do not second-guess it.
+    """
+    ctx = _request_ctx.get()
+    idx = ctx.get("catalog_index") or {}
+    tables_list = [t for t in (tables or []) if isinstance(t, str)]
+    columns_list = [c for c in (columns or []) if isinstance(c, str)]
+    functions_list = [f for f in (functions or []) if isinstance(f, str)]
+
+    valid_tables_set = idx.get("tables", set())
+    valid_columns_set = idx.get("columns", set())
+    valid_functions_set = idx.get("functions", set())
+
+    # With no catalog index we cannot validate — return all names as valid.
+    if not idx:
+        return {
+            "valid": {"tables": tables_list, "columns": columns_list, "functions": functions_list},
+            "invalid": {"tables": [], "columns": [], "functions": []},
+            "guidance": "Catalog index unavailable — skipping validation. Proceed with your planned decision.",
+        }
+
+    valid = {
+        "tables": [t for t in tables_list if t in valid_tables_set],
+        "columns": [c for c in columns_list if c in valid_columns_set],
+        "functions": [f for f in functions_list if f in valid_functions_set],
+    }
+    invalid = {
+        "tables": [t for t in tables_list if t not in valid_tables_set],
+        "columns": [c for c in columns_list if c not in valid_columns_set],
+        "functions": [f for f in functions_list if f not in valid_functions_set],
+    }
+    guidance = _compute_guidance(invalid, tables_list, valid["tables"])
+    return {"valid": valid, "invalid": invalid, "guidance": guidance}
+
+
+# ── The agent ────────────────────────────────────────────────────────────────
 
 class ControllerDecision(dspy.Module):
-    """
-    Multi-step controller agent implementing the full Reflexion pattern (Shinn et al., 2023):
-
-    1. Phase 1:   combined analysis (classify + columns + functions) — 1 LLM call  [Actor]
-    2. Phase 2:   rephrase query — only for SQL Function / Predictive SQL / General Info  [Actor]
-    3. Phase 3:   controller decision (proceed / guide / clarify / error)  [Actor]
-    3b. Eval:    programmatic catalog validation — strips hallucinations, builds feedback  [Evaluator]
-    3c. Reflect: self-reflection LLM — diagnoses WHY the decision failed (verbal)  [Self-Reflection]
-    4. Phase 4:  correction LLM — applies self_reflection_text to produce corrected JSON  [Actor retry]
-                 Gated behind ENABLE_CONTROLLER_REFLECTION (off in dev, on in production)
-
-    Reflexion roles: Actor (Phases 1–3) → Evaluator (3b) → Self-Reflection (3c) → Actor retry (4).
-    Single-pass (no memory accumulation) — one correction cycle per request.
-    DSPy's LM num_retries handles API-level retries. JSONAdapter guarantees structured JSON output.
-    """
+    """Agent ReAct tool-based — the single class exposed to the rest of the backend."""
 
     def __init__(self):
         super().__init__()
-        self.analyze_query = dspy.ChainOfThought(QueryAnalysisSignature.with_instructions(query_analysis_developer_prompt))
-        self.rephrase_query = dspy.ChainOfThought(RephraseQuerySignature.with_instructions(rephrase_query_developer_prompt))
-        self.controller_decision = dspy.ChainOfThought(ControllerDecisionSignature.with_instructions(controller_decision_developer_prompt))
-        self.self_reflect: dspy.ChainOfThought | None = None
-        self.correct_decision: dspy.ChainOfThought | None = None
-        if _REFLECTION_ENABLED:
-            self.self_reflect = dspy.ChainOfThought(ControllerSelfReflectionSignature.with_instructions(self_reflection_developer_prompt))
-            self.correct_decision = dspy.ChainOfThought(ControllerCorrectionSignature.with_instructions(controller_correction_developer_prompt))
+        self._react = dspy.ReAct(
+            ControllerAgentSignature.with_instructions(controller_agent_developer_prompt),
+            tools=[
+                check_scope_coverage,
+                check_temporal_coverage,
+                classify_intent,
+                rewrite_query,
+                lookup_catalog,
+                validate_catalog_names,
+            ],
+            max_iters=8,
+        )
 
     def forward(
         self,
@@ -264,236 +482,32 @@ class ControllerDecision(dspy.Module):
         catalog_info: str = "",
         conversation_context: str = "",
     ) -> dspy.Prediction:
-        # Phase 1: single combined analysis — replaces 3 sequential calls
-        analysis = self.analyze_query(prompt=source_text, catalog_info=catalog_info)
-
-        raw_class = analysis.classification.strip()
-        query_classification = raw_class if raw_class in _VALID_CLASSIFICATIONS else "Normal SQL"
-
-        required_columns_json: str = analysis.required_columns_json or "[]"
-        sql_functions_json: str = analysis.sql_functions_json or "[]"
-        coherence_note: str = analysis.coherence_note or ""
-
-        logger.info("Phase-1 classification=%r columns=%s functions=%s",
-                     query_classification,
-                     required_columns_json[:80],
-                     sql_functions_json[:80])
-        if coherence_note:
-            logger.info("Phase-1 coherence note: %s", coherence_note[:120])
-
-        # Phase 2: conditional rephrase — skip for clear Normal SQL queries
-        if query_classification in _REPHRASE_CLASSIFICATIONS:
-            logger.info("Phase-2 rephrasing prompt for classification=%r", query_classification)
-            rewritten = self.rephrase_query(
-                prompt=source_text, query_classification=query_classification
-            )
-            rewritten_prompt: str = rewritten.rewritten_prompt.strip() or source_text
-        else:
-            rewritten_prompt = source_text
-
-        # Phase 3: controller decision — DSPy + JSONAdapter guarantees valid JSON output
-        raw = self.controller_decision(
-            prompt=source_text,
-            catalog_info=catalog_info,
-            query_classification=query_classification,
-            sql_functions_json=sql_functions_json,
-            required_columns_json=required_columns_json,
-            rewritten_prompt=rewritten_prompt,
-            conversation_context=conversation_context,
-            coherence_note=coherence_note,
-        )
-
-        try:
-            decision: dict[str, Any] = json.loads(raw.decision_json)
-            if not isinstance(decision, dict):
-                raise ValueError(f"Expected dict, got {type(decision).__name__}")
-        except (json.JSONDecodeError, ValueError) as exc:
-            logger.error("Phase-3 decision_json parse failed: %s — raw=%r", exc, raw.decision_json)
-            decision = {"decision": "error", "confidence": 0.0, "message": "Réponse du contrôleur invalide."}
-
-        # Enrich with pipeline metadata not always returned by the LLM
-        decision.setdefault("rewrittenPrompt", rewritten_prompt)
-        decision.setdefault("queryClassification", query_classification)
-        decision.setdefault("suggestedTables", [])
-        decision.setdefault("suggestedFunctions", [])
-        decision.setdefault("questions", [])
-        decision.setdefault("confidence", 0.0)
-        decision.setdefault("message", "")
-        decision.setdefault("needsParams", False)
-        try:
-            decision["requiredColumns"] = json.loads(required_columns_json) if required_columns_json else []
-            if not isinstance(decision["requiredColumns"], list):
-                decision["requiredColumns"] = []
-        except (json.JSONDecodeError, ValueError):
-            decision["requiredColumns"] = []
-        try:
-            decision["predictiveFunctions"] = json.loads(sql_functions_json) if sql_functions_json else []
-            if not isinstance(decision["predictiveFunctions"], list):
-                decision["predictiveFunctions"] = []
-        except (json.JSONDecodeError, ValueError):
-            decision["predictiveFunctions"] = []
-        decision.setdefault("coherenceNote", coherence_note)
-
-        logger.info("Phase-3 decision=%r confidence=%.2f tables=%s needsParams=%s",
-                     decision.get("decision"),
-                     float(decision.get("confidence", 0.0)),
-                     decision.get("suggestedTables", []),
-                     decision.get("needsParams", False))
-
-        # ── Phase 3b — Programmatic evaluator (always runs, zero cost) ─────────────────────────
-        # Strips hallucinated table/column/function names against the catalog index and builds
-        # a verbal feedback string. This output is passed explicitly to the LLM corrector in
-        # Phase 4 so it does not have to re-derive what went wrong from scratch.
+        catalog_raw = _parse_catalog_raw(catalog_info)
         catalog_index = _build_catalog_index(catalog_info)
-        removed: dict[str, list] = {}
-        validation_feedback = ""
-        if catalog_index:
-            phase3_confidence = float(decision.get("confidence", 0.0))
-            decision, removed = _validate_against_catalog(decision, catalog_index, phase3_confidence)
-            validation_feedback = _build_validation_feedback(removed, decision)
-            if removed:
-                logger.info(
-                    "Phase-3b stripped %d hallucinated names from fields: %s → decision now=%r confidence=%.2f",
-                    sum(len(v) for v in removed.values()),
-                    list(removed.keys()),
-                    decision.get("decision"),
-                    float(decision.get("confidence", 0.0)),
-                )
-            else:
-                logger.debug("Phase-3b catalog validation clean")
+        token = _request_ctx.set(
+            {
+                "catalog_info": catalog_info,
+                "catalog_raw": catalog_raw,
+                "catalog_index": catalog_index,
+            }
+        )
+        try:
+            return self._react(
+                prompt=source_text,
+                catalog_info=catalog_info,
+                conversation_context=conversation_context,
+            )
+        finally:
+            _request_ctx.reset(token)
 
-        # ── Guardrails ────────────────────────────────────────────────────────
-        # Compute the combined lowered string once for both guardrails.
-        _combined_lower = (source_text + " " + conversation_context).lower()
 
-        # Scope guardrail — runs before Reflexion so scope-forced clarify
-        # decisions never enter the costly Phase 3c+4 path.
-        if not _scope_established(_combined_lower):
-            raw_questions = decision.get("questions", [])
-            existing_questions: list[dict] = raw_questions if isinstance(raw_questions, list) else []
-            # Guard against LLM hallucinating a question with the exact guardrail id:
-            # remove any existing question whose id matches a guardrail question id before
-            # checking, so the well-formed guardrail version always takes precedence.
-            _scope_ids = {q["id"] for q in _SCOPE_QUESTIONS}
-            existing_questions = [q for q in existing_questions if not (isinstance(q, dict) and q.get("id") in _scope_ids)]
-            has_scope = any(isinstance(q, dict) and q.get("id") == "scope_level" for q in existing_questions)
-            if not has_scope:
-                logger.info("Scope guardrail fired — overriding to 'clarify', injecting %d scope questions",
-                             len(_SCOPE_QUESTIONS))
-                decision["decision"] = "clarify"
-                decision["questions"] = _SCOPE_QUESTIONS + existing_questions
-                if not decision.get("message"):
-                    decision["message"] = "Veuillez préciser le périmètre d'analyse avant de continuer."
-                decision["confidence"] = min(float(decision.get("confidence", 0.0)), 0.35)
-                decision["guardrailSource"] = "scope"
-
-        # Temporal guardrail — when a year/period is mentioned but calendar vs
-        # fiscal is not disambiguated, inject temporal questions.
-        if _temporal_ambiguous(_combined_lower):
-            raw_questions = decision.get("questions", [])
-            existing_questions: list[dict] = raw_questions if isinstance(raw_questions, list) else []
-            # Same guard as scope: strip any LLM-hallucinated temporal question ids first
-            _temporal_ids = {q["id"] for q in _TEMPORAL_QUESTIONS}
-            existing_questions = [q for q in existing_questions if not (isinstance(q, dict) and q.get("id") in _temporal_ids)]
-            has_temporal = any(isinstance(q, dict) and q.get("id") == "period_type" for q in existing_questions)
-            if not has_temporal:
-                logger.info("Temporal guardrail fired — injecting %d temporal questions",
-                             len(_TEMPORAL_QUESTIONS))
-                decision["decision"] = "clarify"
-                decision["questions"] = existing_questions + _TEMPORAL_QUESTIONS
-                if not decision.get("message"):
-                    decision["message"] = "Veuillez préciser le type de période d'analyse."
-                decision["confidence"] = min(float(decision.get("confidence", 0.0)), 0.40)
-                decision.setdefault("guardrailSource", "temporal")
-
-        # ── Phases 3c + 4 — Full Reflexion cycle (production only) ──────────────────────────
-        # Reflexion pattern (Shinn et al., 2023):
-        #   Phase 3c — Self-Reflection LLM: reads evaluator feedback and produces a verbal
-        #              diagnosis of WHY the decision was wrong (not just WHAT is wrong).
-        #   Phase 4  — Correction LLM: uses both the evaluator feedback (3b) and the verbal
-        #              diagnosis (3c) to produce a corrected, structurally consistent JSON.
-        # Only fires for proceed/guide — clarify/error are already conservative.
-        # Only fires when there is a real signal (hallucinations found OR coherence issue).
-        # Single reflection+correction cycle per request (synchronous latency constraint).
-        # A second programmatic validation after correction closes the evaluation loop.
-        _has_reflection_signal = bool(removed) or bool(coherence_note)
-        pre_reflexion_decision = dict(decision)  # snapshot for fallback
-        if (
-            self.self_reflect is not None
-            and self.correct_decision is not None
-            and decision.get("decision") in {"proceed", "guide"}
-            and _has_reflection_signal
-        ):
-            try:
-                # Phase 3c — Self-Reflection: verbal diagnosis of the decision's flaws
-                logger.info("Phase-3c self-reflection triggered for decision=%r", decision.get("decision"))
-                raw_reflection = self.self_reflect(
-                    prompt=source_text,
-                    coherence_note=coherence_note,
-                    original_decision_json=json.dumps(decision),
-                    validation_feedback=validation_feedback,
-                )
-                self_reflection_text: str = raw_reflection.self_reflection_text or ""
-                logger.info("Phase-3c self-reflection: %s", self_reflection_text)
-
-                # Phase 4 — Correction: apply evaluator feedback + verbal diagnosis
-                raw_correction = self.correct_decision(
-                    prompt=source_text,
-                    catalog_info=catalog_info,
-                    coherence_note=coherence_note,
-                    original_decision_json=json.dumps(decision),
-                    validation_feedback=validation_feedback,
-                    self_reflection_text=self_reflection_text,
-                )
-                try:
-                    corrected = json.loads(raw_correction.corrected_decision_json)
-                except json.JSONDecodeError as parse_exc:
-                    logger.error(
-                        "Phase-4 corrected_decision_json parse failed: %s — raw=%r",
-                        parse_exc,
-                        raw_correction.corrected_decision_json[:200],
-                    )
-                    raise
-                if not isinstance(corrected, dict):
-                    raise ValueError(
-                        f"Corrector returned {type(corrected).__name__} instead of dict — "
-                        f"raw={raw_correction.corrected_decision_json[:120]!r}"
-                    )
-                # Preserve pipeline-injected fields — the corrector must not override these
-                corrected["rewrittenPrompt"]     = decision.get("rewrittenPrompt", rewritten_prompt)
-                corrected["queryClassification"] = decision.get("queryClassification", query_classification)
-                corrected["coherenceNote"]       = coherence_note
-                # Preserve questions: corrector focuses on structure/confidence, not UX questions.
-                # If it returned none but the original had questions, keep the originals.
-                if not corrected.get("questions") and decision.get("questions"):
-                    corrected["questions"] = decision["questions"]
-                # Second evaluation cycle: re-run programmatic validator on corrected output
-                if catalog_index:
-                    corrected, _ = _validate_against_catalog(corrected, catalog_index)
-                logger.info("Phase-4 corrected decision=%r confidence=%.2f",
-                             corrected.get("decision"), float(corrected.get("confidence", 0.0)))
-                # Guard: 'clarify' with 0 questions is a dead-end — the client has
-                # nothing to show and the retry counter increments silently, leading
-                # to the max-3 exhaustion message.  Fall back to the pre-Reflexion
-                # decision (typically 'guide') which lets the user confirm or reject.
-                corrected_questions = corrected.get("questions") or []
-                if corrected.get("decision") == "clarify" and not corrected_questions:
-                    logger.warning(
-                        "Phase-4 produced 'clarify' with 0 questions — "
-                        "falling back to pre-Reflexion decision=%r confidence=%.2f",
-                        pre_reflexion_decision.get("decision"),
-                        float(pre_reflexion_decision.get("confidence", 0.0)),
-                    )
-                    decision = pre_reflexion_decision
-                else:
-                    decision = corrected
-            except Exception as exc:
-                logger.warning(
-                    "Reflexion cycle (3c+4) failed (non-fatal) — keeping Phase 3b decision. Error: %s",
-                    exc,
-                    exc_info=True,
-                )
-
-        # Return dspy.Prediction to enable MLflow LM usage tracking.
-        # Prediction.get() is dict-compatible — callers need no changes.
-        return dspy.Prediction(**decision)
+__all__ = [
+    "ControllerDecision",
+    "ControllerDecisionResult",
+    "check_scope_coverage",
+    "check_temporal_coverage",
+    "classify_intent",
+    "rewrite_query",
+    "lookup_catalog",
+    "validate_catalog_names",
+]
