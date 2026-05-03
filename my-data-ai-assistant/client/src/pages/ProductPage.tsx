@@ -11,15 +11,16 @@ import type { FolderRow, SelectedFolder } from '../data/folder-examples'
 
 const suggestionsCache: Partial<Record<Product, Promise<string[]>>> = {}
 function getSuggestionsPromise(product: Product): Promise<string[]> {
-  if (!suggestionsCache[product]) {
-    suggestionsCache[product] = fetch(`/api/suggestions?app_type=${product}`)
-      .then((r) => (r.ok ? r.json() : Promise.resolve({ suggestions: [] })))
-      .then((data: { suggestions?: string[] }) =>
-        Array.isArray(data.suggestions) ? data.suggestions : [],
-      )
-      .catch(() => [])
-  }
-  return suggestionsCache[product]!
+  const cached = suggestionsCache[product]
+  if (cached) return cached
+  const fresh = fetch(`/api/suggestions?app_type=${product}`)
+    .then((r) => (r.ok ? r.json() : Promise.resolve({ suggestions: [] })))
+    .then((data: { suggestions?: string[] }) =>
+      Array.isArray(data.suggestions) ? data.suggestions : [],
+    )
+    .catch((): string[] => [])
+  suggestionsCache[product] = fresh
+  return fresh
 }
 
 export function ProductPage({ product }: { product: Product }) {
@@ -40,6 +41,7 @@ export function ProductPage({ product }: { product: Product }) {
   const {
     messages, spec, displayedSpecId, showSpec,
     isStreaming, hasError, statusText, reasoningText, controllerInfo,
+    clarificationSpec, clarificationQuestions, submitClarification,
     send, reset, selectedFolder, selectFolder, clearFolder,
   } = useProductAssistant(product)
 
@@ -47,7 +49,7 @@ export function ProductPage({ product }: { product: Product }) {
 
   const handleSend = (q: string) => {
     setLastQuery(q)
-    send(q)
+    void send(q)
   }
 
   const handleReset = () => {
@@ -56,7 +58,7 @@ export function ProductPage({ product }: { product: Product }) {
   }
 
   const handleReload = () => {
-    if (lastQuery && !isStreaming) send(lastQuery)
+    if (lastQuery && !isStreaming) void send(lastQuery)
   }
 
   const availableFolders = FOLDER_EXAMPLES[product]
@@ -86,11 +88,14 @@ export function ProductPage({ product }: { product: Product }) {
         <OutputCanvas
           product={product}
           spec={spec}
+          clarificationSpec={clarificationSpec}
+          clarificationQuestions={clarificationQuestions}
           isStreaming={isStreaming}
           hasError={hasError}
           lastQuery={lastQuery}
           onReset={handleReset}
           onReload={handleReload}
+          onClarificationSubmit={submitClarification}
         />
       </AppShell.Main>
     </AppShell>

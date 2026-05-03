@@ -154,7 +154,7 @@ def _serialize_questions(questions: list[dict]) -> str:
             if q.get("step") is not None:
                 bounds += f" step={q['step']}"
             parts.append(bounds)
-        if q_id == "spFolderId":
+        if q_id in ("sp_folder_id", "session_id"):
             parts.append("   visibility: only show when scope_level = 'filiale'")
         if q_id == "period_year":
             parts.append("   visibility: only show when period_type has a value")
@@ -375,14 +375,30 @@ with open(catalog_path, "r", encoding="utf-8") as f:
     genie_knowledge_store = json.load(f)
 default_catalog_info = json.dumps(genie_knowledge_store)
 
+# MLflow must be configured in this order:
+#   1. tracking URI  — tells the client where to send data
+#   2. experiment    — establishes (or retrieves) the experiment before autolog patches DSPy
+#   3. autolog       — registers trace hooks; uses the already-configured experiment
+mlflow.set_tracking_uri(os.getenv("MLFLOW_TRACKING_URI", "databricks"))
+_mlflow_experiment = os.getenv(
+    "MLFLOW_SEMANTIC_LAYER_TRACING_EXPERIMENT", "/semantic-layer-experiment"
+)
+try:
+    mlflow.set_experiment(_mlflow_experiment)
+    exp = mlflow.get_experiment_by_name(_mlflow_experiment)
+    logger.info(
+        "MLflow experiment ready — name=%s id=%s tracking_uri=%s",
+        _mlflow_experiment,
+        exp.experiment_id if exp else "unknown",
+        mlflow.get_tracking_uri(),
+    )
+except Exception as _exc:
+    # Surface even when MLFLOW_SILENT=true so startup misconfiguration is visible.
+    logger.warning("MLflow experiment setup failed — traces may not be logged: %s", _exc)
+
 log_traces = os.getenv("MLFLOW_LOG_TRACES", "true") == "true"
 silent = os.getenv("MLFLOW_SILENT", "true") == "true"
-
 mlflow.dspy.autolog(log_traces=log_traces, silent=silent)
-mlflow.set_tracking_uri(os.getenv("MLFLOW_TRACKING_URI", "databricks"))
-mlflow.set_experiment(
-    os.getenv("MLFLOW_SEMANTIC_LAYER_TRACING_EXPERIMENT", "semantic-layer-experiment")
-)
 
 AZURE_API_KEY = os.getenv("AZURE_API_KEY")
 AZURE_API_BASE = os.getenv("AZURE_API_BASE")

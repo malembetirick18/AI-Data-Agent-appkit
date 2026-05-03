@@ -1,7 +1,7 @@
 import { useCallback, useRef, useState } from 'react'
 import { useUIStream } from '@json-render/react'
 import type { Product } from '../../../shared/products'
-import type { GenericUiSpec } from '../types/chat'
+import type { GenericUiSpec, ControllerQuestion } from '../types/chat'
 import { validateChartSpec, specIsValid } from '../lib/genie-utils'
 import type { SelectedFolder } from '../data/folder-examples'
 
@@ -12,7 +12,8 @@ export type AssistantMessage = {
   role: 'user' | 'agent'
   text: string
   timestamp: string
-  specId?: string  // set on agent completion messages that have a linked spec
+  specId?: string
+  metadata?: { type: 'qr_summary'; pairs: { label: string; answer: string }[] }
 }
 
 type Stage = 'idle' | 'running' | 'spec'
@@ -57,11 +58,120 @@ async function* readSseStream(
   }
 }
 
-/** Returns the label string from a question object, or null if the object is empty / has no label. */
-function questionLabel(q: unknown): string | null {
-  if (typeof q !== 'object' || q === null) return null
-  const label = (q as Record<string, unknown>).label
-  return typeof label === 'string' && label.trim() ? label.trim() : null
+function buildClarificationSpec(
+  questions: ControllerQuestion[],
+  message: string,
+  title = 'Précision requise',
+): GenericUiSpec {
+  const valid = questions.filter((q) => q.id && q.label?.trim())
+  const elements: Record<string, unknown> = {}
+  const state: Record<string, unknown> = {}
+  const children: string[] = []
+
+  const isGuide = title === 'Requête optimisée' || title === 'Paramètres optionnels'
+
+  for (const q of valid) {
+    const elemId = `field-${q.id}`
+    children.push(elemId)
+    state[q.id] = ''
+
+    if (q.inputType === 'select' && Array.isArray(q.options) && q.options.length > 0) {
+      elements[elemId] = {
+        type: 'SelectInputField',
+        props: {
+          label: q.label,
+          placeholder: q.placeholder ?? 'Sélectionner…',
+          options: q.options,
+          required: q.required ?? false,
+          value: { $bindState: `/${q.id}` },
+        },
+      }
+    } else if (q.inputType === 'number') {
+      elements[elemId] = {
+        type: 'NumberInputField',
+        props: {
+          label: q.label,
+          placeholder: q.placeholder ?? '',
+          min: q.min,
+          max: q.max,
+          step: q.step ?? 1,
+          required: q.required ?? false,
+          value: { $bindState: `/${q.id}` },
+        },
+      }
+    } else {
+      elements[elemId] = {
+        type: 'TextInputField',
+        props: {
+          label: q.label,
+          placeholder: q.placeholder ?? '',
+          required: q.required ?? false,
+          value: { $bindState: `/${q.id}` },
+        },
+      }
+    }
+  }
+
+  // When there are no renderable questions and this is not a guide decision,
+  // add a free-text fallback so the submit button is never shown against an empty form.
+  if (valid.length === 0 && !isGuide) {
+    elements['field-clarification'] = {
+      type: 'TextInputField',
+      props: {
+        label: 'Votre précision',
+        placeholder: 'Décrivez votre demande en détail…',
+        value: { $bindState: '/clarification' },
+      },
+    }
+    state['clarification'] = ''
+    children.push('field-clarification')
+  }
+
+  elements['form-panel'] = {
+    type: 'FormPanel',
+    props: { variant: 'bare' },
+    children,
+  }
+
+  return { root: 'form-panel', elements, state, _guide: isGuide, _message: message } as unknown as GenericUiSpec
+}
+
+/**
+ * Normalizes controller clarification questions and removes duplicates by `id`.
+ * Keeps the first valid question as canonical and merges stricter flags from duplicates.
+ */
+function normalizeClarificationQuestions(questions: ControllerQuestion[]): ControllerQuestion[] {
+  const byId = new Map<string, ControllerQuestion>()
+  for (const q of questions) {
+    const id = q?.id?.trim()
+    const label = q?.label?.trim()
+    if (!id || !label) continue
+    const normalized: ControllerQuestion = {
+      ...q,
+      id,
+      label,
+      placeholder: q.placeholder?.trim() || undefined,
+      options: Array.isArray(q.options)
+        ? q.options.filter((o) => o?.value?.trim() && o?.label?.trim())
+        : undefined,
+    }
+    const existing = byId.get(id)
+    if (!existing) {
+      byId.set(id, normalized)
+    } else {
+      byId.set(id, {
+        ...existing,
+        required: Boolean(existing.required || normalized.required),
+        inputType: existing.inputType ?? normalized.inputType,
+        placeholder: existing.placeholder ?? normalized.placeholder,
+        options: existing.options ?? normalized.options,
+        min: existing.min ?? normalized.min,
+        max: existing.max ?? normalized.max,
+        step: existing.step ?? normalized.step,
+      })
+    }
+  }
+  return Array.from(byId.values())
 }
 
 export function useProductAssistant(product: Product) {
@@ -73,6 +183,9 @@ export function useProductAssistant(product: Product) {
   const [selectedFolder, setSelectedFolder] = useState<SelectedFolder | null>(null)
   const [statusText, setStatusText] = useState('')
   const [reasoningText, setReasoningText] = useState('')
+  const [clarificationSpec, setClarificationSpec] = useState<GenericUiSpec | null>(null)
+  const [clarificationQuestions, setClarificationQuestions] = useState<ControllerQuestion[]>([])
+  const clarificationOriginalPromptRef = useRef<string>('')
   const [controllerInfo, setControllerInfo] = useState<{
     decision: string
     confidence: number
@@ -137,14 +250,27 @@ export function useProductAssistant(product: Product) {
     setControllerInfo(null)
     setStatusText('')
     setReasoningText('')
+    setClarificationSpec(null)
+    setClarificationQuestions([])
+    clarificationOriginalPromptRef.current = ''
     setStage('idle')
   }, [uiStream])
 
   const send = useCallback(
-    async (promptText: string) => {
+    async (promptText: string, displayText?: string | null) => {
       const trimmed = promptText.trim()
       const folder = selectedFolderRef.current
-      if (!trimmed || stage !== 'idle' || !folder) return
+      // Folder context (sp_folder_id + session_id) is required for any analysis.
+      // Without both fields the Genie space cannot scope the query.
+      if (
+        !trimmed ||
+        stage !== 'idle' ||
+        !folder ||
+        !folder.spFolderId.trim() ||
+        !folder.sessionId.trim()
+      ) {
+        return
+      }
 
       abortRef.current?.abort()
       const abort = new AbortController()
@@ -155,12 +281,18 @@ export function useProductAssistant(product: Product) {
       setControllerInfo(null)
       setStatusText('Analyse de la requête en cours…')
       setReasoningText('')
+      setClarificationSpec(null)
+      setClarificationQuestions([])
+      clarificationOriginalPromptRef.current = trimmed
       uiStream.clear()
       setStage('running')
-      setMessages((prev) => [
-        ...prev,
-        { id: makeId(), role: 'user', text: trimmed, timestamp: formatTime() },
-      ])
+      // displayText === null means caller already added a user bubble (e.g. clarification re-submit)
+      if (displayText !== null) {
+        setMessages((prev) => [
+          ...prev,
+          { id: makeId(), role: 'user', text: displayText ?? trimmed, timestamp: formatTime() },
+        ])
+      }
 
       try {
         // ── Phase 1: Controller decision ──────────────────────────────────────
@@ -172,7 +304,7 @@ export function useProductAssistant(product: Product) {
             catalogInfo: '',
             conversationContext: {
               sp_folder_id: folder.spFolderId,
-              session: folder.sessionId,
+              session_id: folder.sessionId,
             },
           }),
           signal: abort.signal,
@@ -220,32 +352,56 @@ export function useProductAssistant(product: Product) {
         }
 
         const canSendDirectly = decision.canSendDirectly === true
+        const decisionType = typeof decision.decision === 'string' ? decision.decision : 'proceed'
+        const isGuide = decisionType === 'guide'
         const rewrittenPrompt =
           typeof decision.rewrittenPrompt === 'string' && decision.rewrittenPrompt.trim()
             ? decision.rewrittenPrompt
             : trimmed
 
         setControllerInfo({
-          decision: typeof decision.decision === 'string' ? decision.decision : 'proceed',
+          decision: decisionType,
           confidence: typeof decision.confidence === 'number' ? decision.confidence : 1,
           wasRewritten: rewrittenPrompt !== trimmed,
         })
 
-        if (!canSendDirectly) {
+        // Guide decisions always pause for user confirmation before Genie.
+        // Clarify/low-confidence proceed also pause for required clarification.
+        if (!canSendDirectly || isGuide) {
           const rawQuestions = Array.isArray(decision.questions) ? decision.questions : []
-          // Filter out empty objects or entries without a proper label string
-          const labels = rawQuestions
-            .map(questionLabel)
-            .filter((l): l is string => l !== null)
+          const normalizedQuestions = normalizeClarificationQuestions(
+            rawQuestions.filter(
+              (q): q is ControllerQuestion =>
+                typeof q === 'object' && q !== null && typeof (q as ControllerQuestion).id === 'string',
+            ),
+          )
+          const labels = normalizedQuestions.map((q) => q.label)
           const baseMessage =
             typeof decision.message === 'string' && decision.message.trim()
               ? decision.message
+              : isGuide
+              ? "L'agent a optimisé votre requête. Confirmez pour lancer l'analyse."
               : "Pour affiner l'analyse, veuillez préciser votre demande."
           const text =
             labels.length > 0
               ? `${baseMessage}\n\n${labels.map((l) => `• ${l}`).join('\n')}`
               : baseMessage
           setMessages((prev) => [...prev, agentMsg(text)])
+
+          if (isGuide) {
+            clarificationOriginalPromptRef.current = rewrittenPrompt
+          }
+
+          setClarificationQuestions(normalizedQuestions)
+          setClarificationSpec(
+            buildClarificationSpec(
+              normalizedQuestions,
+              baseMessage,
+              isGuide
+                ? normalizedQuestions.length > 0 ? 'Paramètres optionnels' : 'Requête optimisée'
+                : 'Précision requise',
+            ),
+          )
           setControllerInfo(null)
           setStatusText('')
           setReasoningText('')
@@ -254,6 +410,22 @@ export function useProductAssistant(product: Product) {
         }
 
         // ── Phase 2: Genie execution via unified /api/chat/stream ─────────────
+        // Re-check folder context here — it may have been cleared (clearFolder)
+        // while the controller call was in flight. Without sp_folder_id +
+        // session_id we cannot scope the Genie query, so we abort cleanly.
+        const folderNow = selectedFolderRef.current
+        if (!folderNow?.spFolderId?.trim() || !folderNow?.sessionId?.trim()) {
+          setMessages((prev) => [
+            ...prev,
+            agentMsg('Contexte de dossier manquant (sp_folder_id et session_id requis). Sélectionnez un dossier et réessayez.'),
+          ])
+          setControllerInfo(null)
+          setStatusText('')
+          setReasoningText('')
+          setStage('idle')
+          return
+        }
+
         setStatusText('Interrogation des données en cours…')
         const genieResp = await fetch('/api/chat/stream', {
           method: 'POST',
@@ -286,6 +458,18 @@ export function useProductAssistant(product: Product) {
 
         if (abort.signal.aborted) return
 
+        // Guard: require both conversation context and a data result before generating spec
+        if (!selectedFolderRef.current) {
+          setMessages((prev) => [...prev, agentMsg('Contexte de conversation manquant. Sélectionnez un dossier et réessayez.')])
+          setStage('idle')
+          return
+        }
+        if (!genieResult) {
+          setMessages((prev) => [...prev, agentMsg("L'analyse n'a retourné aucune donnée. Reformulez votre question ou vérifiez que le dossier contient des données pour cette période.")])
+          setStage('idle')
+          return
+        }
+
         // ── Phase 3: Spec streaming ───────────────────────────────────────────
         setStatusText('Génération du rapport…')
         setStage('spec')
@@ -310,6 +494,48 @@ export function useProductAssistant(product: Product) {
     [stage, uiStream, product],
   )
 
+  const submitClarification = useCallback(
+    (answers: Record<string, string>) => {
+      const original = clarificationOriginalPromptRef.current
+      const qs = clarificationQuestions
+      if (!original) return
+
+      // Build Q/R pairs from structured questions
+      const pairs: { label: string; answer: string }[] = qs
+        .filter((q) => answers[q.id] != null && answers[q.id] !== '')
+        .map((q) => ({ label: q.label, answer: answers[q.id] }))
+
+      // Include fallback free-text field when no structured questions exist
+      if (pairs.length === 0 && answers['clarification']?.trim()) {
+        pairs.push({ label: 'Votre précision', answer: answers['clarification'].trim() })
+      }
+
+      const enriched = pairs.length > 0
+        ? `${original}\n\nPrécisions apportées :\n${pairs.map((p) => `• ${p.label} : ${p.answer}`).join('\n')}`
+        : original
+
+      // Emit structured Q/R summary card before re-running
+      if (pairs.length > 0) {
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: makeId(),
+            role: 'agent' as const,
+            text: '',
+            timestamp: formatTime(),
+            metadata: { type: 'qr_summary' as const, pairs },
+          },
+        ])
+      }
+
+      setClarificationSpec(null)
+      setClarificationQuestions([])
+      // null = suppress user bubble — the original query is already in history
+      void send(enriched, null)
+    },
+    [clarificationQuestions, send],
+  )
+
   const reset = useCallback(() => {
     abortRef.current?.abort()
     abortRef.current = null
@@ -321,13 +547,16 @@ export function useProductAssistant(product: Product) {
     setControllerInfo(null)
     setStatusText('')
     setReasoningText('')
+    setClarificationSpec(null)
+    setClarificationQuestions([])
+    clarificationOriginalPromptRef.current = ''
     setStage('idle')
   }, [uiStream])
 
   const isStreaming = stage !== 'idle'
   const liveSpec = uiStream.spec as GenericUiSpec | undefined
   const visibleSpec: GenericUiSpec | null =
-    (displayedSpecId ? specsHistory[displayedSpecId] ?? null : null) ??
+    (displayedSpecId ? specsHistory[displayedSpecId] : null) ??
     (liveSpec && specIsValid(liveSpec) ? liveSpec : null)
 
   return {
@@ -340,8 +569,11 @@ export function useProductAssistant(product: Product) {
     statusText,
     reasoningText,
     controllerInfo,
+    clarificationSpec,
+    clarificationQuestions,
     send,
     reset,
+    submitClarification,
     selectedFolder,
     selectFolder,
     clearFolder,

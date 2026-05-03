@@ -70,6 +70,13 @@ _SCOPE_QUESTIONS: list[dict] = [
         "placeholder": "Ex: 12345 — requis si périmètre = Filiale spécifique",
     },
     {
+        "id": "session_id",
+        "label": "Identifiant de session (session_id)",
+        "inputType": "text",
+        "required": False,
+        "placeholder": "Ex: 12345.001.001 — requis si périmètre = Filiale spécifique",
+    },
+    {
         "id": "row_limit",
         "label": "Limite en nombre de lignes",
         "inputType": "number",
@@ -473,8 +480,7 @@ class ControllerDecision(dspy.Module):
     detailed policy living in the prompt.
     """
 
-    def __init__(self) -> None:
-        super().__init__()
+    def __init__(self):
         self.react = dspy.ReAct(
             ControllerAgentSignature.with_instructions(controller_agent_developer_prompt),
             tools=[

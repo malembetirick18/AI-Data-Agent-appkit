@@ -1,13 +1,13 @@
-import { Component, type ReactNode } from 'react'
+import { Component, useCallback, useMemo, useState, type ReactNode } from 'react'
 import {
   Stack, Box, Title, Text, Skeleton, ThemeIcon, Group, Badge, Button, ActionIcon, Tooltip, Paper,
 } from '@mantine/core'
 import {
-  IconChartBar, IconRefresh, IconDownload, IconAlertTriangle, IconTrash,
+  IconChartBar, IconRefresh, IconDownload, IconAlertTriangle, IconTrash, IconAdjustments,
 } from '@tabler/icons-react'
 import { JSONUIProvider, Renderer } from '@json-render/react'
 import { chatUiRegistry } from '../registry/chat-ui-registry'
-import type { GenericUiSpec } from '../types/chat'
+import type { GenericUiSpec, ControllerQuestion } from '../types/chat'
 import type { Product } from '../../../shared/products'
 import { specIsValid } from '../lib/genie-utils'
 
@@ -16,14 +16,17 @@ const EMPTY_STATE: Record<string, unknown> = {}
 type Props = {
   product: Product
   spec: GenericUiSpec | null
+  clarificationSpec: GenericUiSpec | null
+  clarificationQuestions: ControllerQuestion[]
   isStreaming: boolean
   hasError: boolean
   lastQuery: string | null
   onReset: () => void
   onReload: () => void
+  onClarificationSubmit: (answers: Record<string, string>) => void
 }
 
-export function OutputCanvas({ product, spec, isStreaming, hasError, lastQuery, onReset, onReload }: Props) {
+export function OutputCanvas({ product, spec, clarificationSpec, clarificationQuestions, isStreaming, hasError, lastQuery, onReset, onReload, onClarificationSubmit }: Props) {
   const accent = product === 'closing' ? 'closingPink' : 'teal'
   const showLoading = isStreaming && !specIsValid(spec)
   const showLoaded = specIsValid(spec)
@@ -42,6 +45,14 @@ export function OutputCanvas({ product, spec, isStreaming, hasError, lastQuery, 
           isStreaming={isStreaming}
           onReset={onReset}
           onReload={onReload}
+        />
+      ) : clarificationSpec ? (
+        <ClarificationState
+          product={product}
+          spec={clarificationSpec}
+          questions={clarificationQuestions}
+          onSubmit={onClarificationSubmit}
+          onReset={onReset}
         />
       ) : (
         <EmptyState accent={accent} />
@@ -176,6 +187,146 @@ function LoadedState({
             <Renderer spec={spec} registry={chatUiRegistry} loading={isStreaming} />
           </JSONUIProvider>
         </RenderErrorBoundary>
+      </Paper>
+    </Stack>
+  )
+}
+
+const EMPTY_CLARIFICATION_STATE: Record<string, unknown> = {}
+
+function toStringValue(val: unknown): string {
+  if (val == null || typeof val === 'object') return ''
+  return String(val as string | number | boolean)
+}
+
+function ClarificationState({
+  product,
+  spec,
+  questions,
+  onSubmit,
+  onReset,
+}: {
+  product: Product
+  spec: GenericUiSpec
+  questions: ControllerQuestion[]
+  onSubmit: (answers: Record<string, string>) => void
+  onReset: () => void
+}) {
+  const accent = product === 'closing' ? 'closingPink' : 'teal'
+
+  const initialState =
+    ((spec as unknown as { state?: unknown }).state as Record<string, unknown> | undefined) ??
+    EMPTY_CLARIFICATION_STATE
+
+  // Use _guide and _message flags written by buildClarificationSpec
+  const isGuide = (spec as unknown as { _guide?: boolean })._guide === true
+  const specMessage = (spec as unknown as { _message?: string })._message?.trim() || ''
+
+  // IDs of structured questions — used to filter noise from onStateChange.
+  // Also allow 'clarification' (the fallback free-text field).
+  const questionIds = useMemo(
+    () => new Set(questions.filter((q) => q.id && q.label?.trim()).map((q) => q.id)),
+    [questions],
+  )
+
+  // Seed initial answers from the spec state so select/toggle defaults count toward validation.
+  // json-render does NOT fire onStateChange for initialState values — only user interactions.
+  const specInitialAnswers = useMemo<Record<string, string>>(
+    () => Object.fromEntries(Object.entries(initialState).map(([k, v]) => [k, toStringValue(v)])),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [spec],
+  )
+
+  // Only values the user has explicitly changed; React state so missingRequired updates reactively.
+  const [userOverrides, setUserOverrides] = useState<Record<string, string>>({})
+
+  // Merged answers: spec defaults + user edits — used for validation and submit payload.
+  const answers = useMemo(
+    () => ({ ...specInitialAnswers, ...userOverrides }),
+    [specInitialAnswers, userOverrides],
+  )
+
+  // Guide is always optional (canSendDirectly). For clarify, block submit until required filled.
+  const missingRequired = useMemo(() => {
+    if (isGuide) return false
+    return questions.some((q) => {
+      if (!q.id || !q.label?.trim() || !q.required) return false
+      // sp_folder_id is only required when scope_level === 'filiale'
+      if (q.id === 'sp_folder_id' && answers['scope_level'] !== 'filiale') return false
+      return !answers[q.id]?.trim()
+    })
+  }, [isGuide, questions, answers])
+
+  const handleStateChange = useCallback(
+    (changes: Array<{ path: string; value: unknown }>) => {
+      const overrides: Record<string, string> = {}
+      for (const { path, value } of changes) {
+        const key = (path.startsWith('/') ? path.slice(1) : path)
+          .replace(/~1/g, '/').replace(/~0/g, '~')
+        // Accept known question IDs and the fallback free-text field
+        if (!questionIds.has(key) && key !== 'clarification') continue
+        overrides[key] = toStringValue(value)
+      }
+      if (Object.keys(overrides).length === 0) return
+      setUserOverrides((prev) => ({ ...prev, ...overrides }))
+    },
+    [questionIds],
+  )
+
+  return (
+    <Stack gap={0}>
+      <Group
+        p="md"
+        justify="space-between"
+        style={{ borderBottom: '1px solid var(--mantine-color-gray-2)', background: '#fff' }}
+      >
+        <Stack gap={2}>
+          <Text size="xs" c={`${accent}.6`} fw={600} tt="uppercase">
+            {isGuide ? 'Guidage' : 'Précision requise'}
+          </Text>
+          <Title order={3}>
+            {isGuide ? 'Confirmation avant analyse' : "Paramètres d'analyse"}
+          </Title>
+        </Stack>
+        <Group gap="xs">
+          <Tooltip label="Réinitialiser la conversation">
+            <ActionIcon variant="default" onClick={onReset} aria-label="Réinitialiser">
+              <IconTrash size={16} />
+            </ActionIcon>
+          </Tooltip>
+        </Group>
+      </Group>
+
+      <Paper m="md" p="md" radius="md" withBorder>
+        <Stack gap="md">
+          <Group gap={8}>
+            <ThemeIcon size="sm" radius="md" variant="light" color={accent}>
+              <IconAdjustments size={14} />
+            </ThemeIcon>
+            <Text size="sm" c="dimmed">
+              {specMessage || (isGuide
+                ? "Vérifiez la requête optimisée par l'agent, puis confirmez pour lancer l'analyse."
+                : "Renseignez les paramètres ci-dessous pour affiner l'analyse.")}
+            </Text>
+          </Group>
+          <RenderErrorBoundary resetKey={spec.root}>
+            <JSONUIProvider
+              registry={chatUiRegistry}
+              initialState={initialState}
+              onStateChange={handleStateChange}
+            >
+              <Renderer spec={spec} registry={chatUiRegistry} />
+            </JSONUIProvider>
+          </RenderErrorBoundary>
+          <Button
+            color={accent}
+            disabled={missingRequired}
+            onClick={() => onSubmit(answers)}
+            leftSection={<IconRefresh size={14} />}
+          >
+            {isGuide ? 'Confirmer et analyser' : 'Relancer avec ces précisions'}
+          </Button>
+        </Stack>
       </Paper>
     </Stack>
   )

@@ -19,7 +19,7 @@ type Tile = {
 const TILES: Tile[] = [
   {
     product: 'closing',
-    title: '1 · Atelier de contrôles Closing',
+    title: '1 · Analyse IA pour Closing',
     description:
       "Créez des contrôles comptables personnalisés en langage naturel sur vos données de clôture. " +
       "Sélectionnez un dossier, décrivez votre contrôle et obtenez un rapport structuré " +
@@ -30,7 +30,7 @@ const TILES: Tile[] = [
   },
   {
     product: 'geo',
-    title: '2 · Atelier de contrôles Géo',
+    title: '2 · Analyse IA pour Géo',
     description:
       "Générez des contrôles d'investigation sur vos données comptables géo-localisées. " +
       "Croisez écritures, achats et données territoriales pour détecter des anomalies " +
@@ -209,7 +209,7 @@ function FolderExampleCard({
         </Table.Thead>
         <Table.Tbody>
           {rows.map((row) => (
-            <Table.Tr key={row.spFolderId}>
+            <Table.Tr key={`${row.spFolderId}-${row.sessionId}`}>
               <Table.Td>
                 <Text size="xs" ff="monospace" c={`${accent}.6`} fw={500}>
                   {row.spFolderId}

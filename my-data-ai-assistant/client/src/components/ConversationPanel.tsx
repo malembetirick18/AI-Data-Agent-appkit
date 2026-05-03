@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
 import {
   Stack, Group, Box, Text, Textarea, ActionIcon, ScrollArea, ThemeIcon, UnstyledButton,
-  Paper, Alert, Table, Badge, Tooltip, Button,
+  Paper, Alert, Table, Badge, Tooltip, Button, TextInput, Divider,
 } from '@mantine/core'
 import {
-  IconSparkles, IconSend, IconBulb, IconFolder, IconX, IconArrowRight, IconRefresh,
+  IconSparkles, IconSend, IconBulb, IconFolder, IconX, IconArrowRight, IconRefresh, IconCheck,
 } from '@tabler/icons-react'
 import type { Product } from '../../../shared/products'
 import { PRODUCT_LABELS } from '../../../shared/products'
@@ -71,8 +71,8 @@ export function ConversationPanel({
     <Stack
       gap={0}
       style={{
-        width: 460,
-        minWidth: 460,
+        width: 520,
+        minWidth: 520,
         borderRight: '1px solid var(--mantine-color-gray-2)',
         background: '#fff',
       }}
@@ -166,7 +166,7 @@ export function ConversationPanel({
                         : 'red'
                       }
                     >
-                      {controllerInfo.decision === 'proceed' ? 'Procéder'
+                      {controllerInfo.decision === 'proceed' ? 'Analyse lancée'
                         : controllerInfo.decision === 'guide' ? 'Guidé'
                         : controllerInfo.decision === 'clarify' ? 'Clarification requise'
                         : 'Erreur'}
@@ -258,6 +258,15 @@ function FolderPicker({
   folders: FolderRow[]
   onSelect: (folder: SelectedFolder) => void
 }) {
+  const [folderId, setFolderId] = useState('')
+  const [sessionId, setSessionId] = useState('')
+  const canConfirm = folderId.trim() !== '' && sessionId.trim() !== ''
+
+  const fillFromShortcut = (row: FolderRow) => {
+    setFolderId(row.spFolderId)
+    setSessionId(row.sessionId)
+  }
+
   return (
     <Stack gap="md">
       <Alert
@@ -265,63 +274,104 @@ function FolderPicker({
         color={accent}
         radius="md"
         icon={<IconFolder size={18} />}
-        title="Sélectionnez un dossier"
+        title="Configurer le dossier"
       >
         <Text size="sm">
-          Choisissez le dossier et la session sur lesquels appliquer l&apos;analyse{' '}
-          {product === 'closing' ? 'comptable' : 'géo-anchored'}.
+          Renseignez l&apos;identifiant du dossier et la session à analyser.
+          Les deux champs sont obligatoires.
         </Text>
       </Alert>
 
-      <Table
-        horizontalSpacing="sm"
-        verticalSpacing="xs"
-        fz="xs"
-        style={{ borderRadius: 8, overflow: 'hidden', border: '1px solid var(--mantine-color-gray-2)' }}
-      >
-        <Table.Thead style={{ background: 'var(--mantine-color-gray-0)' }}>
-          <Table.Tr>
-            <Table.Th style={{ color: 'var(--mantine-color-gray-6)', fontWeight: 600 }}>
-              sp_folder_id
-            </Table.Th>
-            <Table.Th style={{ color: 'var(--mantine-color-gray-6)', fontWeight: 600 }}>
-              session
-            </Table.Th>
-            <Table.Th style={{ color: 'var(--mantine-color-gray-6)', fontWeight: 600 }}>
-              description
-            </Table.Th>
-            <Table.Th />
-          </Table.Tr>
-        </Table.Thead>
-        <Table.Tbody>
-          {folders.map((row) => (
-            <Table.Tr
-              key={row.spFolderId}
-              onClick={() => onSelect({ spFolderId: row.spFolderId, sessionId: row.sessionId })}
-              style={{ cursor: 'pointer' }}
-            >
-              <Table.Td>
-                <Text size="xs" ff="monospace" c={`${accent}.6`} fw={500}>
-                  {row.spFolderId}
-                </Text>
-              </Table.Td>
-              <Table.Td>
-                <Badge variant="dot" color={accent} size="xs">
-                  {row.sessionId}
-                </Badge>
-              </Table.Td>
-              <Table.Td>
-                <Text size="xs" c="dimmed" lh={1.4}>
-                  {row.description}
-                </Text>
-              </Table.Td>
-              <Table.Td>
-                <IconArrowRight size={12} color="var(--mantine-color-gray-4)" />
-              </Table.Td>
-            </Table.Tr>
-          ))}
-        </Table.Tbody>
-      </Table>
+      {/* Mandatory inputs */}
+      <Stack gap="sm">
+        <TextInput
+          label="sp_folder_id"
+          placeholder={product === 'closing' ? 'ex: _sj5lh47d_s5' : 'ex: 3kmctw701a4k'}
+          value={folderId}
+          onChange={(e) => setFolderId(e.currentTarget.value)}
+          required
+          size="xs"
+          styles={{ input: { fontFamily: 'monospace' } }}
+        />
+        <TextInput
+          label="session"
+          placeholder={product === 'closing' ? 'ex: _sj5lh47d_s5.001.001' : 'ex: 3kmctw701a4k.001.001'}
+          value={sessionId}
+          onChange={(e) => setSessionId(e.currentTarget.value)}
+          required
+          size="xs"
+          styles={{ input: { fontFamily: 'monospace' } }}
+        />
+        <Button
+          color={accent}
+          fullWidth
+          size="xs"
+          disabled={!canConfirm}
+          leftSection={<IconCheck size={13} />}
+          onClick={() => onSelect({ spFolderId: folderId.trim(), sessionId: sessionId.trim() })}
+        >
+          Confirmer le dossier
+        </Button>
+      </Stack>
+
+      {/* Quick-select shortcuts */}
+      {folders.length > 0 && (
+        <>
+          <Divider
+            label={<Text size="xs" c="dimmed">Raccourcis — cliquer pour remplir</Text>}
+            labelPosition="left"
+          />
+          <Table
+            horizontalSpacing="sm"
+            verticalSpacing="xs"
+            fz="xs"
+            style={{ borderRadius: 8, overflow: 'hidden', border: '1px solid var(--mantine-color-gray-2)' }}
+          >
+            <Table.Thead style={{ background: 'var(--mantine-color-gray-0)' }}>
+              <Table.Tr>
+                <Table.Th style={{ color: 'var(--mantine-color-gray-6)', fontWeight: 600 }}>
+                  sp_folder_id
+                </Table.Th>
+                <Table.Th style={{ color: 'var(--mantine-color-gray-6)', fontWeight: 600 }}>
+                  session
+                </Table.Th>
+                <Table.Th style={{ color: 'var(--mantine-color-gray-6)', fontWeight: 600 }}>
+                  description
+                </Table.Th>
+                <Table.Th />
+              </Table.Tr>
+            </Table.Thead>
+            <Table.Tbody>
+              {folders.map((row) => (
+                <Table.Tr
+                  key={`${row.spFolderId}-${row.sessionId}`}
+                  onClick={() => fillFromShortcut(row)}
+                  style={{ cursor: 'pointer' }}
+                >
+                  <Table.Td>
+                    <Text size="xs" ff="monospace" c={`${accent}.6`} fw={500}>
+                      {row.spFolderId}
+                    </Text>
+                  </Table.Td>
+                  <Table.Td>
+                    <Badge variant="dot" color={accent} size="xs">
+                      {row.sessionId}
+                    </Badge>
+                  </Table.Td>
+                  <Table.Td>
+                    <Text size="xs" c="dimmed" lh={1.4}>
+                      {row.description}
+                    </Text>
+                  </Table.Td>
+                  <Table.Td>
+                    <IconArrowRight size={12} color="var(--mantine-color-gray-4)" />
+                  </Table.Td>
+                </Table.Tr>
+              ))}
+            </Table.Tbody>
+          </Table>
+        </>
+      )}
     </Stack>
   )
 }
@@ -405,6 +455,19 @@ function EmptyState({
   )
 }
 
+function QRSummaryCard({ pairs }: { pairs: { label: string; answer: string }[] }) {
+  return (
+    <Stack gap={6}>
+      {pairs.map((p) => (
+        <Box key={p.label}>
+          <Text size="xs" c="dimmed" lh={1.4}>{p.label}</Text>
+          <Text size="sm" fw={500} lh={1.5}>{p.answer}</Text>
+        </Box>
+      ))}
+    </Stack>
+  )
+}
+
 function Message({
   m,
   accent,
@@ -420,52 +483,73 @@ function Message({
   isActiveSpec?: boolean
   busy: boolean
 }) {
+  type _Meta = { pairs: { label: string; answer: string }[] }
+  const qrMeta = (m as unknown as { metadata?: _Meta }).metadata ?? null
+
   if (m.role === 'user') {
     return (
-      <Group justify="flex-end">
-        <Paper bg={`${accent}.5`} c="white" p="xs" px="sm" radius="md" maw="85%">
-          <Text size="sm" style={{ whiteSpace: 'pre-wrap' }}>
-            {m.text}
-          </Text>
+      <Box maw="85%">
+        <Paper
+          p="xs"
+          px="sm"
+          radius="md"
+          withBorder={false}
+          style={{ background: 'var(--mantine-color-gray-1)' }}
+        >
+          <Text size="sm" style={{ whiteSpace: 'pre-wrap' }}>{m.text}</Text>
         </Paper>
-      </Group>
+      </Box>
     )
   }
   return (
     <Stack gap={6}>
-      <Group gap={6} justify="space-between">
-        <Group gap={6}>
-          <IconSparkles size={14} />
-          <Text size="xs" c="dimmed">Agent · {m.timestamp}</Text>
+      <Box maw="85%">
+        <Group gap={6} justify="space-between" mb={4}>
+          <Group gap={6}>
+            <IconSparkles size={14} />
+            <Text size="xs" c="dimmed">Agent · {m.timestamp}</Text>
+          </Group>
+          {onReload && (
+            <Tooltip label="Relancer l'analyse" withArrow position="left">
+              <ActionIcon
+                size="xs"
+                variant="subtle"
+                color="gray"
+                disabled={busy}
+                onClick={onReload}
+                aria-label="Relancer l'analyse"
+              >
+                <IconRefresh size={12} />
+              </ActionIcon>
+            </Tooltip>
+          )}
         </Group>
-        {onReload && (
-          <Tooltip label="Relancer l'analyse" withArrow position="left">
-            <ActionIcon
-              size="xs"
-              variant="subtle"
-              color="gray"
-              disabled={busy}
-              onClick={onReload}
-              aria-label="Relancer l'analyse"
-            >
-              <IconRefresh size={12} />
-            </ActionIcon>
-          </Tooltip>
-        )}
-      </Group>
-      <Text size="sm" style={{ whiteSpace: 'pre-wrap' }}>{m.text}</Text>
-      {onShowSpec && (
-        <Button
-          size="compact-xs"
-          variant={isActiveSpec ? 'filled' : 'light'}
-          color={accent}
-          leftSection={<IconArrowRight size={11} />}
-          onClick={onShowSpec}
-          style={{ alignSelf: 'flex-start' }}
+        <Paper
+          p="xs"
+          px="sm"
+          radius="md"
+          withBorder={false}
+          style={{ background: 'var(--mantine-color-gray-1)' }}
         >
-          Afficher les résultats
-        </Button>
-      )}
+          {qrMeta ? (
+            <QRSummaryCard pairs={qrMeta.pairs} />
+          ) : (
+            <Text size="sm" style={{ whiteSpace: 'pre-wrap' }}>{m.text}</Text>
+          )}
+          {onShowSpec && (
+            <Button
+              size="compact-xs"
+              variant={isActiveSpec ? 'filled' : 'light'}
+              color={accent}
+              leftSection={<IconArrowRight size={11} />}
+              onClick={onShowSpec}
+              style={{ alignSelf: 'flex-start', marginTop: 6 }}
+            >
+              Afficher les résultats
+            </Button>
+          )}
+        </Paper>
+      </Box>
     </Stack>
   )
 }

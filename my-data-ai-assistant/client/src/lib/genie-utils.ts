@@ -1,174 +1,4 @@
-import type { GenieStatementResponse } from '@databricks/appkit-ui/react'
-import type { GenericUiSpec, Message } from '../types/chat'
-
-// Keep in sync with semantic_layer_api/main.py _NUMERIC_TYPES
-const _NUMERIC_DB_TYPES = new Set(['INT', 'INTEGER', 'BIGINT', 'LONG', 'SHORT', 'TINYINT', 'FLOAT', 'DOUBLE', 'DECIMAL', 'NUMERIC', 'NUMBER'])
-const _STRING_DB_TYPES = new Set(['STRING', 'VARCHAR', 'CHAR', 'DATE', 'TIMESTAMP', 'BOOLEAN', 'BINARY', 'ARRAY', 'MAP', 'STRUCT', 'INTERVAL'])
-
-export interface ChartDataRow {
-  [key: string]: string | number
-}
-
-export function toGenieStatementResponse(data: unknown): GenieStatementResponse | null {
-  if (!data || typeof data !== 'object') return null
-
-  const maybeStatement = data as Partial<GenieStatementResponse>
-  const hasManifest = Boolean(maybeStatement.manifest?.schema?.columns)
-  const hasResult = Boolean(maybeStatement.result?.data_array)
-  if (hasManifest && hasResult) return maybeStatement as GenieStatementResponse
-
-  const wrapped = (data as { statement_response?: unknown }).statement_response
-  if (wrapped && typeof wrapped === 'object') {
-    const nested = wrapped as Partial<GenieStatementResponse>
-    if (nested.manifest?.schema?.columns && nested.result?.data_array) {
-      return nested as GenieStatementResponse
-    }
-  }
-
-  return null
-}
-
-export function transformStatementToChartData(statement: GenieStatementResponse): {
-  columns: { name: string; type: string }[]
-  categoryColumn: string | null
-  numericColumns: string[]
-  data: ChartDataRow[]
-} {
-  const columns = (statement.manifest?.schema?.columns ?? []).map((col) => ({
-    name: col.name,
-    type: col.type_name ?? 'STRING',
-  }))
-  const rawRows = statement.result?.data_array ?? []
-
-  const numericColumns: string[] = []
-  const stringColumns: string[] = []
-  for (const col of columns) {
-    const upperType = (col.type ?? 'STRING').toUpperCase()
-    if (_NUMERIC_DB_TYPES.has(upperType) || upperType.startsWith('DECIMAL')) {
-      numericColumns.push(col.name)
-    } else {
-      if (_STRING_DB_TYPES.has(upperType)) {
-        stringColumns.push(col.name)
-      } else {
-        const colIdx = columns.findIndex((c) => c.name === col.name)
-        const sample = rawRows.slice(0, 10).map((row) => row[colIdx])
-        const allNumeric = sample.length > 0 && sample.every((v) => v != null && v !== '' && !isNaN(Number(v)))
-        if (allNumeric) {
-          numericColumns.push(col.name)
-        } else {
-          stringColumns.push(col.name)
-        }
-      }
-    }
-  }
-
-  const categoryColumn = stringColumns[0] ?? null
-
-  const numericSet = new Set(numericColumns)
-  const data: ChartDataRow[] = rawRows.map((row) => {
-    const obj: ChartDataRow = {}
-    columns.forEach((col, idx) => {
-      const raw = row[idx]
-      if (numericSet.has(col.name)) {
-        obj[col.name] = raw != null && raw !== '' ? Number(raw) : 0
-      } else {
-        obj[col.name] = raw ?? ''
-      }
-    })
-    return obj
-  })
-
-  return { columns, categoryColumn, numericColumns, data }
-}
-
-export function buildSpecFromGenieStatement(
-  statement: GenieStatementResponse,
-  title?: string,
-): GenericUiSpec {
-  const { columns, categoryColumn, numericColumns, data } = transformStatementToChartData(statement)
-  const headers = columns.map((c) => c.name)
-  const MAX_SPEC_ROWS = 2000
-  const allRows = statement.result?.data_array ?? []
-  const rawRows = allRows.slice(0, MAX_SPEC_ROWS)
-  const isTruncated = allRows.length > MAX_SPEC_ROWS
-
-  const elements: Record<string, { type: string; props: Record<string, unknown>; children: string[] }> = {}
-  const rootId = 'root'
-  elements[rootId] = { type: 'Stack', props: { gap: 6 }, children: [] }
-
-  if (title) {
-    elements['title'] = { type: 'TextContent', props: { content: title, size: 'sm', weight: 600 }, children: [] }
-    elements[rootId].children.push('title')
-  }
-
-  if (categoryColumn && numericColumns.length > 0) {
-    if (numericColumns.length === 1) {
-      elements['chart'] = {
-        type: 'BarChartViz',
-        props: { data, xKey: categoryColumn, yKey: numericColumns[0] },
-        children: [],
-      }
-    } else {
-      elements['chart'] = {
-        type: 'LineChartViz',
-        props: {
-          data,
-          xKey: categoryColumn,
-          series: numericColumns.map((col) => ({
-            yKey: col,
-            yName: col.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()),
-          })),
-        },
-        children: [],
-      }
-    }
-    elements[rootId].children.push('chart')
-  } else {
-    const reason = numericColumns.length === 0
-      ? 'Aucune colonne numérique détectée — visualisation graphique non disponible.'
-      : 'Aucune colonne catégorielle détectée — visualisation graphique non disponible.'
-    elements['no-chart-note'] = {
-      type: 'TextContent',
-      props: { content: reason, size: 'xs', c: 'dimmed' },
-      children: [],
-    }
-    elements[rootId].children.push('no-chart-note')
-  }
-
-  elements['table'] = {
-    type: 'DataTable',
-    props: {
-      headers,
-      rows: rawRows,
-      caption: isTruncated
-        ? `${rawRows.length.toLocaleString('fr-FR')} premières lignes sur ${allRows.length.toLocaleString('fr-FR')} au total`
-        : undefined,
-    },
-    children: [],
-  }
-  elements[rootId].children.push('table')
-
-  return { root: rootId, elements } as GenericUiSpec
-}
-
-
-export const GENUI_MAX_ROWS = 1000
-
-export function _truncateStatementResult(value: unknown): unknown {
-  const statement = toGenieStatementResponse(value)
-  if (!statement?.result?.data_array) return value
-  const full = statement.result.data_array
-  if (full.length <= GENUI_MAX_ROWS) return statement
-  return {
-    ...statement,
-    result: {
-      ...statement.result,
-      data_array: full.slice(0, GENUI_MAX_ROWS),
-      _truncated: true,
-      _total_rows: full.length,
-    },
-  }
-}
+import type { GenericUiSpec } from '../types/chat'
 
 export function specIsValid(spec: GenericUiSpec | undefined | null): spec is GenericUiSpec {
   return (
@@ -178,33 +8,20 @@ export function specIsValid(spec: GenericUiSpec | undefined | null): spec is Gen
     spec.elements != null &&
     typeof spec.elements === 'object' &&
     spec.root in spec.elements &&
-    // Guard: root element must be a non-null object (LLM can emit null values)
     (spec.elements as Record<string, unknown>)[spec.root] != null &&
     typeof (spec.elements as Record<string, unknown>)[spec.root] === 'object'
   )
 }
 
-const FORM_INPUT_TYPES = new Set(['SelectInputField', 'TextInputField', 'NumberInputField', 'ToggleField'])
-
-/** Returns true when the spec contains at least one interactive form input. */
-export function specHasFormInputs(spec: GenericUiSpec | undefined | null): boolean {
-  if (!specIsValid(spec)) return false
-  return Object.values(spec.elements as Record<string, unknown>).some((el) => {
-    if (!el || typeof el !== 'object') return false
-    return FORM_INPUT_TYPES.has((el as Record<string, string>).type)
-  })
-}
-
 // ── Chart spec validation safety net ────────────────────────────────────────
 // Validates LLM-generated chart specs: ensures numeric-only props reference actual
-// numeric columns.  Silently remaps or replaces invalid charts with DataTable.
+// numeric columns. Silently remaps or replaces invalid charts with DataTable.
 
 const CHART_TYPES = new Set([
   'LineChartViz', 'AreaChartViz', 'BarChartViz',
   'PieChartViz', 'DonutChartViz', 'BubbleChartViz', 'RadarChartViz',
 ])
 
-/** Build a column→isNumeric cache from the first 10 rows of data. */
 function _buildNumericCache(data: Record<string, unknown>[], cols: string[]): Map<string, boolean> {
   const cache = new Map<string, boolean>()
   const sampleRows = data.slice(0, 10)
@@ -274,28 +91,26 @@ export function validateChartSpec(spec: GenericUiSpec): GenericUiSpec {
     let props: Record<string, unknown> | null = null
     const getProps = () => { if (!props) props = { ...origProps }; return props }
 
-    // Validate a numeric-only prop and remap if needed; returns true if unfixable
     const fixNumericProp = (propName: string, exclude: Set<string>): boolean => {
       const val = origProps[propName] as string | undefined
       if (!val) return false
-      if (numCache.get(val)) return false // valid
+      if (numCache.get(val)) return false
       const replacement = _firstNumericCol(cols, numCache, exclude)
       if (replacement) {
         console.warn(`[validateChartSpec] ${key}.${propName}: "${val}" is not numeric, remapping to "${replacement}"`)
         getProps()[propName] = replacement
         return false
       }
-      return true // no numeric col available
+      return true
     }
 
     let unfixable = false
     const usedCols = new Set<string>()
     let seriesCloned = false
 
-    // Helper: check that a categorical prop (xKey, labelKey, angleKey) exists in the data
     const checkCategoricalProp = (propName: string): boolean => {
       const val = origProps[propName] as string | undefined
-      if (!val) return true // missing prop handled downstream by renderer defaults
+      if (!val) return true
       if (!cols.includes(val)) {
         console.warn(`[validateChartSpec] ${key}.${propName}: "${val}" not found in data columns`)
         return false
@@ -335,7 +150,6 @@ export function validateChartSpec(spec: GenericUiSpec): GenericUiSpec {
       if (!unfixable) unfixable = fixNumericProp('radiusKey', new Set([origProps.angleKey as string || '']))
     } else if (type === 'BubbleChartViz') {
       const xk = origProps.xKey as string || ''
-      // xKey can be string or numeric for bubble, just verify it exists
       if (xk && !cols.includes(xk)) { unfixable = true }
       if (!unfixable) unfixable = fixNumericProp('yKey', new Set([xk]))
       if (!unfixable) unfixable = fixNumericProp('sizeKey', new Set([xk, (props ?? origProps).yKey as string || '']))
@@ -354,7 +168,6 @@ export function validateChartSpec(spec: GenericUiSpec): GenericUiSpec {
       if (!elements) elements = { ...rawElements }
       elements[key] = { type: 'DataTable', props: { headers: cols, rows }, children: [] }
     } else if (props) {
-      // Props were cloned and mutated — write the new element
       if (!elements) elements = { ...rawElements }
       elements[key] = { ...el, props }
     }
@@ -362,22 +175,4 @@ export function validateChartSpec(spec: GenericUiSpec): GenericUiSpec {
 
   if (!elements) return spec
   return { ...spec, elements: elements as unknown as GenericUiSpec['elements'] }
-}
-
-
-export function buildGenieResultPayload(message: Message): unknown {
-  const queryResults = message.queryResults
-    ? Object.fromEntries(
-        Array.from(message.queryResults.entries()).map(([k, v]) => [k, _truncateStatementResult(v)])
-      )
-    : undefined
-
-  const attachments = (message.attachments ?? []).map((a) => ({
-    attachmentId: a.attachmentId,
-    query: a.query
-      ? { title: a.query.title, description: a.query.description }
-      : undefined,
-  }))
-
-  return { attachments, queryResults }
 }

@@ -56,6 +56,9 @@ Step 6 — validate_catalog_names(suggestedTables, requiredColumns,
                → trust the LLM, keep the original names, no penalty (catalog may be incomplete)
 
 Step 7 — Emit the final ControllerDecisionResult (via the `finish` tool).
+         • **MANDATORY**: never call `finish` without having first called `validate_catalog_names`
+           in the same trajectory (except when Step 1 or Step 2 short-circuited the flow).
+           If you reach Step 7 without having validated, go back to Step 6 first.
 ```
 
 ---
@@ -77,7 +80,29 @@ Use when the request maps **unambiguously** to one or more tables in `catalog_in
 - If `catalog_info` does not unambiguously identify the target table(s), use `clarify`.
 
 ### `clarify`
-Use when the user request is ambiguous, or when no table in `catalog_info` is even remotely relevant, or in these specific cases:
+Use when the user request is ambiguous, or when no table in `catalog_info` is even remotely relevant, or in these specific cases.
+
+> **HARD CONTRACT — enforced by pydantic validation: a `clarify` decision with empty `questions` will be REJECTED at the schema layer when no `guardrailSource` is set.**
+> Every parameter the user must answer MUST appear as a structured `ControllerQuestion` entry. The frontend renders one form input per entry — there is no other way to collect answers.
+> Do NOT describe what you need in prose and leave `questions: []`. The request will fail validation and the call will error out.
+> Concretely: if your `message` says "j'ai besoin de X, Y et Z", then `questions` must contain three entries with matching `id`, `label`, and appropriate `inputType`.
+
+Example mapping (PARAMETRIC_QUERY — three business parameters):
+```json
+[
+  { "id": "periode", "label": "Période d'analyse (mois)", "inputType": "number", "required": true, "min": 1, "max": 36, "step": 1 },
+  { "id": "seuil", "label": "Seuil de montant (€)", "inputType": "number", "required": true, "min": 0, "max": 10000000, "step": 1 },
+  { "id": "definition_volume", "label": "Définition du volume d'activité", "inputType": "select", "required": true,
+    "options": [
+      { "value": "chiffre_affaires", "label": "Chiffre d'affaires" },
+      { "value": "nb_transactions", "label": "Nombre de transactions" },
+      { "value": "encours_moyen", "label": "Encours moyen" }
+    ]
+  }
+]
+```
+
+The only case where `questions` may be empty is the **Fallback** (tool exception).
 
 **(a) POLYSEMOUS + AUDIT_PATTERN** — The coherence_note contains `AUDIT_PATTERN` AND a polysemous term: the contradiction is a valid audit finding but the key term (e.g. "inactif") has multiple incompatible accounting interpretations — always ask for the interpretation.
 > Example: "fournisseurs inactifs réglés" — valid audit concern but "inactif" could mean no accounting entries, no invoices/orders, or master file status.
@@ -151,6 +176,7 @@ Use when the request is completely outside the supported data scope.
 - When in doubt between `'clarify'` and `'proceed'`, choose `'clarify'`.
 - Only choose `'proceed'` when intent is unambiguous AND all required business parameters are explicitly stated.
 - Messages in `message` and `questions[].label` are in **French**.
+- **NEVER** emit `decision = 'clarify'` with `questions: []` unless in the Fallback case. Every parameter or disambiguation item you mention in `message` must have a corresponding entry in `questions`.
 
 ---
 

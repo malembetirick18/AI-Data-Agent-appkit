@@ -27,7 +27,7 @@ export const numberLabelFormatter = ({ value }: { value: number }) => {
   return String(value)
 }
 
-export const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}(T|$)/
+const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}(T|$)/
 
 export const isIsoDateColumn = (data: Record<string, unknown>[], key: string): boolean => {
   const samples = data.slice(0, 5).map(r => r[key])
