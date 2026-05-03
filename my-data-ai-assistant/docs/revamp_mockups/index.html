@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8" />
+  <title>3 prototypes · AI Data Agent</title>
+  <link rel="stylesheet" href="shared/theme.css" />
+  <style>
+    body { background: var(--gray-1); }
+    .wrap { max-width: 1100px; margin: 0 auto; padding: 56px 32px; }
+    .hero { margin-bottom: 40px; }
+    .hero h1 { font-size: 32px; letter-spacing: -0.02em; margin-bottom: 8px; }
+    .hero p { font-size: 15px; color: var(--gray-7); max-width: 720px; line-height: 1.6; }
+    .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; }
+    .proto {
+      background: #fff; border: 1px solid var(--gray-2); border-radius: 12px;
+      overflow: hidden; text-decoration: none; color: inherit;
+      transition: transform 180ms, box-shadow 180ms;
+      display: flex; flex-direction: column;
+    }
+    .proto:hover { transform: translateY(-2px); box-shadow: 0 12px 28px rgba(0,0,0,0.06); }
+    .preview { height: 180px; padding: 22px; display: flex; flex-direction: column; gap: 10px; }
+    .preview.p1 { background: linear-gradient(135deg, var(--pink-0), #fff); }
+    .preview.p2 { background: linear-gradient(135deg, var(--teal-0), #fff); }
+    .preview.p3 { background: linear-gradient(135deg, #f7f4fb, #fff); }
+    .ph { background: rgba(0,0,0,0.06); border-radius: 4px; }
+    .body { padding: 22px; }
+    .body h3 { font-size: 16px; margin-bottom: 6px; }
+    .body p { font-size: 13.5px; color: var(--gray-7); line-height: 1.55; margin-bottom: 14px; }
+    .meta { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; }
+    .links { display: flex; gap: 8px; }
+    .links a { flex: 1; text-align: center; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="hero">
+      <div style="font-size: 12px; color: var(--gray-6); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px;">
+        Geoficiency × Closing — AI Data Agent
+      </div>
+      <h1>3 prototypes — Atelier de contrôles en langage naturel</h1>
+      <p>
+        Trois variantes d'un workspace data-first où l'agent IA génère des contrôles comptables à partir d'une question en français. Tous construits sur les mêmes primitives (Mantine Core), partagent le shell (header, app switcher, breadcrumbs) et exposent loading / empty / loaded states.
+      </p>
+    </div>
+
+    <div class="grid">
+      <a class="proto" href="prototype-1-closing.html">
+        <div class="preview p1">
+          <div class="ph" style="height: 14px; width: 60%;"></div>
+          <div class="ph" style="height: 8px; width: 90%;"></div>
+          <div class="ph" style="height: 8px; width: 75%;"></div>
+          <div style="display: flex; gap: 8px; margin-top: auto;">
+            <div class="ph" style="height: 32px; width: 40%; background: var(--pink-2);"></div>
+            <div class="ph" style="height: 32px; flex: 1;"></div>
+          </div>
+        </div>
+        <div class="body">
+          <div class="meta">
+            <span class="m-badge pink">Closing</span>
+            <span class="m-badge">Streamed output</span>
+          </div>
+          <h3>1 · Atelier de contrôles</h3>
+          <p>Split classique : conversation à gauche, sortie structurée à droite (synthèse, tableau, graphique, sources). La synthèse se streame paragraphe par paragraphe avec citations traçables.</p>
+          <div class="links">
+            <span class="m-btn primary-pink" style="flex:1; justify-content:center;">Ouvrir le prototype →</span>
+          </div>
+        </div>
+      </a>
+
+      <a class="proto" href="prototype-2-geo.html">
+        <div class="preview p2">
+          <div class="ph" style="height: 14px; width: 55%;"></div>
+          <div style="display: flex; gap: 8px; margin-top: 6px;">
+            <div class="ph" style="height: 60px; flex: 1; background: var(--teal-1);"></div>
+            <div class="ph" style="height: 60px; flex: 1; background: var(--teal-1);"></div>
+            <div class="ph" style="height: 60px; flex: 1; background: var(--teal-1);"></div>
+          </div>
+          <div class="ph" style="height: 60px; background: var(--teal-2); border-radius: 8px;"></div>
+        </div>
+        <div class="body">
+          <div class="meta">
+            <span class="m-badge teal">Geoficiency</span>
+            <span class="m-badge">Map + drill-down</span>
+          </div>
+          <h3>2 · Explorateur Géo</h3>
+          <p>Question géo-anchored à gauche, carte de France interactive + KPI + classement à droite. Chaque clic sur une région filtre le canvas avec un loading progressif.</p>
+          <div class="links">
+            <span class="m-btn primary" style="flex:1; justify-content:center;">Ouvrir le prototype →</span>
+          </div>
+        </div>
+      </a>
+
+      <a class="proto" href="prototype-3-console.html">
+        <div class="preview p3">
+          <div style="display: flex; gap: 8px; height: 100%;">
+            <div style="width: 80px; display: flex; flex-direction: column; gap: 6px;">
+              <div class="ph" style="height: 12px;"></div>
+              <div class="ph" style="height: 12px;"></div>
+              <div class="ph" style="height: 12px;"></div>
+            </div>
+            <div style="flex: 1; display: flex; flex-direction: column; gap: 6px;">
+              <div class="ph" style="height: 14px; width: 70%;"></div>
+              <div class="ph" style="height: 8px;"></div>
+              <div class="ph" style="height: 8px; width: 80%;"></div>
+              <div class="ph" style="height: 40px; margin-top: auto;"></div>
+            </div>
+            <div style="flex: 1.2; background: var(--gray-9); border-radius: 6px; padding: 8px; display: flex; flex-direction: column; gap: 4px;">
+              <div class="ph" style="height: 6px; background: var(--green-5); width: 50%;"></div>
+              <div class="ph" style="height: 6px; background: var(--blue-5); width: 70%;"></div>
+              <div class="ph" style="height: 6px; background: var(--pink-5); width: 60%;"></div>
+              <div class="ph" style="height: 6px; background: var(--green-5); width: 45%;"></div>
+            </div>
+          </div>
+        </div>
+        <div class="body">
+          <div class="meta">
+            <span class="m-badge">Multi-produit</span>
+            <span class="m-badge">Reasoning trace</span>
+          </div>
+          <h3>3 · Console agent</h3>
+          <p>3 colonnes : threads sauvegardés, conversation + raisonnement de l'agent étape par étape, et canvas tabbed (tableau / graphique / sources / état JSON). Inspirée des inspecteurs d'agent state.</p>
+          <div class="links">
+            <span class="m-btn outline" style="flex:1; justify-content:center;">Ouvrir le prototype →</span>
+          </div>
+        </div>
+      </a>
+    </div>
+
+    <div style="margin-top: 40px; padding: 20px; background: #fff; border-radius: 10px; border: 1px solid var(--gray-2);">
+      <div style="font-size: 12px; color: var(--gray-6); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px;">
+        Export Vite + Mantine
+      </div>
+      <p style="font-size: 13.5px; color: var(--gray-7); margin-bottom: 14px;">
+        Chaque prototype a un sibling <code>.tsx</code> (Mantine Core, types, composants production) prêt à drop dans un projet Vite + React + TypeScript.
+      </p>
+      <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+        <a class="m-btn outline" href="tsx-export/Prototype1Closing.tsx">Prototype1Closing.tsx</a>
+        <a class="m-btn outline" href="tsx-export/Prototype2Geo.tsx">Prototype2Geo.tsx</a>
+        <a class="m-btn outline" href="tsx-export/Prototype3Console.tsx">Prototype3Console.tsx</a>
+        <a class="m-btn outline" href="tsx-export/README.md">README.md (setup Vite)</a>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

@@ -91,8 +91,25 @@ class ControllerRequest(BaseModel):
 
 class SpecRequest(BaseModel):
     prompt: str
+    product: str | None = None  # "geo" | "closing" — drives product-specific spec context
     genie_result: dict | None = None
     questions: list[dict] | None = None  # ControllerQuestion[] from client (for clarification specs)
+
+
+_PRODUCT_CONTEXT = {
+    "geo": (
+        "Product context — Geoficiency: réponses géo-anchored, comparaisons par "
+        "région ou territoire. Privilégier BarChartViz / DataTable pour le "
+        "classement régional, AreaChartViz pour les évolutions, et inclure "
+        "TextContent récapitulant les écarts territoriaux saillants."
+    ),
+    "closing": (
+        "Product context — Closing: contrôles comptables sur écritures, balances "
+        "et fournisseurs. Privilégier TextContent (synthèse paragraphée), "
+        "DataTable détaillé, BarChartViz pour les variations CA, et exposer les "
+        "cas à risque sous forme de TextContent dédiés."
+    ),
+}
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -137,7 +154,7 @@ def _serialize_questions(questions: list[dict]) -> str:
             if q.get("step") is not None:
                 bounds += f" step={q['step']}"
             parts.append(bounds)
-        if q_id == "sp_folder_id":
+        if q_id == "spFolderId":
             parts.append("   visibility: only show when scope_level = 'filiale'")
         if q_id == "period_year":
             parts.append("   visibility: only show when period_type has a value")
@@ -214,10 +231,14 @@ def _build_spec_prompt(request: SpecRequest) -> str:
     When questions are present the form instruction leads the prompt so the LLM treats
     the task as 'build a FormPanel' rather than 'display this message as text'.
     """
+    product_ctx = _PRODUCT_CONTEXT.get(request.product or "")
+
     if request.questions:
         # Lead with the explicit form-generation instruction so it anchors the task.
         # The context message follows as supplementary information only.
         parts = [_serialize_questions(request.questions)]
+        if product_ctx:
+            parts.append(product_ctx)
         parts.append(f"Context (do NOT render as TextContent — render only the FormPanel above): {request.prompt}")
         if request.genie_result:
             try:
@@ -232,6 +253,8 @@ def _build_spec_prompt(request: SpecRequest) -> str:
 
     # No questions — standard data-viz spec generation
     parts = [request.prompt]
+    if product_ctx:
+        parts.append(product_ctx)
     if request.genie_result:
         # Surface column metadata so the LLM knows which columns are numeric
         col_meta = _extract_column_metadata(request.genie_result)
@@ -386,16 +409,16 @@ controller_agent = ControllerDecision()
 genui_spec_generator = GenUiSpecGenerator()
 
 # Streamified versions with typed listeners.
-# ReAct exposes two internal predictors:
-#   - `._react.react`   — per-iteration predictor (Thought/Action/Args) — noisy for UI
-#   - `._react.extract` — final ChainOfThought producing the typed `result` + a clean
+# `dspy.ReAct` exposes two internal predictors:
+#   - `.react.react`    — per-iteration predictor (Thought/Action/Args) — noisy for UI
+#   - `.react.extract`  — final ChainOfThought producing the typed `result` + a clean
 #                         `reasoning` field. We stream that field token-by-token.
 stream_controller = dspy.streamify(
     controller_agent,
     stream_listeners=[
         StreamListener(
             signature_field_name="reasoning",
-            predict=controller_agent._react.extract,
+            predict=controller_agent.react.extract,
             predict_name="extract",
         ),
     ],
@@ -434,13 +457,26 @@ if _cors_origins == ["*"]:
     logger.warning("CORS_ALLOWED_ORIGINS not set — allowing all origins. Set this env var in production.")
 
 
-DEFAULT_SUGGESTIONS: list[str] = [
+DEFAULT_SUGGESTIONS_CLOSING: list[str] = [
+    "Fais moi une analyse financière basé sur les CA, créances, écarts et variations anormales",
+    "Top 20 des clients par chiffre d'affaires",
+    "Totaux des créances clients vs dettes fournisseurs sur toutes les périodes",
+    "Fonds de roulement net, actifs courants moins passifs courants",
+    "Saisonnalité du chiffre d'affaires, écart mensuel par rapport à la moyenne",
+]
+
+DEFAULT_SUGGESTIONS_GEO: list[str] = [
     "Les variations de dépenses par fournisseur ou catégorie sont-elles cohérentes avec les tendances historiques et les volumes d'activité ?",
     "Existe-t-il des transactions d'achats présentant des montants, fréquences ou dates atypiques (ex. fractionnement de factures, achats en fin de période, doublons potentiels) ?",
     "Des fournisseurs inactifs continuent-ils à être réglés ?",
     "Quels tiers ont une activité à la fois fournisseur et client ?",
     "Y a-t-il des écarts significatifs entre les soldes comptables fournisseurs et les balances auxiliaires ?",
 ]
+
+_DEFAULT_SUGGESTIONS_BY_TYPE: dict[str, list[str]] = {
+    "closing": DEFAULT_SUGGESTIONS_CLOSING,
+    "geo": DEFAULT_SUGGESTIONS_GEO,
+}
 
 
 @app.get("/health", status_code=200)
@@ -449,20 +485,20 @@ async def health():
 
 
 @app.get("/suggestions")
-async def get_suggestions():
-    """Return the configured accounting analysis suggestion questions."""
-    # Allow operators to override the default suggestions via a JSON array env var.
-    # Example: SUGGESTIONS='["Question 1", "Question 2", ...]'
-    raw = os.getenv("SUGGESTIONS", "")
-    suggestions: list[str] = DEFAULT_SUGGESTIONS
+async def get_suggestions(app_type: str = "geo"):
+    """Return suggestion questions for the given app_type ('closing' or 'geo')."""
+    defaults = _DEFAULT_SUGGESTIONS_BY_TYPE.get(app_type, DEFAULT_SUGGESTIONS_GEO)
+    env_key = f"SUGGESTIONS_{app_type.upper()}"
+    raw = os.getenv(env_key, "")
+    suggestions: list[str] = defaults
     if raw:
         try:
             parsed = json.loads(raw)
             if isinstance(parsed, list):
-                suggestions = [str(q) for q in parsed if str(q).strip()] or DEFAULT_SUGGESTIONS
+                suggestions = [str(q) for q in parsed if str(q).strip()] or defaults
         except (json.JSONDecodeError, ValueError):
-            logger.warning("SUGGESTIONS env var contains invalid JSON — using defaults")
-        
+            logger.warning("Env var %s contains invalid JSON — using defaults", env_key)
+
     return {"suggestions": suggestions}
 
 

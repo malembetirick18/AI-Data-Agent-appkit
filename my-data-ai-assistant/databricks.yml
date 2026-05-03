@@ -2,8 +2,10 @@ bundle:
   name: my-data-ai-assistant
 
 variables:
-  DATABRICKS_GENIE_SPACE_ID:
-    description: "Databricks Genie Space ID"
+  DATABRICKS_GENIE_SPACE_ID_GEO:
+    description: "Databricks Genie Space ID Geo"
+  DATABRICKS_GENIE_SPACE_ID_CLOSING:
+    description: "Databricks Genie Space ID Closing"
   SECRET_SCOPE:
     description: "Databricks secret scope name"
     default: "my-data-ai-assistant-secrets"
@@ -17,11 +19,17 @@ resources:
       user_api_scopes:
         - dashboards.genie
       resources:
-        - name: "genie-space"
+        - name: "genie-space-geo"
           description: "Genie Space for AI-powered data queries"
           genie_space:
-            name: "genie-space"
-            space_id: ${var.DATABRICKS_GENIE_SPACE_ID}
+            name: "genie-space-geo"
+            space_id: ${var.DATABRICKS_GENIE_SPACE_ID_GEO}
+            permission: "CAN_RUN"
+        - name: "genie-space-closing"
+          description: "Genie Space for AI-powered data queries"
+          genie_space:
+            name: "genie-space-closing"
+            space_id: ${var.DATABRICKS_GENIE_SPACE_ID_CLOSING}
             permission: "CAN_RUN"
         - name: "aggrid-license-key"
           description: "AG Grid license key secret"

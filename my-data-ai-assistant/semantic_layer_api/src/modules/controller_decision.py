@@ -1,12 +1,21 @@
 """
 controller_decision.py — Tool-based agentic controller using `dspy.ReAct`.
 
-The controller is a single `dspy.ReAct` module. The agent is given a typed
-output signature and a set of well-documented tools; it decides on its own
-which tools to call and in what order, guided by the signature prompt.
+Follows the DSPy module conventions documented at
+https://dspy.ai/learn/programming/modules/ and the ReAct tutorial at
+https://dspy.ai/tutorials/agents/:
+
+  • `ControllerDecision` subclasses `dspy.Module`.
+  • `__init__` defines a single submodule `self.react = dspy.ReAct(...)`.
+  • `forward(**signature_inputs)` is a thin pass-through that returns a
+    `dspy.Prediction` whose typed `result` field is a `ControllerDecisionResult`.
+
+Tools are plain Python functions with descriptive docstrings — DSPy reads the
+docstring as the tool description. Catalog state is request-scoped via a
+`ContextVar` so the tools stay pickle-friendly for `dspy.streamify`.
 
 Exports:
-  - ControllerDecision: the `dspy.Module` wrapping the ReAct agent.
+  - ControllerDecision: the `dspy.Module` exposed to the rest of the backend.
 """
 from __future__ import annotations
 
@@ -40,9 +49,7 @@ rephrase_query_developer_prompt = load_rephrase_query_developer_prompt()
 # would empty a field, trust the LLM — the catalog index may be incomplete.
 _HIGH_CONFIDENCE_THRESHOLD = 0.85
 
-# ── Guardrail constants (verbatim from the previous implementation) ───────────
-
-_SCOPE_KEYWORDS = {"groupe", "filiale", "sp_folder_id", "group", "subsidiary"}
+# ── Guardrail constants ───────────────────────────────────────────────────────
 
 _SCOPE_QUESTIONS: list[dict] = [
     {
@@ -146,7 +153,7 @@ def _parse_catalog_raw(catalog_info: str) -> dict | None:
 
 # ── Tool 1 & 2 — Deterministic guardrails ────────────────────────────────────
 
-def check_scope_coverage(text: str) -> dict:
+def check_scope_coverage(_text: str) -> dict:
     """Check whether the analysis scope (groupe / filiale / sp_folder_id) is specified.
 
     ALWAYS call this FIRST — before classification, before any other tool — because
@@ -164,15 +171,9 @@ def check_scope_coverage(text: str) -> dict:
     questions VERBATIM into your final decision, set guardrailSource='scope', cap
     confidence at 0.35, and STOP calling other tools.
     """
-    lowered = (text or "").lower()
-    established = any(kw in lowered for kw in _SCOPE_KEYWORDS)
-    if established:
-        return {"scope_established": True, "questions": [], "guardrail_source": None}
-    return {
-        "scope_established": False,
-        "questions": [dict(q) for q in _SCOPE_QUESTIONS],
-        "guardrail_source": "scope",
-    }
+    # Scope (sp_folder_id + session) is always pre-established via the folder
+    # picker in the UI — no keyword check needed.
+    return {"scope_established": True, "questions": [], "guardrail_source": None}
 
 
 def check_temporal_coverage(text: str) -> dict:
@@ -459,11 +460,22 @@ def validate_catalog_names(
 # ── The agent ────────────────────────────────────────────────────────────────
 
 class ControllerDecision(dspy.Module):
-    """Agent ReAct tool-based — the single class exposed to the rest of the backend."""
+    """ReAct controller agent.
 
-    def __init__(self):
+    Routes a French accounting prompt through six tools (two deterministic
+    guardrails, two LLM-backed classifiers, a catalog fuzzy-match, and a
+    name-validator) and emits a typed `ControllerDecisionResult` describing
+    whether to proceed, guide, clarify, or refuse.
+
+    The agent's developer prompt (loaded from
+    `signatures/controller_agent/`) explains tool ordering and decision rules
+    — the tool docstrings are kept short enough to act as schema hints, with
+    detailed policy living in the prompt.
+    """
+
+    def __init__(self) -> None:
         super().__init__()
-        self._react = dspy.ReAct(
+        self.react = dspy.ReAct(
             ControllerAgentSignature.with_instructions(controller_agent_developer_prompt),
             tools=[
                 check_scope_coverage,
@@ -482,6 +494,16 @@ class ControllerDecision(dspy.Module):
         catalog_info: str = "",
         conversation_context: str = "",
     ) -> dspy.Prediction:
+        """Run the ReAct loop and return a `dspy.Prediction`.
+
+        `prediction.result` is a `ControllerDecisionResult` (typed pydantic
+        model). `prediction.reasoning` carries the streamed extract reasoning
+        when the call is consumed via `dspy.streamify`.
+
+        The catalog is stashed in a request-scoped `ContextVar` so the
+        module-level tools can read it without it being part of the LLM
+        context.
+        """
         catalog_raw = _parse_catalog_raw(catalog_info)
         catalog_index = _build_catalog_index(catalog_info)
         token = _request_ctx.set(
@@ -492,7 +514,7 @@ class ControllerDecision(dspy.Module):
             }
         )
         try:
-            return self._react(
+            return self.react(
                 prompt=source_text,
                 catalog_info=catalog_info,
                 conversation_context=conversation_context,
