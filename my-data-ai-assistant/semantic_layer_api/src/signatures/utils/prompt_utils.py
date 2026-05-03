@@ -9,17 +9,10 @@ def load_genui_catalog_developer_prompt() -> str:
         prompt = f.read()
     return prompt
 
-def load_controller_decision_developer_prompt() -> str:
-    controller_decision_prompt_path = SIGNATURES_PATH / "controller_decision" / "controller_decision_prompt.md"
+def load_controller_agent_developer_prompt() -> str:
+    controller_agent_prompt_path = SIGNATURES_PATH / "controller_agent" / "controller_agent_prompt.md"
 
-    with controller_decision_prompt_path.open("r", encoding="utf-8") as f:
-        prompt = f.read()
-    return prompt
-
-def load_controller_self_reflection_developer_prompt() -> str:
-    controller_self_reflection_prompt_path = SIGNATURES_PATH / "controller_self_reflection" / "controller_self_reflection_prompt.md"
-
-    with controller_self_reflection_prompt_path.open("r", encoding="utf-8") as f:
+    with controller_agent_prompt_path.open("r", encoding="utf-8") as f:
         prompt = f.read()
     return prompt
 
@@ -41,12 +34,5 @@ def load_reasoning_summary_developer_prompt() -> str:
     reasoning_summary_prompt_path = SIGNATURES_PATH / "reasoning_summary" / "reasoning_summary_prompt.md"
 
     with reasoning_summary_prompt_path.open("r", encoding="utf-8") as f:
-        prompt = f.read()
-    return prompt
-
-def load_controller_correction_developer_prompt() -> str:
-    controller_correction_prompt_path = SIGNATURES_PATH / "controller_correction" / "controller_correction_prompt.md"
-
-    with controller_correction_prompt_path.open("r", encoding="utf-8") as f:
         prompt = f.read()
     return prompt

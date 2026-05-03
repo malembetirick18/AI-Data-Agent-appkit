@@ -133,6 +133,7 @@ export const chatUiCatalog = defineCatalog(jsonRenderSchema, {
       props: z.object({
         title: z.string().optional(),
         description: z.string().optional(),
+        variant: z.enum(['bare']).optional(),
       }),
       slots: ['default'],
       description: 'Form container used to group interactive supervisor inputs.',

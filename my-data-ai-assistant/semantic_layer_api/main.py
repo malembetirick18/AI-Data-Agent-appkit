@@ -91,8 +91,25 @@ class ControllerRequest(BaseModel):
 
 class SpecRequest(BaseModel):
     prompt: str
+    product: str | None = None  # "geo" | "closing" — drives product-specific spec context
     genie_result: dict | None = None
     questions: list[dict] | None = None  # ControllerQuestion[] from client (for clarification specs)
+
+
+_PRODUCT_CONTEXT = {
+    "geo": (
+        "Product context — Geoficiency: réponses géo-anchored, comparaisons par "
+        "région ou territoire. Privilégier BarChartViz / DataTable pour le "
+        "classement régional, AreaChartViz pour les évolutions, et inclure "
+        "TextContent récapitulant les écarts territoriaux saillants."
+    ),
+    "closing": (
+        "Product context — Closing: contrôles comptables sur écritures, balances "
+        "et fournisseurs. Privilégier TextContent (synthèse paragraphée), "
+        "DataTable détaillé, BarChartViz pour les variations CA, et exposer les "
+        "cas à risque sous forme de TextContent dédiés."
+    ),
+}
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -137,7 +154,7 @@ def _serialize_questions(questions: list[dict]) -> str:
             if q.get("step") is not None:
                 bounds += f" step={q['step']}"
             parts.append(bounds)
-        if q_id == "sp_folder_id":
+        if q_id in ("sp_folder_id", "session_id"):
             parts.append("   visibility: only show when scope_level = 'filiale'")
         if q_id == "period_year":
             parts.append("   visibility: only show when period_type has a value")
@@ -214,10 +231,14 @@ def _build_spec_prompt(request: SpecRequest) -> str:
     When questions are present the form instruction leads the prompt so the LLM treats
     the task as 'build a FormPanel' rather than 'display this message as text'.
     """
+    product_ctx = _PRODUCT_CONTEXT.get(request.product or "")
+
     if request.questions:
         # Lead with the explicit form-generation instruction so it anchors the task.
         # The context message follows as supplementary information only.
         parts = [_serialize_questions(request.questions)]
+        if product_ctx:
+            parts.append(product_ctx)
         parts.append(f"Context (do NOT render as TextContent — render only the FormPanel above): {request.prompt}")
         if request.genie_result:
             try:
@@ -232,6 +253,8 @@ def _build_spec_prompt(request: SpecRequest) -> str:
 
     # No questions — standard data-viz spec generation
     parts = [request.prompt]
+    if product_ctx:
+        parts.append(product_ctx)
     if request.genie_result:
         # Surface column metadata so the LLM knows which columns are numeric
         col_meta = _extract_column_metadata(request.genie_result)
@@ -248,35 +271,85 @@ def _build_spec_prompt(request: SpecRequest) -> str:
     return "\n\n".join(parts)
 
 
-def _prediction_to_controller_response(result: dspy.Prediction) -> ControllerResponse:
-    """Map a DSPy Prediction to the typed API response."""
+def _prediction_to_controller_response(pred: dspy.Prediction) -> ControllerResponse:
+    """Map a DSPy ReAct Prediction to the typed API response.
+
+    The ReAct output wraps its typed result in `pred.result` (a
+    `ControllerDecisionResult` pydantic model). A defensive fallback keeps
+    the endpoint alive if the LLM emits a shape the coercer cannot parse.
+    """
+    raw = pred.get("result") if hasattr(pred, "get") else getattr(pred, "result", None)
+    if raw is None:
+        return ControllerResponse(
+            decision="error",
+            confidence=0.0,
+            message="Le contrôleur n'a pas produit de décision structurée.",
+        )
+    # `raw` is normally a ControllerDecisionResult pydantic model, but accept
+    # a plain dict too (some adapters may return unparsed JSON).
+    if hasattr(raw, "model_dump"):
+        data = raw.model_dump()
+    elif isinstance(raw, dict):
+        data = raw
+    else:
+        return ControllerResponse(
+            decision="error",
+            confidence=0.0,
+            message="Le contrôleur n'a pas produit de décision structurée.",
+        )
+
     return ControllerResponse(
-        decision=result.get("decision", "error"),
-        confidence=float(result.get("confidence", 0.0)),
-        message=result.get("message", ""),
-        rewrittenPrompt=result.get("rewrittenPrompt"),
-        suggestedTables=result.get("suggestedTables", []),
-        suggestedFunctions=result.get("suggestedFunctions", []),
-        requiredColumns=result.get("requiredColumns", []),
-        predictiveFunctions=result.get("predictiveFunctions", []),
-        questions=result.get("questions", []),
-        queryClassification=result.get("queryClassification"),
-        coherenceNote=result.get("coherenceNote", ""),
-        needsParams=bool(result.get("needsParams", False)),
-        guardrailSource=result.get("guardrailSource"),
+        decision=data.get("decision", "error"),
+        confidence=float(data.get("confidence", 0.0)),
+        message=data.get("message", "") or "",
+        rewrittenPrompt=data.get("rewrittenPrompt"),
+        suggestedTables=list(data.get("suggestedTables") or []),
+        suggestedFunctions=list(data.get("suggestedFunctions") or []),
+        requiredColumns=list(data.get("requiredColumns") or []),
+        predictiveFunctions=list(data.get("predictiveFunctions") or []),
+        questions=list(data.get("questions") or []),
+        queryClassification=data.get("queryClassification"),
+        coherenceNote=data.get("coherenceNote", "") or "",
+        needsParams=bool(data.get("needsParams", False)),
+        guardrailSource=data.get("guardrailSource"),
     )
 
 
 # ── Status message providers (DSPy streaming observability) ───────────────────
 
+# Maps each tool's function name to the French status shown in the UI while it runs.
+_TOOL_STATUS_FR = {
+    "check_scope_coverage":    "Vérification du périmètre d'analyse…",
+    "check_temporal_coverage": "Vérification de la période temporelle…",
+    "classify_intent":         "Classification de la requête…",
+    "rewrite_query":           "Reformulation de la requête…",
+    "lookup_catalog":          "Recherche dans le catalogue…",
+    "validate_catalog_names":  "Validation des noms contre le catalogue…",
+}
+
+
 class ControllerStatusProvider(dspy.streaming.StatusMessageProvider):
-    """Emits human-readable status updates while the controller LM runs."""
+    """Emits human-readable status updates for every agentic step.
+
+    - tool_start fires for each dspy.Tool call (programmatic or LLM-backed),
+      giving the user a live status for each step of the ReAct loop.
+    - lm_start fires before each inner predictor LM call — we surface it as a
+      short "reasoning" pulse so the UI can show an active indicator.
+    """
+
+    def tool_start_status_message(self, instance, inputs):
+        name = getattr(instance, "name", "") or ""
+        return _TOOL_STATUS_FR.get(name, f"Outil : {name}…") if name else None
+
+    def tool_end_status_message(self, outputs):
+        # Silent — the next tool_start (or the final reasoning_token) communicates progress.
+        return None
 
     def lm_start_status_message(self, instance, inputs):
-        return "Analyzing query against catalog…"
+        return "Raisonnement en cours…"
 
     def lm_end_status_message(self, outputs):
-        return "Controller decision ready."
+        return None
 
 
 class SpecStatusProvider(dspy.streaming.StatusMessageProvider):
@@ -302,14 +375,30 @@ with open(catalog_path, "r", encoding="utf-8") as f:
     genie_knowledge_store = json.load(f)
 default_catalog_info = json.dumps(genie_knowledge_store)
 
+# MLflow must be configured in this order:
+#   1. tracking URI  — tells the client where to send data
+#   2. experiment    — establishes (or retrieves) the experiment before autolog patches DSPy
+#   3. autolog       — registers trace hooks; uses the already-configured experiment
+mlflow.set_tracking_uri(os.getenv("MLFLOW_TRACKING_URI", "databricks"))
+_mlflow_experiment = os.getenv(
+    "MLFLOW_SEMANTIC_LAYER_TRACING_EXPERIMENT", "/semantic-layer-experiment"
+)
+try:
+    mlflow.set_experiment(_mlflow_experiment)
+    exp = mlflow.get_experiment_by_name(_mlflow_experiment)
+    logger.info(
+        "MLflow experiment ready — name=%s id=%s tracking_uri=%s",
+        _mlflow_experiment,
+        exp.experiment_id if exp else "unknown",
+        mlflow.get_tracking_uri(),
+    )
+except Exception as _exc:
+    # Surface even when MLFLOW_SILENT=true so startup misconfiguration is visible.
+    logger.warning("MLflow experiment setup failed — traces may not be logged: %s", _exc)
+
 log_traces = os.getenv("MLFLOW_LOG_TRACES", "true") == "true"
 silent = os.getenv("MLFLOW_SILENT", "true") == "true"
-
 mlflow.dspy.autolog(log_traces=log_traces, silent=silent)
-mlflow.set_tracking_uri(os.getenv("MLFLOW_TRACKING_URI", "databricks"))
-mlflow.set_experiment(
-    os.getenv("MLFLOW_SEMANTIC_LAYER_TRACING_EXPERIMENT", "semantic-layer-experiment")
-)
 
 AZURE_API_KEY = os.getenv("AZURE_API_KEY")
 AZURE_API_BASE = os.getenv("AZURE_API_BASE")
@@ -335,14 +424,18 @@ dspy.configure(lm=lm, adapter=dspy.JSONAdapter(), track_usage=True)
 controller_agent = ControllerDecision()
 genui_spec_generator = GenUiSpecGenerator()
 
-# Streamified versions with typed listeners
+# Streamified versions with typed listeners.
+# `dspy.ReAct` exposes two internal predictors:
+#   - `.react.react`    — per-iteration predictor (Thought/Action/Args) — noisy for UI
+#   - `.react.extract`  — final ChainOfThought producing the typed `result` + a clean
+#                         `reasoning` field. We stream that field token-by-token.
 stream_controller = dspy.streamify(
     controller_agent,
     stream_listeners=[
         StreamListener(
             signature_field_name="reasoning",
-            predict=controller_agent.controller_decision,
-            predict_name="controller_decision",
+            predict=controller_agent.react.extract,
+            predict_name="extract",
         ),
     ],
     status_message_provider=ControllerStatusProvider(),
@@ -380,13 +473,26 @@ if _cors_origins == ["*"]:
     logger.warning("CORS_ALLOWED_ORIGINS not set — allowing all origins. Set this env var in production.")
 
 
-DEFAULT_SUGGESTIONS: list[str] = [
+DEFAULT_SUGGESTIONS_CLOSING: list[str] = [
+    "Fais moi une analyse financière basé sur les CA, créances, écarts et variations anormales",
+    "Top 20 des clients par chiffre d'affaires",
+    "Totaux des créances clients vs dettes fournisseurs sur toutes les périodes",
+    "Fonds de roulement net, actifs courants moins passifs courants",
+    "Saisonnalité du chiffre d'affaires, écart mensuel par rapport à la moyenne",
+]
+
+DEFAULT_SUGGESTIONS_GEO: list[str] = [
     "Les variations de dépenses par fournisseur ou catégorie sont-elles cohérentes avec les tendances historiques et les volumes d'activité ?",
     "Existe-t-il des transactions d'achats présentant des montants, fréquences ou dates atypiques (ex. fractionnement de factures, achats en fin de période, doublons potentiels) ?",
     "Des fournisseurs inactifs continuent-ils à être réglés ?",
     "Quels tiers ont une activité à la fois fournisseur et client ?",
     "Y a-t-il des écarts significatifs entre les soldes comptables fournisseurs et les balances auxiliaires ?",
 ]
+
+_DEFAULT_SUGGESTIONS_BY_TYPE: dict[str, list[str]] = {
+    "closing": DEFAULT_SUGGESTIONS_CLOSING,
+    "geo": DEFAULT_SUGGESTIONS_GEO,
+}
 
 
 @app.get("/health", status_code=200)
@@ -395,20 +501,20 @@ async def health():
 
 
 @app.get("/suggestions")
-async def get_suggestions():
-    """Return the configured accounting analysis suggestion questions."""
-    # Allow operators to override the default suggestions via a JSON array env var.
-    # Example: SUGGESTIONS='["Question 1", "Question 2", ...]'
-    raw = os.getenv("SUGGESTIONS", "")
-    suggestions: list[str] = DEFAULT_SUGGESTIONS
+async def get_suggestions(app_type: str = "geo"):
+    """Return suggestion questions for the given app_type ('closing' or 'geo')."""
+    defaults = _DEFAULT_SUGGESTIONS_BY_TYPE.get(app_type, DEFAULT_SUGGESTIONS_GEO)
+    env_key = f"SUGGESTIONS_{app_type.upper()}"
+    raw = os.getenv(env_key, "")
+    suggestions: list[str] = defaults
     if raw:
         try:
             parsed = json.loads(raw)
             if isinstance(parsed, list):
-                suggestions = [str(q) for q in parsed if str(q).strip()] or DEFAULT_SUGGESTIONS
+                suggestions = [str(q) for q in parsed if str(q).strip()] or defaults
         except (json.JSONDecodeError, ValueError):
-            logger.warning("SUGGESTIONS env var contains invalid JSON — using defaults")
-        
+            logger.warning("Env var %s contains invalid JSON — using defaults", env_key)
+
     return {"suggestions": suggestions}
 
 

@@ -61,6 +61,34 @@ export function issueControllerApproval(params: { approvedPrompt: string; traceI
   return token;
 }
 
+/** Rewrite the approved prompt of an existing token — used when the controller decision
+ *  finalises during a streaming response, *after* the Set-Cookie header has been flushed
+ *  and the token was pre-issued with a placeholder prompt. Returns false if the token
+ *  has expired or never existed. */
+export function updateControllerApproval(
+  token: string,
+  patch: { approvedPrompt: string },
+): boolean {
+  const now = Date.now();
+  sweepExpiredApprovals(now);
+
+  const entry = approvalStore.get(token);
+  if (!entry) return false;
+
+  approvalStore.set(token, {
+    ...entry,
+    approvedPrompt: normalizePrompt(patch.approvedPrompt),
+  });
+  return true;
+}
+
+/** Revoke a token immediately — used when the streaming controller decision turns out to
+ *  be non-approvable (clarify / error / low-confidence proceed). The cookie remains on the
+ *  client but consumeControllerApproval will reject any subsequent request using it. */
+export function invalidateControllerApproval(token: string): void {
+  approvalStore.delete(token);
+}
+
 export function consumeControllerApproval(params: { token: string; content: string }):
   | { ok: true; traceId?: string }
   | { ok: false; reason: string } {

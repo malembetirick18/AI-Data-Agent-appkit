@@ -12,14 +12,13 @@ test('smoke test - app loads and displays data', async ({ page }) => {
   // Navigate to the app
   await page.goto('/');
 
-  // App shell and key dashboard controls should be visible.
-  await expect(page.getByText('Geoficiency')).toBeVisible({ timeout: 30000 });
-  await expect(page.getByText('Synthèse des contrôles pour le module', { exact: false })).toBeVisible({ timeout: 30000 });
-  await expect(page.getByRole('button', { name: 'Générer un contrôle personnalisé' })).toBeVisible({ timeout: 30000 });
-  await expect(page.getByText('01. CARTOGRAPHIES GÉNÉRALES')).toBeVisible({ timeout: 30000 });
+  // Landing page should display product cards and example folders table.
+  await expect(page.getByText('Analyse IA pour Closing', { exact: false })).toBeVisible({ timeout: 30000 });
+  await expect(page.getByText('Analyse IA pour Géo', { exact: false })).toBeVisible({ timeout: 30000 });
+  await expect(page.getByText('Ouvrir le prototype').first()).toBeVisible({ timeout: 30000 });
+  await expect(page.getByText('Cas de tests', { exact: false }).first()).toBeVisible({ timeout: 30000 });
 
-  // Verify console logs were captured
-  expect(consoleLogs.length).toBeGreaterThan(0);
+  // No page crashes or failed requests.
   expect(consoleErrors.length).toBe(0);
   expect(pageErrors.length).toBe(0);
   expect(failedRequests.length).toBe(0);

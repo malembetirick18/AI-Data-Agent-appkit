@@ -8,7 +8,17 @@ import {
   parseCookieValue,
 } from './controller-approval-store';
 
-const genieSpaceId = process.env.DATABRICKS_GENIE_SPACE_ID;
+// Two Genie spaces — one per product. Env vars:
+//   DATABRICKS_GENIE_SPACE_ID_GEO       → "geo" alias    (Geoficiency surface)
+//   DATABRICKS_GENIE_SPACE_ID_CLOSING   → "closing" alias (Closing surface)
+// Any unset alias is dropped from the registration so AppKit doesn't reject undefined IDs.
+const genieSpaces: Record<string, string> = {};
+if (process.env.DATABRICKS_GENIE_SPACE_ID_GEO) {
+  genieSpaces.geo = process.env.DATABRICKS_GENIE_SPACE_ID_GEO;
+}
+if (process.env.DATABRICKS_GENIE_SPACE_ID_CLOSING) {
+  genieSpaces.closing = process.env.DATABRICKS_GENIE_SPACE_ID_CLOSING;
+}
 
 // Maximum rows forwarded per query_result SSE event. Keeps SSE payloads small
 // enough to avoid Databricks App HTTP buffer limits.
@@ -78,23 +88,17 @@ createApp({
   plugins: [
     server({ autoStart: false }),
     controllerAiAgent(),
-    genie(
-      genieSpaceId
-        ? {
-            spaces: {
-              demo: genieSpaceId,
-            },
-          }
-        : {},
-    ),
+    genie(Object.keys(genieSpaces).length > 0 ? { spaces: genieSpaces } : {}),
   ],
 }).then(async (appKit) => {
   appKit.server.extend((app: Application) => {
     app.post('/api/controller', handleControllerRequest);
 
-    app.get('/api/suggestions', async (_req: Request, res: Response) => {
+    app.get('/api/suggestions', async (req: Request, res: Response) => {
       try {
-        const resp = await fetch(`${SEMANTIC_LAYER_API_URL}/suggestions`, {
+        const appType = typeof req.query['app_type'] === 'string' ? req.query['app_type'] : ''
+        const qs = appType ? `?app_type=${encodeURIComponent(appType)}` : ''
+        const resp = await fetch(`${SEMANTIC_LAYER_API_URL}/suggestions${qs}`, {
           signal: AbortSignal.timeout(Number(REQUEST_TIMEOUT_MS)),
         });
         if (!resp.ok) {
@@ -111,10 +115,15 @@ createApp({
 
     app.post('/api/spec-stream', async (req: Request, res: Response) => {
       // useUIStream.send(prompt, context) wraps the second argument under a 'context' key.
-      // The request body shape is: { prompt, context: { genieResult, questions }, currentSpec }
-      const body = req.body as { prompt?: unknown; context?: { genieResult?: unknown; questions?: unknown } } | undefined;
+      // The request body shape is:
+      //   { prompt, context: { genieResult, questions, product }, currentSpec }
+      const body = req.body as
+        | { prompt?: unknown; context?: { genieResult?: unknown; questions?: unknown; product?: unknown } }
+        | undefined;
       const prompt = typeof body?.prompt === 'string' ? body.prompt.trim() : '';
       const context = body?.context;
+      const product =
+        context?.product === 'geo' || context?.product === 'closing' ? context.product : null;
 
       if (!prompt) {
         res.status(400).json({ error: 'prompt is required' });
@@ -127,6 +136,7 @@ createApp({
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             prompt,
+            product,
             genie_result: context?.genieResult ?? null,
             questions: Array.isArray(context?.questions) ? context.questions : null,
           }),
@@ -174,6 +184,69 @@ createApp({
             error: error instanceof Error ? error.message : 'Failed to generate spec.',
           });
         }
+      }
+    });
+
+    /**
+     * Unified Genie chat stream. Accepts { content, appType, conversationId? } in the body.
+     * appType must be 'geo' | 'closing' — maps directly to the registered Genie space alias.
+     * Requires a valid controller approval cookie issued by POST /api/controller.
+     */
+    app.post('/api/chat/stream', async (req: Request, res: Response) => {
+      const body = req.body as { content?: unknown; appType?: unknown; conversationId?: unknown } | undefined;
+      const content = typeof body?.content === 'string' ? body.content.trim() : '';
+      const rawAppType = body?.appType;
+      const appType: 'geo' | 'closing' | null =
+        rawAppType === 'geo' ? 'geo' : rawAppType === 'closing' ? 'closing' : null;
+      const conversationId = typeof body?.conversationId === 'string' ? body.conversationId : undefined;
+
+      if (!appType) {
+        clearControllerApprovalCookie(res);
+        res.status(400).json({ error: 'appType must be "geo" or "closing"' });
+        return;
+      }
+
+      if (!content) {
+        clearControllerApprovalCookie(res);
+        res.status(400).json({ error: 'content is required' });
+        return;
+      }
+
+      const approvalToken = parseCookieValue(req.headers.cookie, CONTROLLER_APPROVAL_COOKIE_NAME);
+      if (!approvalToken) {
+        clearControllerApprovalCookie(res);
+        res.status(403).json({
+          error: 'Genie request blocked: controller approval is required before sending a prompt.',
+        });
+        return;
+      }
+
+      const approval = consumeControllerApproval({ token: approvalToken, content });
+      clearControllerApprovalCookie(res);
+
+      if (!approval.ok) {
+        res.status(403).json({ error: `Genie request blocked: ${approval.reason}` });
+        return;
+      }
+
+      try {
+        openSseStream(res);
+
+        for await (const event of appKit.genie.asUser(req).sendMessage(appType, content, conversationId)) {
+          if (!await writeSseEventSafe(res, event)) break;
+        }
+
+        if (!res.destroyed) res.end();
+      } catch (error) {
+        if (!res.headersSent) {
+          res.status(500).json({ error: 'Failed to stream Genie response.' });
+          return;
+        }
+        writeSseEvent(res, {
+          type: 'error',
+          error: error instanceof Error ? error.message : 'Failed to stream Genie response.',
+        });
+        res.end();
       }
     });
 

@@ -157,17 +157,25 @@ const { registry: chatUiRegistry } = defineRegistry(chatUiCatalog, {
       )
     },
 
-    FormPanel: ({ props, children }) => (
-      <Paper p="sm" withBorder radius="md" style={{ backgroundColor: '#ffffff' }}>
-        {(props.title || props.description) && (
-          <Box mb="sm">
-            {props.title && <Text size="sm" fw={600}>{props.title}</Text>}
-            {props.description && <Text size="xs" c="dimmed" mt={2}>{props.description}</Text>}
-          </Box>
-        )}
-        <Stack gap="sm">{children}</Stack>
-      </Paper>
-    ),
+    FormPanel: ({ props, children }) => {
+      const inner = (
+        <>
+          {(props.title || props.description) && (
+            <Box mb="sm">
+              {props.title && <Text size="sm" fw={600}>{props.title}</Text>}
+              {props.description && <Text size="xs" c="dimmed" mt={2}>{props.description}</Text>}
+            </Box>
+          )}
+          <Stack gap="sm">{children}</Stack>
+        </>
+      )
+      if (props.variant === 'bare') return inner
+      return (
+        <Paper p="sm" withBorder radius="md" style={{ backgroundColor: '#ffffff' }}>
+          {inner}
+        </Paper>
+      )
+    },
 
     SelectInputField: ({ props, bindings }) => (
       <BoundSelectInput
